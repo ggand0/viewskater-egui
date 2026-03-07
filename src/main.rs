@@ -366,6 +366,9 @@ impl eframe::App for App {
         self.show_bottom_panel(ctx);
         self.show_central_panel(ctx);
         self.perf.show_overlay(ctx);
+        if let Some(cache) = &self.cache {
+            cache.show_debug_overlay(ctx, self.current_index, self.image_paths.len());
+        }
     }
 }
 

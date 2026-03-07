@@ -7,6 +7,10 @@ use eframe::egui;
 
 const DEFAULT_CACHE_COUNT: usize = 5;
 
+const COL_LOADED: egui::Color32 = egui::Color32::from_rgb(76, 175, 80);
+const COL_LOADING: egui::Color32 = egui::Color32::from_rgb(255, 183, 77);
+const COL_EMPTY: egui::Color32 = egui::Color32::from_rgb(60, 60, 60);
+
 pub struct DecodeResult {
     pub file_index: usize,
     pub image: Option<egui::ColorImage>,
@@ -226,6 +230,114 @@ impl SlidingWindowCache {
         });
     }
 
+    /// Draw debug overlay visualizing cache slot states.
+    pub fn show_debug_overlay(&self, ctx: &egui::Context, current_index: usize, num_files: usize) {
+        let cache_size = self.cache_size();
+
+        egui::Window::new("cache_state")
+            .title_bar(false)
+            .resizable(false)
+            .anchor(egui::Align2::LEFT_TOP, [10.0, 10.0])
+            .interactable(false)
+            .frame(
+                egui::Frame::default()
+                    .fill(egui::Color32::from_black_alpha(200))
+                    .corner_radius(6.0)
+                    .inner_margin(10.0),
+            )
+            .show(ctx, |ui| {
+                let last_file = self.first_file_index + cache_size - 1;
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Cache [{}\u{2013}{}]",
+                        self.first_file_index,
+                        last_file.min(num_files.saturating_sub(1))
+                    ))
+                    .monospace()
+                    .color(egui::Color32::from_gray(200))
+                    .size(12.0),
+                );
+
+                ui.add_space(4.0);
+
+                // Slot cells
+                let cell_w: f32 = 28.0;
+                let cell_h: f32 = 20.0;
+                let gap: f32 = 2.0;
+                let label_h: f32 = 12.0;
+                let total_w = cache_size as f32 * (cell_w + gap) - gap;
+                let total_h = cell_h + gap + label_h;
+
+                let (area, _) = ui.allocate_exact_size(
+                    egui::vec2(total_w, total_h),
+                    egui::Sense::hover(),
+                );
+
+                let painter = ui.painter();
+
+                for i in 0..cache_size {
+                    let file_index = self.first_file_index + i;
+                    let is_current = file_index == current_index;
+                    let is_loaded = self.slots.get(i).map_or(false, |s| s.is_some());
+                    let is_in_flight = self.in_flight.contains(&file_index);
+                    let is_valid = file_index < num_files;
+
+                    let x = area.min.x + i as f32 * (cell_w + gap);
+                    let cell_rect = egui::Rect::from_min_size(
+                        egui::pos2(x, area.min.y),
+                        egui::vec2(cell_w, cell_h),
+                    );
+
+                    let fill = if !is_valid {
+                        egui::Color32::from_gray(25)
+                    } else if is_loaded {
+                        COL_LOADED
+                    } else if is_in_flight {
+                        COL_LOADING
+                    } else {
+                        COL_EMPTY
+                    };
+
+                    painter.rect_filled(cell_rect, 3.0, fill);
+
+                    if is_current {
+                        painter.rect_stroke(
+                            cell_rect,
+                            3.0,
+                            egui::Stroke::new(2.0, egui::Color32::WHITE),
+                            egui::epaint::StrokeKind::Outside,
+                        );
+                    }
+
+                    if is_valid {
+                        painter.text(
+                            egui::pos2(x + cell_w / 2.0, area.min.y + cell_h + gap),
+                            egui::Align2::CENTER_TOP,
+                            file_index.to_string(),
+                            egui::FontId::monospace(9.0),
+                            if is_current {
+                                egui::Color32::WHITE
+                            } else {
+                                egui::Color32::from_gray(120)
+                            },
+                        );
+                    }
+                }
+
+                ui.add_space(4.0);
+
+                // Legend
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    legend_swatch(ui, COL_LOADED, "Loaded");
+                    ui.add_space(4.0);
+                    legend_swatch(ui, COL_LOADING, "Loading");
+                    ui.add_space(4.0);
+                    legend_swatch(ui, COL_EMPTY, "Empty");
+                });
+            });
+    }
+
     /// Synchronously decode an image and upload as a texture.
     fn decode_sync(path: &PathBuf, ctx: &egui::Context) -> Option<egui::TextureHandle> {
         match image::open(path) {
@@ -246,4 +358,14 @@ impl SlidingWindowCache {
             }
         }
     }
+}
+
+fn legend_swatch(ui: &mut egui::Ui, color: egui::Color32, label: &str) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.0, color);
+    ui.label(
+        egui::RichText::new(label)
+            .color(egui::Color32::from_gray(160))
+            .size(10.0),
+    );
 }
