@@ -119,7 +119,7 @@ impl App {
         }
     }
 
-    fn navigate(&mut self, delta: isize, ctx: &egui::Context) {
+    fn navigate(&mut self, delta: isize, _ctx: &egui::Context) {
         if self.image_paths.is_empty() {
             return;
         }
@@ -129,26 +129,25 @@ impl App {
             return;
         }
 
-        self.current_index = new_index;
-        self.zoom = 1.0;
-        self.pan = egui::Vec2::ZERO;
-
         if let Some(cache) = &mut self.cache {
-            let tex = if delta > 0 {
-                cache.navigate_forward(new_index, &self.image_paths)
-            } else {
-                cache.navigate_backward(new_index, &self.image_paths)
-            };
-
-            if let Some(t) = tex {
+            // Only advance if the next image is cached — this gates navigation
+            // to background decode throughput, preventing bursty loading.
+            if let Some(t) = cache.current_texture_for(new_index) {
+                self.current_index = new_index;
+                self.zoom = 1.0;
+                self.pan = egui::Vec2::ZERO;
                 self.current_texture = Some(t);
-                self.perf.record_image_load(0.0); // Cache hit
+                self.perf.record_image_load(0.0);
+
+                // Shift window and spawn load for newly exposed edge
+                if delta > 0 {
+                    cache.navigate_forward(new_index, &self.image_paths);
+                } else {
+                    cache.navigate_backward(new_index, &self.image_paths);
+                }
             } else {
-                log::debug!("Cache miss at index {}, falling back to sync decode", new_index);
-                self.load_sync(ctx);
+                log::debug!("Cache miss at index {}, waiting for background load", new_index);
             }
-        } else {
-            self.load_sync(ctx);
         }
     }
 
