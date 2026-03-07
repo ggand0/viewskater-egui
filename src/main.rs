@@ -217,15 +217,18 @@ impl App {
         } else if end {
             self.jump_to(self.image_paths.len().saturating_sub(1), ctx);
         } else if nav_right_held {
-            let advanced = self.navigate(1);
-            // Keep repaint loop alive for cache misses (waiting for background
-            // thread), but stop at directory boundary to avoid phantom FPS.
-            if advanced || self.current_index < self.image_paths.len().saturating_sub(1) {
+            let at_end = self.current_index >= self.image_paths.len().saturating_sub(1);
+            if at_end {
+                self.perf.clear_timestamps();
+            } else {
+                self.navigate(1);
                 ctx.request_repaint();
             }
         } else if nav_left_held {
-            let advanced = self.navigate(-1);
-            if advanced || self.current_index > 0 {
+            if self.current_index == 0 {
+                self.perf.clear_timestamps();
+            } else {
+                self.navigate(-1);
                 ctx.request_repaint();
             }
         }

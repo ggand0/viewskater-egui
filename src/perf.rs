@@ -20,6 +20,11 @@ impl ImagePerfTracker {
         }
     }
 
+    /// Clear the rolling FPS window (e.g. when navigation hits a boundary).
+    pub fn clear_timestamps(&mut self) {
+        self.image_timestamps.clear();
+    }
+
     /// Record that a new image was decoded and uploaded to the GPU.
     pub fn record_image_load(&mut self, decode_ms: f64) {
         self.last_decode_ms = Some(decode_ms);
