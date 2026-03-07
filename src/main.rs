@@ -272,6 +272,7 @@ impl PaneState {
 struct App {
     panes: Vec<PaneState>,
     perf: perf::ImagePerfTracker,
+    divider_fraction: f32,
 }
 
 impl App {
@@ -279,6 +280,7 @@ impl App {
         let mut app = Self {
             panes: vec![PaneState::new()],
             perf: perf::ImagePerfTracker::new(),
+            divider_fraction: 0.5,
         };
 
         if !paths.is_empty() {
@@ -475,24 +477,59 @@ impl App {
                     }
                 } else {
                     let available = ui.available_rect_before_wrap();
-                    let divider_w = 2.0;
-                    let half_w = (available.width() - divider_w) / 2.0;
+                    let divider_w = 4.0;
+                    let grab_w = 12.0; // wider hit area for easy grabbing
+                    let left_w = (available.width() - divider_w) * self.divider_fraction;
 
                     let left_rect = egui::Rect::from_min_size(
                         available.min,
-                        egui::vec2(half_w, available.height()),
+                        egui::vec2(left_w, available.height()),
                     );
                     let right_rect = egui::Rect::from_min_size(
-                        egui::pos2(available.min.x + half_w + divider_w, available.min.y),
-                        egui::vec2(half_w, available.height()),
+                        egui::pos2(available.min.x + left_w + divider_w, available.min.y),
+                        egui::vec2(available.width() - left_w - divider_w, available.height()),
                     );
 
-                    // Divider line
-                    let divider_x = available.min.x + half_w + divider_w / 2.0;
+                    // Divider interaction — wide grab area centered on the visual line
+                    let divider_center_x = available.min.x + left_w + divider_w / 2.0;
+                    let grab_rect = egui::Rect::from_center_size(
+                        egui::pos2(divider_center_x, available.center().y),
+                        egui::vec2(grab_w, available.height()),
+                    );
+                    let divider_response =
+                        ui.allocate_rect(grab_rect, egui::Sense::click_and_drag());
+
+                    if divider_response.dragged() {
+                        let usable = available.width() - divider_w;
+                        if usable > 0.0 {
+                            let delta = divider_response.drag_delta().x;
+                            self.divider_fraction =
+                                (self.divider_fraction + delta / usable).clamp(0.1, 0.9);
+                        }
+                    }
+
+                    // Double-click resets to 50/50
+                    if divider_response.double_clicked() {
+                        self.divider_fraction = 0.5;
+                    }
+
+                    // Resize cursor when hovering or dragging
+                    if divider_response.hovered() || divider_response.dragged() {
+                        ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                    }
+
+                    // Visual divider line — highlighted when interacting
+                    let divider_color = if divider_response.dragged() {
+                        egui::Color32::from_gray(140)
+                    } else if divider_response.hovered() {
+                        egui::Color32::from_gray(100)
+                    } else {
+                        egui::Color32::from_gray(60)
+                    };
                     ui.painter().vline(
-                        divider_x,
+                        divider_center_x,
                         available.y_range(),
-                        egui::Stroke::new(divider_w, egui::Color32::from_gray(60)),
+                        egui::Stroke::new(divider_w, divider_color),
                     );
 
                     let (first, rest) = self.panes.split_at_mut(1);
