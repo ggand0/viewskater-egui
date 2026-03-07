@@ -14,38 +14,33 @@ const MAX_ZOOM: f32 = 100.0;
 #[derive(Parser)]
 #[command(name = "viewskater-egui", about = "Fast image viewer")]
 struct Args {
-    /// Path to an image file or directory of images
-    path: Option<PathBuf>,
+    /// Paths to image files or directories
+    paths: Vec<PathBuf>,
 }
 
-struct App {
+// ---------------------------------------------------------------------------
+// Per-pane state
+// ---------------------------------------------------------------------------
+
+struct PaneState {
     image_paths: Vec<PathBuf>,
     current_index: usize,
     current_texture: Option<egui::TextureHandle>,
     zoom: f32,
     pan: egui::Vec2,
-
     cache: Option<cache::SlidingWindowCache>,
-    perf: perf::ImagePerfTracker,
 }
 
-impl App {
-    fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> Self {
-        let mut app = Self {
+impl PaneState {
+    fn new() -> Self {
+        Self {
             image_paths: Vec::new(),
             current_index: 0,
             current_texture: None,
             zoom: 1.0,
             pan: egui::Vec2::ZERO,
             cache: None,
-            perf: perf::ImagePerfTracker::new(),
-        };
-
-        if let Some(path) = path {
-            app.open_path(&path, &cc.egui_ctx);
         }
-
-        app
     }
 
     fn open_path(&mut self, path: &std::path::Path, ctx: &egui::Context) {
@@ -66,7 +61,10 @@ impl App {
             .and_then(|name| {
                 self.image_paths
                     .iter()
-                    .position(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()) == Some(name.clone()))
+                    .position(|p| {
+                        p.file_name().map(|f| f.to_string_lossy().into_owned())
+                            == Some(name.clone())
+                    })
             })
             .unwrap_or(0);
 
@@ -77,13 +75,9 @@ impl App {
         c.initialize(self.current_index, &self.image_paths);
         self.current_texture = c.current_texture_for(self.current_index);
         self.cache = Some(c);
-
-        if self.current_texture.is_some() {
-            self.perf.record_image_load(0.0);
-        }
     }
 
-    /// Synchronous decode fallback for cache misses.
+    /// Synchronous decode fallback for slider drag and jump.
     fn load_sync(&mut self, ctx: &egui::Context) {
         let Some(path) = self.image_paths.get(self.current_index) else {
             return;
@@ -102,7 +96,6 @@ impl App {
                     egui::TextureOptions::LINEAR,
                 ));
                 let decode_ms = start.elapsed().as_secs_f64() * 1000.0;
-                self.perf.record_image_load(decode_ms);
                 log::debug!(
                     "Sync fallback: {} ({}x{}) in {:.1}ms",
                     path.display(),
@@ -114,7 +107,6 @@ impl App {
             Err(e) => {
                 log::error!("Failed to load {}: {}", path.display(), e);
                 self.current_texture = None;
-                self.perf.last_decode_ms = None;
             }
         }
     }
@@ -131,24 +123,18 @@ impl App {
         }
 
         if let Some(cache) = &mut self.cache {
-            // Only advance if the next image is cached — this gates navigation
-            // to background decode throughput, preventing bursty loading.
             if let Some(t) = cache.current_texture_for(new_index) {
                 self.current_index = new_index;
                 self.zoom = 1.0;
                 self.pan = egui::Vec2::ZERO;
                 self.current_texture = Some(t);
-                self.perf.record_image_load(0.0);
 
-                // Shift window and spawn load for newly exposed edge
                 if delta > 0 {
                     cache.navigate_forward(new_index, &self.image_paths);
                 } else {
                     cache.navigate_backward(new_index, &self.image_paths);
                 }
                 return true;
-            } else {
-                log::debug!("Cache miss at index {}, waiting for background load", new_index);
             }
         }
         false
@@ -167,9 +153,7 @@ impl App {
         if let Some(cache) = &mut self.cache {
             cache.jump_to(index, &self.image_paths);
             self.current_texture = cache.current_texture_for(index);
-            if self.current_texture.is_some() {
-                self.perf.record_image_load(0.0);
-            } else {
+            if self.current_texture.is_none() {
                 self.load_sync(ctx);
             }
         } else {
@@ -177,131 +161,34 @@ impl App {
         }
     }
 
-    fn update_title(&self, ctx: &egui::Context) {
-        if let Some(path) = self.image_paths.get(self.current_index) {
-            let filename = path.file_name().unwrap_or_default().to_string_lossy();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-                "{} ({}/{}) - viewskater-egui",
-                filename,
-                self.current_index + 1,
-                self.image_paths.len()
-            )));
+    fn can_navigate_forward(&self) -> bool {
+        !self.image_paths.is_empty()
+            && self.current_index < self.image_paths.len() - 1
+    }
+
+    fn can_navigate_backward(&self) -> bool {
+        !self.image_paths.is_empty() && self.current_index > 0
+    }
+
+    fn poll_cache(&mut self) {
+        if let Some(cache) = &mut self.cache {
+            cache.poll(&self.image_paths);
+        }
+    }
+
+    fn show_content(&mut self, ui: &mut egui::Ui) {
+        let tex = self.current_texture.clone();
+        if let Some(tex) = tex {
+            self.show_image(ui, &tex);
+        } else if self.image_paths.is_empty() {
+            ui.centered_and_justified(|ui| {
+                ui.label("Drop an image or folder here, or pass a path as argument");
+            });
         } else {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-                "viewskater-egui".to_string(),
-            ));
-        }
-    }
-
-    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
-        let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
-        if let Some(file) = dropped.first() {
-            if let Some(path) = &file.path {
-                self.open_path(path, ctx);
-            }
-        }
-    }
-
-    fn handle_keyboard(&mut self, ctx: &egui::Context) {
-        let (home, end, nav_right_held, nav_left_held) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::Home),
-                i.key_pressed(egui::Key::End),
-                i.key_down(egui::Key::ArrowRight) || i.key_down(egui::Key::D),
-                i.key_down(egui::Key::ArrowLeft) || i.key_down(egui::Key::A),
-            )
-        });
-
-        if home {
-            self.jump_to(0, ctx);
-        } else if end {
-            self.jump_to(self.image_paths.len().saturating_sub(1), ctx);
-        } else if nav_right_held {
-            let at_end = self.current_index >= self.image_paths.len().saturating_sub(1);
-            if at_end {
-                self.perf.clear_timestamps();
-            } else {
-                self.navigate(1);
-                ctx.request_repaint();
-            }
-        } else if nav_left_held {
-            if self.current_index == 0 {
-                self.perf.clear_timestamps();
-            } else {
-                self.navigate(-1);
-                ctx.request_repaint();
-            }
-        }
-    }
-
-    fn show_bottom_panel(&mut self, ctx: &egui::Context) {
-        if self.image_paths.len() <= 1 {
-            return;
-        }
-
-        let mut slider_target = None;
-        let mut slider_released = false;
-
-        egui::TopBottomPanel::bottom("nav").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                let mut idx = self.current_index;
-                let max = self.image_paths.len() - 1;
-                let response = ui.add(
-                    egui::Slider::new(&mut idx, 0..=max).show_value(false),
-                );
-                if response.changed() {
-                    slider_target = Some(idx);
-                }
-                if response.drag_stopped() {
-                    slider_released = true;
-                }
-                ui.label(format!(
-                    "{} / {}",
-                    self.current_index + 1,
-                    self.image_paths.len()
-                ));
+            ui.centered_and_justified(|ui| {
+                ui.label("Failed to load image");
             });
-        });
-
-        if let Some(idx) = slider_target {
-            let idx = idx.min(self.image_paths.len().saturating_sub(1));
-            if idx != self.current_index {
-                self.current_index = idx;
-                self.zoom = 1.0;
-                self.pan = egui::Vec2::ZERO;
-                // During drag: sync decode only, don't rebuild cache
-                self.load_sync(ctx);
-            }
         }
-
-        if slider_released {
-            // Rebuild cache around the final slider position
-            if let Some(cache) = &mut self.cache {
-                cache.jump_to(self.current_index, &self.image_paths);
-                if let Some(t) = cache.current_texture_for(self.current_index) {
-                    self.current_texture = Some(t);
-                }
-            }
-        }
-    }
-
-    fn show_central_panel(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(egui::Color32::from_gray(20)))
-            .show(ctx, |ui| {
-                let tex = self.current_texture.clone();
-                if let Some(tex) = tex {
-                    self.show_image(ui, &tex);
-                } else if self.image_paths.is_empty() {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("Drop an image or folder here, or pass a path as argument");
-                    });
-                } else {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("Failed to load image");
-                    });
-                }
-            });
     }
 
     fn show_image(&mut self, ui: &mut egui::Ui, tex: &egui::TextureHandle) {
@@ -315,7 +202,6 @@ impl App {
             return;
         }
 
-        // Allocate interaction area first so we can process input before painting
         let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
 
         // Zoom: scroll wheel + pinch-to-zoom
@@ -332,7 +218,6 @@ impl App {
                 let old_zoom = self.zoom;
                 self.zoom = (self.zoom * zoom_factor).clamp(MIN_ZOOM, MAX_ZOOM);
 
-                // Keep the point under the cursor fixed
                 if let Some(hover_pos) = response.hover_pos() {
                     let old_center = available.center() + self.pan;
                     let cursor_rel = hover_pos - old_center;
@@ -363,14 +248,224 @@ impl App {
         ui.painter()
             .image(tex.id(), display_rect, uv, egui::Color32::WHITE);
     }
+}
 
+// ---------------------------------------------------------------------------
+// App — coordinates panes, input, and overlays
+// ---------------------------------------------------------------------------
+
+struct App {
+    panes: Vec<PaneState>,
+    perf: perf::ImagePerfTracker,
+}
+
+impl App {
+    fn new(cc: &eframe::CreationContext<'_>, paths: Vec<PathBuf>) -> Self {
+        let mut app = Self {
+            panes: vec![PaneState::new()],
+            perf: perf::ImagePerfTracker::new(),
+        };
+
+        if !paths.is_empty() {
+            app.panes[0].open_path(&paths[0], &cc.egui_ctx);
+        }
+        if paths.len() >= 2 {
+            let mut pane1 = PaneState::new();
+            pane1.open_path(&paths[1], &cc.egui_ctx);
+            app.panes.push(pane1);
+        }
+
+        if app.panes[0].current_texture.is_some() {
+            app.perf.record_image_load(0.0);
+        }
+
+        app
+    }
+
+    fn handle_keyboard(&mut self, ctx: &egui::Context) {
+        let (home, end, nav_right_held, nav_left_held) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::Home),
+                i.key_pressed(egui::Key::End),
+                i.key_down(egui::Key::ArrowRight) || i.key_down(egui::Key::D),
+                i.key_down(egui::Key::ArrowLeft) || i.key_down(egui::Key::A),
+            )
+        });
+
+        if home {
+            for pane in &mut self.panes {
+                pane.jump_to(0, ctx);
+            }
+            self.perf.record_image_load(0.0);
+        } else if end {
+            for pane in &mut self.panes {
+                let last = pane.image_paths.len().saturating_sub(1);
+                pane.jump_to(last, ctx);
+            }
+            self.perf.record_image_load(0.0);
+        } else if nav_right_held {
+            let any_advanced = self.panes.iter_mut().any(|p| p.navigate(1));
+            if any_advanced {
+                self.perf.record_image_load(0.0);
+            }
+            let any_can = self.panes.iter().any(|p| p.can_navigate_forward());
+            if any_advanced || any_can {
+                ctx.request_repaint();
+            }
+        } else if nav_left_held {
+            let any_advanced = self.panes.iter_mut().any(|p| p.navigate(-1));
+            if any_advanced {
+                self.perf.record_image_load(0.0);
+            }
+            let any_can = self.panes.iter().any(|p| p.can_navigate_backward());
+            if any_advanced || any_can {
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
+        if let Some(file) = dropped.first() {
+            if let Some(path) = &file.path {
+                if self.panes.len() == 1 && self.panes[0].image_paths.is_empty() {
+                    self.panes[0].open_path(path, ctx);
+                } else if self.panes.len() == 1 {
+                    // Second drop creates a new pane
+                    let mut pane = PaneState::new();
+                    pane.open_path(path, ctx);
+                    self.panes.push(pane);
+                } else {
+                    // Already dual — replace pane 0
+                    self.panes[0].open_path(path, ctx);
+                }
+            }
+        }
+    }
+
+    fn update_title(&self, ctx: &egui::Context) {
+        let parts: Vec<String> = self
+            .panes
+            .iter()
+            .filter_map(|pane| {
+                pane.image_paths.get(pane.current_index).map(|path| {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    format!("{} ({}/{})", name, pane.current_index + 1, pane.image_paths.len())
+                })
+            })
+            .collect();
+
+        let title = if parts.is_empty() {
+            "viewskater-egui".to_string()
+        } else {
+            format!("{} - viewskater-egui", parts.join(" | "))
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+    }
+
+    fn show_bottom_panel(&mut self, ctx: &egui::Context) {
+        let max_images = self
+            .panes
+            .iter()
+            .map(|p| p.image_paths.len())
+            .max()
+            .unwrap_or(0);
+        if max_images <= 1 {
+            return;
+        }
+
+        let current_idx = self.panes.first().map_or(0, |p| p.current_index);
+        let mut slider_target = None;
+        let mut slider_released = false;
+
+        egui::TopBottomPanel::bottom("nav").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                let mut idx = current_idx;
+                let max = max_images - 1;
+                let response =
+                    ui.add(egui::Slider::new(&mut idx, 0..=max).show_value(false));
+                if response.changed() {
+                    slider_target = Some(idx);
+                }
+                if response.drag_stopped() {
+                    slider_released = true;
+                }
+                ui.label(format!("{} / {}", current_idx + 1, max_images));
+            });
+        });
+
+        if let Some(idx) = slider_target {
+            for pane in &mut self.panes {
+                let clamped = idx.min(pane.image_paths.len().saturating_sub(1));
+                if clamped != pane.current_index {
+                    pane.current_index = clamped;
+                    pane.zoom = 1.0;
+                    pane.pan = egui::Vec2::ZERO;
+                    pane.load_sync(ctx);
+                }
+            }
+        }
+
+        if slider_released {
+            for pane in &mut self.panes {
+                if let Some(cache) = &mut pane.cache {
+                    cache.jump_to(pane.current_index, &pane.image_paths);
+                    if let Some(t) = cache.current_texture_for(pane.current_index) {
+                        pane.current_texture = Some(t);
+                    }
+                }
+            }
+        }
+    }
+
+    fn show_central_panel(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::default().fill(egui::Color32::from_gray(20)))
+            .show(ctx, |ui| {
+                if self.panes.len() <= 1 {
+                    if let Some(pane) = self.panes.first_mut() {
+                        pane.show_content(ui);
+                    }
+                } else {
+                    let available = ui.available_rect_before_wrap();
+                    let divider_w = 2.0;
+                    let half_w = (available.width() - divider_w) / 2.0;
+
+                    let left_rect = egui::Rect::from_min_size(
+                        available.min,
+                        egui::vec2(half_w, available.height()),
+                    );
+                    let right_rect = egui::Rect::from_min_size(
+                        egui::pos2(available.min.x + half_w + divider_w, available.min.y),
+                        egui::vec2(half_w, available.height()),
+                    );
+
+                    // Divider line
+                    let divider_x = available.min.x + half_w + divider_w / 2.0;
+                    ui.painter().vline(
+                        divider_x,
+                        available.y_range(),
+                        egui::Stroke::new(divider_w, egui::Color32::from_gray(60)),
+                    );
+
+                    let (first, rest) = self.panes.split_at_mut(1);
+                    ui.allocate_new_ui(
+                        egui::UiBuilder::new().max_rect(left_rect),
+                        |ui| first[0].show_content(ui),
+                    );
+                    ui.allocate_new_ui(
+                        egui::UiBuilder::new().max_rect(right_rect),
+                        |ui| rest[0].show_content(ui),
+                    );
+                }
+            });
+    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Poll background decode completions
-        if let Some(cache) = &mut self.cache {
-            cache.poll(&self.image_paths);
+        for pane in &mut self.panes {
+            pane.poll_cache();
         }
 
         self.handle_dropped_files(ctx);
@@ -379,8 +474,11 @@ impl eframe::App for App {
         self.show_bottom_panel(ctx);
         self.show_central_panel(ctx);
         self.perf.show_overlay(ctx);
-        if let Some(cache) = &self.cache {
-            cache.show_debug_overlay(ctx, self.current_index, self.image_paths.len());
+
+        if let Some(pane) = self.panes.first() {
+            if let Some(cache) = &pane.cache {
+                cache.show_debug_overlay(ctx, pane.current_index, pane.image_paths.len());
+            }
         }
     }
 }
@@ -399,6 +497,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "viewskater-egui",
         options,
-        Box::new(move |cc| Ok(Box::new(App::new(cc, args.path)))),
+        Box::new(move |cc| Ok(Box::new(App::new(cc, args.paths)))),
     )
 }
