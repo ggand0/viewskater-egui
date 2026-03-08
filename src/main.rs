@@ -300,22 +300,39 @@ impl App {
     }
 
     fn handle_keyboard(&mut self, ctx: &egui::Context) {
-        let (home, end, nav_right_held, nav_left_held, toggle_dual) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::Home),
-                i.key_pressed(egui::Key::End),
-                i.key_down(egui::Key::ArrowRight) || i.key_down(egui::Key::D),
-                i.key_down(egui::Key::ArrowLeft) || i.key_down(egui::Key::A),
-                i.key_pressed(egui::Key::Tab),
-            )
-        });
+        let (home, end, nav_right_held, nav_left_held, toggle_dual, set_single, set_dual) =
+            ctx.input(|i| {
+                (
+                    i.key_pressed(egui::Key::Home),
+                    i.key_pressed(egui::Key::End),
+                    i.key_down(egui::Key::ArrowRight) || i.key_down(egui::Key::D),
+                    i.key_down(egui::Key::ArrowLeft) || i.key_down(egui::Key::A),
+                    i.key_pressed(egui::Key::Tab),
+                    i.key_pressed(egui::Key::Num1) && i.modifiers.command,
+                    i.key_pressed(egui::Key::Num2) && i.modifiers.command,
+                )
+            });
+
+        if set_single && self.panes.len() >= 2 {
+            self.panes.truncate(1);
+            return;
+        }
+        if set_dual && self.panes.len() == 1 {
+            let mut pane = PaneState::new();
+            if !self.panes[0].image_paths.is_empty() {
+                if let Some(dir) = self.panes[0].image_paths[0].parent() {
+                    pane.open_path(dir, ctx);
+                    pane.jump_to(self.panes[0].current_index, ctx);
+                }
+            }
+            self.panes.push(pane);
+            return;
+        }
 
         if toggle_dual {
             if self.panes.len() >= 2 {
-                // Dual → single: remove second pane
                 self.panes.truncate(1);
             } else if !self.panes.is_empty() {
-                // Single → dual: clone pane 0's directory into a new pane
                 let mut pane = PaneState::new();
                 if !self.panes[0].image_paths.is_empty() {
                     if let Some(dir) = self.panes[0].image_paths[0].parent() {
@@ -372,15 +389,25 @@ impl App {
         let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
         if let Some(file) = dropped.first() {
             if let Some(path) = &file.path {
-                if self.panes.len() == 1 && self.panes[0].image_paths.is_empty() {
-                    self.panes[0].open_path(path, ctx);
-                } else if self.panes.len() == 1 {
-                    // Second drop creates a new pane
-                    let mut pane = PaneState::new();
-                    pane.open_path(path, ctx);
-                    self.panes.push(pane);
+                if self.panes.len() >= 2 {
+                    let hover = ctx.input(|i| i.pointer.hover_pos());
+                    let latest = ctx.input(|i| i.pointer.latest_pos());
+                    let screen = ctx.screen_rect();
+                    let divider_x =
+                        screen.min.x + screen.width() * self.divider_fraction;
+                    log::debug!(
+                        "DnD drop: hover_pos={:?}, latest_pos={:?}, screen={:?}, divider_x={}, fraction={}",
+                        hover, latest, screen, divider_x, self.divider_fraction
+                    );
+                    let target = hover
+                        .or(latest)
+                        .map(|pos| {
+                            log::debug!("DnD using pos x={}, divider_x={} → pane {}", pos.x, divider_x, if pos.x < divider_x { 0 } else { 1 });
+                            if pos.x < divider_x { 0 } else { 1 }
+                        })
+                        .unwrap_or(0);
+                    self.panes[target].open_path(path, ctx);
                 } else {
-                    // Already dual — replace pane 0
                     self.panes[0].open_path(path, ctx);
                 }
             }
