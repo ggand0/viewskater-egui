@@ -29,6 +29,7 @@ struct PaneState {
     zoom: f32,
     pan: egui::Vec2,
     cache: Option<cache::SlidingWindowCache>,
+    slider_loader: Option<cache::SliderLoader>,
 }
 
 impl PaneState {
@@ -40,6 +41,7 @@ impl PaneState {
             zoom: 1.0,
             pan: egui::Vec2::ZERO,
             cache: None,
+            slider_loader: None,
         }
     }
 
@@ -75,6 +77,7 @@ impl PaneState {
         c.initialize(self.current_index, &self.image_paths);
         self.current_texture = c.current_texture_for(self.current_index);
         self.cache = Some(c);
+        self.slider_loader = Some(cache::SliderLoader::new(ctx));
     }
 
     /// Synchronous decode fallback for slider drag and jump.
@@ -190,6 +193,7 @@ impl PaneState {
             cache.poll(&self.image_paths);
         }
     }
+
 
     fn show_content(&mut self, ui: &mut egui::Ui) {
         let tex = self.current_texture.clone();
@@ -466,24 +470,40 @@ impl App {
         });
 
         if let Some(idx) = slider_target {
-            let mut any_loaded = false;
             for pane in &mut self.panes {
                 let clamped = idx.min(pane.image_paths.len().saturating_sub(1));
                 if clamped != pane.current_index {
                     pane.current_index = clamped;
                     pane.zoom = 1.0;
                     pane.pan = egui::Vec2::ZERO;
-                    pane.load_sync(ctx);
-                    any_loaded = true;
+
+                    // Try the sliding window cache first (free if already cached)
+                    let found_in_cache = pane
+                        .cache
+                        .as_ref()
+                        .and_then(|c| c.current_texture_for(clamped));
+
+                    if let Some(tex) = found_in_cache {
+                        pane.current_texture = Some(tex);
+                        self.perf.record_image_load(0.0);
+                    } else if let Some(loader) = &mut pane.slider_loader {
+                        // Throttled sync decode — like iced, only decode when
+                        // enough time has passed. Previous texture stays on screen.
+                        if loader.should_load() {
+                            pane.load_sync(ctx);
+                            self.perf.record_image_load(0.0);
+                        }
+                    }
                 }
             }
-            if any_loaded {
-                self.perf.record_image_load(0.0);
-            }
+            ctx.request_repaint();
         }
 
         if slider_released {
             for pane in &mut self.panes {
+                if let Some(loader) = &mut pane.slider_loader {
+                    loader.cancel();
+                }
                 if let Some(cache) = &mut pane.cache {
                     cache.jump_to(pane.current_index, &pane.image_paths);
                     if let Some(t) = cache.current_texture_for(pane.current_index) {

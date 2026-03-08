@@ -360,6 +360,49 @@ impl SlidingWindowCache {
     }
 }
 
+/// Throttled synchronous slider loader.
+///
+/// Reproduces the iced viewskater's slider pattern adapted for egui:
+/// In iced, async tasks just wrap raw bytes into Handles (~5ms), and iced's
+/// engine lazily decodes only the latest Handle during its prepare phase —
+/// so only one decode per render frame actually happens. Since egui has no
+/// deferred decode pipeline, we achieve the equivalent by doing sync decode
+/// of the latest slider position, throttled to limit how often we block.
+pub struct SliderLoader {
+    last_load: Instant,
+}
+
+const SLIDER_THROTTLE_MS: u128 = 10;
+
+impl SliderLoader {
+    pub fn new(_ctx: &egui::Context) -> Self {
+        Self {
+            last_load: Instant::now(),
+        }
+    }
+
+    /// Returns true if enough time has passed since the last decode.
+    pub fn should_load(&mut self) -> bool {
+        let now = Instant::now();
+        let elapsed = now
+            .checked_duration_since(self.last_load)
+            .map(|d| d.as_millis())
+            .unwrap_or(SLIDER_THROTTLE_MS);
+
+        if elapsed >= SLIDER_THROTTLE_MS {
+            self.last_load = now;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Reset on slider release.
+    pub fn cancel(&mut self) {
+        // nothing to clean up
+    }
+}
+
 fn legend_swatch(ui: &mut egui::Ui, color: egui::Color32, label: &str) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
     ui.painter().rect_filled(rect, 2.0, color);
