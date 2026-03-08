@@ -11,6 +11,49 @@ mod perf;
 const MIN_ZOOM: f32 = 0.05;
 const MAX_ZOOM: f32 = 100.0;
 
+/// Convert a DynamicImage directly to egui's ColorImage, bypassing both
+/// image crate v0.25's slow CICP color space conversion and egui's
+/// per-pixel `from_rgba_unmultiplied` conversion. Goes straight from
+/// decoded pixel data to `Vec<Color32>`.
+fn image_to_color_image(img: image::DynamicImage) -> egui::ColorImage {
+    use image::DynamicImage;
+    match img {
+        DynamicImage::ImageRgb8(buf) => {
+            let w = buf.width() as usize;
+            let h = buf.height() as usize;
+            let rgb = buf.into_raw();
+            let pixels: Vec<egui::Color32> = rgb
+                .chunks_exact(3)
+                .map(|c| egui::Color32::from_rgb(c[0], c[1], c[2]))
+                .collect();
+            egui::ColorImage {
+                size: [w, h],
+                pixels,
+            }
+        }
+        DynamicImage::ImageRgba8(buf) => {
+            let w = buf.width() as usize;
+            let h = buf.height() as usize;
+            let rgba = buf.into_raw();
+            let pixels: Vec<egui::Color32> = rgba
+                .chunks_exact(4)
+                .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                .collect();
+            egui::ColorImage {
+                size: [w, h],
+                pixels,
+            }
+        }
+        other => {
+            let rgba = other.into_rgba8();
+            let w = rgba.width() as usize;
+            let h = rgba.height() as usize;
+            let pixels = rgba.into_raw();
+            egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels)
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "viewskater-egui", about = "Fast image viewer")]
 struct Args {
@@ -95,7 +138,11 @@ impl PaneState {
 
         // Check LRU decode cache first — skip decode on revisits
         if let Some(cached_image) = self.decode_cache.get(file_index) {
+            let t0 = Instant::now();
             let cached_image = cached_image.clone();
+            let clone_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+            let t1 = Instant::now();
             if let Some(tex) = &mut self.current_texture {
                 tex.set(cached_image, egui::TextureOptions::LINEAR);
             } else {
@@ -105,40 +152,46 @@ impl PaneState {
                     egui::TextureOptions::LINEAR,
                 ));
             }
-            log::debug!("LRU cache hit for index {} — skipped decode", file_index);
+            let upload_ms = t1.elapsed().as_secs_f64() * 1000.0;
+
+            log::debug!(
+                "LRU hit [{}]: clone={:.1}ms upload={:.1}ms",
+                file_index, clone_ms, upload_ms,
+            );
             return;
         }
 
-        let start = Instant::now();
+        let t0 = Instant::now();
         match image::open(path) {
             Ok(img) => {
-                let rgba = img.to_rgba8();
-                let size = [rgba.width() as usize, rgba.height() as usize];
-                let pixels = rgba.into_raw();
-                let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                let decode_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-                // Store in LRU cache for future revisits
+                let t1 = Instant::now();
+                let color_image = image_to_color_image(img);
+                let convert_ms = t1.elapsed().as_secs_f64() * 1000.0;
+
+                let t2 = Instant::now();
                 self.decode_cache.insert(file_index, color_image.clone());
+                let cache_ms = t2.elapsed().as_secs_f64() * 1000.0;
 
+                let size = color_image.size;
+                let t3 = Instant::now();
                 if let Some(tex) = &mut self.current_texture {
-                    // Reuse existing GPU texture — same TextureId, just replace pixels
                     tex.set(color_image, egui::TextureOptions::LINEAR);
                 } else {
-                    // First load — allocate a new texture
                     self.current_texture = Some(ctx.load_texture(
                         "slider_sync",
                         color_image,
                         egui::TextureOptions::LINEAR,
                     ));
                 }
+                let upload_ms = t3.elapsed().as_secs_f64() * 1000.0;
 
-                let decode_ms = start.elapsed().as_secs_f64() * 1000.0;
                 log::debug!(
-                    "Sync decode: {} ({}x{}) in {:.1}ms [LRU size: {}]",
-                    path.display(),
-                    size[0],
-                    size[1],
-                    decode_ms,
+                    "load_sync [{}] ({}x{}): decode={:.1}ms convert={:.1}ms cache={:.1}ms upload={:.1}ms total={:.1}ms [LRU: {}]",
+                    file_index, size[0], size[1],
+                    decode_ms, convert_ms, cache_ms, upload_ms,
+                    t0.elapsed().as_secs_f64() * 1000.0,
                     self.decode_cache.len(),
                 );
             }

@@ -210,10 +210,7 @@ impl SlidingWindowCache {
             let start = Instant::now();
             let image = match image::open(&path) {
                 Ok(img) => {
-                    let rgba = img.to_rgba8();
-                    let size = [rgba.width() as usize, rgba.height() as usize];
-                    let pixels = rgba.into_raw();
-                    Some(egui::ColorImage::from_rgba_unmultiplied(size, &pixels))
+                    Some(crate::image_to_color_image(img))
                 }
                 Err(e) => {
                     log::warn!("Background decode failed for {}: {}", path.display(), e);
@@ -342,10 +339,7 @@ impl SlidingWindowCache {
     fn decode_sync(path: &PathBuf, ctx: &egui::Context) -> Option<egui::TextureHandle> {
         match image::open(path) {
             Ok(img) => {
-                let rgba = img.to_rgba8();
-                let size = [rgba.width() as usize, rgba.height() as usize];
-                let pixels = rgba.into_raw();
-                let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                let color_image = crate::image_to_color_image(img);
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
