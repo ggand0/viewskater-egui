@@ -24,7 +24,7 @@ natord = "1.0"
 
 [patch.crates-io]
 winit = { git = "https://github.com/ggand0/winit.git", branch = "custom-dnd-0.30.13" }
-egui-winit = { path = "../egui-winit-custom" }
+egui-winit = { git = "https://github.com/ggand0/egui-winit-custom.git", branch = "main" }
 
 [profile.opt-dev]
 inherits = "release"
