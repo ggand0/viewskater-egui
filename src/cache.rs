@@ -460,6 +460,11 @@ impl DecodeLruCache {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
 }
 
 fn legend_swatch(ui: &mut egui::Ui, color: egui::Color32, label: &str) {

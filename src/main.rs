@@ -74,6 +74,7 @@ impl PaneState {
 
         self.zoom = 1.0;
         self.pan = egui::Vec2::ZERO;
+        self.decode_cache.clear();
 
         let mut c = cache::SlidingWindowCache::new(ctx);
         c.initialize(self.current_index, &self.image_paths);
