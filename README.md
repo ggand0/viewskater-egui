@@ -1,26 +1,23 @@
 # viewskater-egui
 
-An egui-based image viewer — a simplified reimplementation of [viewskater](https://github.com/ggand0/viewskater)'s core rendering and navigation. Built as a framework evaluation and foundation for a LeRobot dataset curation tool.
+An egui reimplementation of [viewskater](https://github.com/ggand0/viewskater).
 
 ## Features
 
-- Open image directories via CLI argument or drag-and-drop
-- Arrow key navigation with natural sort ordering
+- Dual pane mode with synced navigation
+- Drag-and-drop files/folders onto panes
+- Keyboard and slider navigation with natural sort ordering
+- Skate mode for continuous scrolling through images
 - Scroll-to-zoom centered on cursor, click-drag to pan, double-click to reset
-- Navigation slider for jumping to any position
+- Sliding window cache with background preloading and LRU decode cache
 - Supports jpg, png, bmp, webp, gif, tiff, qoi, tga
 
 ## Usage
 
 ```bash
-# View a directory of images
 cargo run --profile opt-dev -- /path/to/images/
-
-# View a specific image (opens its parent directory)
 cargo run --profile opt-dev -- /path/to/image.jpg
-
-# Launch empty and drag-and-drop a folder onto the window
-cargo run --profile opt-dev
+cargo run --profile opt-dev  # launch empty, drag-and-drop to open
 ```
 
 Set `RUST_LOG=viewskater_egui=debug` for debug logging.
@@ -29,8 +26,10 @@ Set `RUST_LOG=viewskater_egui=debug` for debug logging.
 
 | Input | Action |
 |---|---|
-| Left / Right arrow | Previous / next image |
+| A / D or Left / Right arrow | Previous / next image |
+| Hold A / D or arrows | Skate mode (continuous scroll) |
 | Home / End | First / last image |
+| Ctrl+1 / Ctrl+2 | Single / dual pane |
 | Scroll wheel | Zoom (centered on cursor) |
 | Click + drag | Pan |
 | Double-click | Reset zoom and pan |
