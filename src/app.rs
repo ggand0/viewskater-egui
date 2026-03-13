@@ -366,7 +366,7 @@ impl App {
                     egui::pos2(handle_x, cy),
                     handle_radius,
                     self.theme.accent,
-                    egui::Stroke::new(1.0, egui::Color32::from_gray(255)),
+                    egui::Stroke::NONE,
                 );
 
                 ui.label(label_text);

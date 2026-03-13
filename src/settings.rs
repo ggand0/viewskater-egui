@@ -68,7 +68,7 @@ fn accent_slider(
         center,
         handle_radius,
         theme.accent,
-        egui::Stroke::new(1.0, egui::Color32::from_gray(255)),
+        egui::Stroke::NONE,
     );
 
     // Value text to the right.
