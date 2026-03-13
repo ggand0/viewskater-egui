@@ -65,7 +65,7 @@ impl ImagePerfTracker {
         egui::Window::new("fps")
             .title_bar(false)
             .resizable(false)
-            .anchor(egui::Align2::RIGHT_TOP, [-10.0, 10.0])
+            .anchor(egui::Align2::RIGHT_TOP, [-10.0, 36.0])
             .interactable(false)
             .frame(
                 egui::Frame::default()

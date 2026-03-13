@@ -25,7 +25,7 @@ impl App {
             divider_fraction: 0.5,
             show_footer: true,
             show_fps: true,
-            show_cache_overlay: true,
+            show_cache_overlay: false,
             show_about: false,
         };
 
