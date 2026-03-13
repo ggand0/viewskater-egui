@@ -7,6 +7,10 @@ use crate::menu::{self, MenuAction};
 use crate::pane::Pane;
 use crate::perf;
 
+/// Target window size in physical pixels (matches iced version behavior).
+const DEFAULT_WINDOW_WIDTH: f32 = 1280.0;
+const DEFAULT_WINDOW_HEIGHT: f32 = 720.0;
+
 pub struct App {
     panes: Vec<Pane>,
     perf: perf::ImagePerfTracker,
@@ -15,6 +19,7 @@ pub struct App {
     show_fps: bool,
     show_cache_overlay: bool,
     show_about: bool,
+    initial_size_set: bool,
 }
 
 impl App {
@@ -27,6 +32,7 @@ impl App {
             show_fps: true,
             show_cache_overlay: false,
             show_about: false,
+            initial_size_set: false,
         };
 
         if !paths.is_empty() {
@@ -555,6 +561,23 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // On first frame, resize to achieve the target physical pixel size.
+        // egui's with_inner_size uses logical points, so on scaled displays
+        // (e.g. 1.25x) 1280x720 logical becomes 1600x900 physical. The iced
+        // version uses PhysicalSize directly, so it doesn't have this issue.
+        if !self.initial_size_set {
+            if let Some(ppp) = ctx.input(|i| i.viewport().native_pixels_per_point) {
+                if (ppp - 1.0).abs() > 0.01 {
+                    let logical = egui::vec2(
+                        DEFAULT_WINDOW_WIDTH / ppp,
+                        DEFAULT_WINDOW_HEIGHT / ppp,
+                    );
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(logical));
+                }
+            }
+            self.initial_size_set = true;
+        }
+
         for pane in &mut self.panes {
             pane.poll_cache();
         }
