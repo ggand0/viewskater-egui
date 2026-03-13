@@ -41,12 +41,41 @@ impl UiTheme {
         }
     }
 
-    /// Apply the accent color to egui's built-in widget visuals.
+    /// Apply the theme to egui's built-in widget visuals.
+    ///
+    /// Sets accent colors, brightens text for VSCode-like contrast,
+    /// and uses an accent-tinted background for hover/open states.
     pub fn apply_to_visuals(&self, ctx: &egui::Context) {
         let mut visuals = egui::Visuals::dark();
+
+        // Accent colors for selection, active widgets, hyperlinks
         visuals.selection.bg_fill = self.accent;
         visuals.hyperlink_color = self.accent;
         visuals.widgets.active.bg_fill = self.accent;
+
+        // Bright widget text (default dark theme is too pale)
+        visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_gray(210);
+        visuals.widgets.inactive.fg_stroke.color = egui::Color32::from_gray(220);
+        visuals.widgets.hovered.fg_stroke.color = egui::Color32::from_gray(255);
+        visuals.widgets.active.fg_stroke.color = egui::Color32::from_gray(255);
+        visuals.widgets.open.fg_stroke.color = egui::Color32::from_gray(255);
+
+        // Accent-tinted hover/open backgrounds (35% accent mixed with dark base)
+        let hover_bg = Self::blend_accent(self.accent, 35, 30);
+        visuals.widgets.hovered.weak_bg_fill = hover_bg;
+        visuals.widgets.open.weak_bg_fill = hover_bg;
+
         ctx.set_visuals(visuals);
+    }
+
+    /// Mix `accent` at `pct`% with gray(`base`) at `(100-pct)`%.
+    fn blend_accent(accent: egui::Color32, pct: u16, base: u16) -> egui::Color32 {
+        let [r, g, b, _] = accent.to_array();
+        let rest = 100 - pct;
+        egui::Color32::from_rgb(
+            ((r as u16 * pct + base * rest) / 100) as u8,
+            ((g as u16 * pct + base * rest) / 100) as u8,
+            ((b as u16 * pct + base * rest) / 100) as u8,
+        )
     }
 }
