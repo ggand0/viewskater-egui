@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use eframe::egui;
 
+mod about;
 mod app;
 mod build_info;
 mod cache;
