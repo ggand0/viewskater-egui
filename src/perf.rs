@@ -1,8 +1,6 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use eframe::egui;
-
 const WINDOW_DURATION: Duration = Duration::from_secs(2);
 
 /// Tracks image rendering performance — how many unique images are
@@ -54,36 +52,13 @@ impl ImagePerfTracker {
         }
     }
 
-    /// Draw the performance overlay in the top-right corner.
-    pub fn show_overlay(&mut self, ctx: &egui::Context) {
+    /// Build the FPS display string.
+    pub fn fps_text(&mut self) -> String {
         let fps = self.image_fps();
         let mut text = format!("Img: {:.1} FPS", fps);
         if let Some(ms) = self.last_decode_ms {
             text.push_str(&format!(" | Decode: {:.1}ms", ms));
         }
-
-        egui::Window::new("fps")
-            .title_bar(false)
-            .resizable(false)
-            .auto_sized()
-            .anchor(egui::Align2::RIGHT_TOP, [-10.0, 36.0])
-            .interactable(false)
-            .frame(
-                egui::Frame::default()
-                    .fill(egui::Color32::from_black_alpha(180))
-                    .corner_radius(4.0)
-                    .inner_margin(6.0),
-            )
-            .show(ctx, |ui| {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(text)
-                            .monospace()
-                            .color(egui::Color32::WHITE)
-                            .size(14.0),
-                    )
-                    .wrap_mode(egui::TextWrapMode::Extend),
-                );
-            });
+        text
     }
 }

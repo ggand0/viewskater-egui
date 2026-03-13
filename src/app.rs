@@ -508,8 +508,19 @@ impl eframe::App for App {
         self.update_title(ctx);
 
         // Menu bar (top)
+        let fps_text = if self.settings.show_fps {
+            Some(self.perf.fps_text())
+        } else {
+            None
+        };
         let settings_snapshot = self.settings.clone();
-        let action = menu::show_menu_bar(ctx, &self.panes, &mut self.settings, &self.theme);
+        let action = menu::show_menu_bar(
+            ctx,
+            &self.panes,
+            &mut self.settings,
+            &self.theme,
+            fps_text.as_deref(),
+        );
         if self.settings != settings_snapshot {
             self.settings.save();
         }
@@ -527,10 +538,6 @@ impl eframe::App for App {
         self.show_central_panel(ctx);
 
         // Overlays
-        if self.settings.show_fps {
-            self.perf.show_overlay(ctx);
-        }
-
         if self.settings.show_cache_overlay {
             if let Some(pane) = self.panes.first() {
                 if let Some(cache) = &pane.cache {

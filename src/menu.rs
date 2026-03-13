@@ -94,6 +94,7 @@ pub fn show_menu_bar(
     panes: &[Pane],
     settings: &mut AppSettings,
     theme: &UiTheme,
+    fps_text: Option<&str>,
 ) -> MenuAction {
     let mut action = MenuAction::None;
     let is_dual = panes.len() >= 2;
@@ -220,6 +221,18 @@ pub fn show_menu_bar(
                     }
                 });
             });
+
+            // FPS display (right-aligned in menu bar)
+            if let Some(text) = fps_text {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(text)
+                            .monospace()
+                            .color(egui::Color32::from_gray(220))
+                            .size(12.0),
+                    );
+                });
+            }
         });
     });
 

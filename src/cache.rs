@@ -247,7 +247,7 @@ impl SlidingWindowCache {
             .title_bar(false)
             .resizable(false)
             .auto_sized()
-            .anchor(egui::Align2::RIGHT_TOP, [-10.0, 66.0])
+            .anchor(egui::Align2::RIGHT_TOP, [-10.0, 36.0])
             .interactable(false)
             .frame(
                 egui::Frame::default()
