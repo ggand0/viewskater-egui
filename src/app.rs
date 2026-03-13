@@ -268,21 +268,26 @@ impl App {
     }
 
     fn update_title(&self, ctx: &egui::Context) {
-        let parts: Vec<String> = self
-            .panes
-            .iter()
-            .filter_map(|pane| {
-                pane.image_paths.get(pane.current_index).map(|path| {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy();
-                    format!("{} ({}/{})", name, pane.current_index + 1, pane.image_paths.len())
-                })
+        let name = |pane: &Pane| -> Option<String> {
+            pane.image_paths.get(pane.current_index).map(|path| {
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
             })
-            .collect();
+        };
 
-        let title = if parts.is_empty() {
-            "viewskater-egui".to_string()
+        let title = if self.panes.len() >= 2 {
+            let left = name(&self.panes[0]).unwrap_or_default();
+            let right = name(&self.panes[1]).unwrap_or_default();
+            if left.is_empty() && right.is_empty() {
+                "ViewSkater".to_string()
+            } else {
+                format!("Left: {} | Right: {}", left, right)
+            }
         } else {
-            format!("{} - viewskater-egui", parts.join(" | "))
+            name(self.panes.first().unwrap_or(&Pane::new(0, 0)))
+                .unwrap_or_else(|| "ViewSkater".to_string())
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }
