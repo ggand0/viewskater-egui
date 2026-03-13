@@ -64,6 +64,9 @@ impl UiTheme {
         style.visuals.widgets.active.fg_stroke.color = egui::Color32::from_gray(255);
         style.visuals.widgets.open.fg_stroke.color = egui::Color32::from_gray(255);
 
+        // Remove panel separator lines for a cleaner look
+        style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
+
         // Light gray hover/open backgrounds (matches iced's background.weak)
         style.visuals.widgets.hovered.weak_bg_fill = self.menu_hover;
         style.visuals.widgets.open.weak_bg_fill = self.menu_hover;
