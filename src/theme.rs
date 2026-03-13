@@ -23,6 +23,8 @@ pub struct UiTheme {
     pub toggle_off: egui::Color32,
     /// Toggle switch: knob
     pub toggle_knob: egui::Color32,
+    /// Menu item hover background
+    pub menu_hover: egui::Color32,
 }
 
 impl UiTheme {
@@ -38,6 +40,7 @@ impl UiTheme {
             muted: egui::Color32::from_gray(140),
             toggle_off: egui::Color32::from_gray(50),
             toggle_knob: egui::Color32::from_gray(240),
+            menu_hover: egui::Color32::from_gray(60),
         }
     }
 
@@ -60,22 +63,10 @@ impl UiTheme {
         visuals.widgets.active.fg_stroke.color = egui::Color32::from_gray(255);
         visuals.widgets.open.fg_stroke.color = egui::Color32::from_gray(255);
 
-        // Accent-tinted hover/open backgrounds (35% accent mixed with dark base)
-        let hover_bg = Self::blend_accent(self.accent, 35, 30);
-        visuals.widgets.hovered.weak_bg_fill = hover_bg;
-        visuals.widgets.open.weak_bg_fill = hover_bg;
+        // Light gray hover/open backgrounds (matches iced's background.weak)
+        visuals.widgets.hovered.weak_bg_fill = self.menu_hover;
+        visuals.widgets.open.weak_bg_fill = self.menu_hover;
 
         ctx.set_visuals(visuals);
-    }
-
-    /// Mix `accent` at `pct`% with gray(`base`) at `(100-pct)`%.
-    fn blend_accent(accent: egui::Color32, pct: u16, base: u16) -> egui::Color32 {
-        let [r, g, b, _] = accent.to_array();
-        let rest = 100 - pct;
-        egui::Color32::from_rgb(
-            ((r as u16 * pct + base * rest) / 100) as u8,
-            ((g as u16 * pct + base * rest) / 100) as u8,
-            ((b as u16 * pct + base * rest) / 100) as u8,
-        )
     }
 }

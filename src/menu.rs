@@ -34,6 +34,34 @@ pub(crate) fn toggle_switch(ui: &mut egui::Ui, on: &mut bool, label: &str, theme
     response.clicked()
 }
 
+/// Full-width menu row with hover background highlight.
+///
+/// Uses a Noop shape placeholder so the background is painted behind
+/// content that's drawn afterwards.
+fn hover_row(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    theme: &UiTheme,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let bg_idx = ui.painter().add(egui::Shape::Noop);
+    let available_width = ui.available_width();
+    let row = ui.horizontal(|ui| {
+        ui.set_min_width(available_width);
+        add_contents(ui);
+    });
+    let rect = row.response.rect;
+    if ui
+        .interact(rect, ui.id().with(id_salt), egui::Sense::hover())
+        .hovered()
+    {
+        ui.painter().set(
+            bg_idx,
+            egui::Shape::rect_filled(rect, 2.0, theme.menu_hover),
+        );
+    }
+}
+
 pub fn show_menu_bar(
     ctx: &egui::Context,
     panes: &[Pane],
@@ -87,22 +115,32 @@ pub fn show_menu_bar(
 
             ui.menu_button("View", |ui| {
                 let pane_count = panes.len();
-                if ui.radio(pane_count == 1, "Single Pane  Ctrl+1").clicked() {
-                    if pane_count != 1 {
-                        action = MenuAction::SetSinglePane;
+                hover_row(ui, "single_pane", theme, |ui| {
+                    if ui.radio(pane_count == 1, "Single Pane  Ctrl+1").clicked() {
+                        if pane_count != 1 {
+                            action = MenuAction::SetSinglePane;
+                        }
+                        ui.close_menu();
                     }
-                    ui.close_menu();
-                }
-                if ui.radio(pane_count >= 2, "Dual Pane  Ctrl+2").clicked() {
-                    if pane_count < 2 {
-                        action = MenuAction::SetDualPane;
+                });
+                hover_row(ui, "dual_pane", theme, |ui| {
+                    if ui.radio(pane_count >= 2, "Dual Pane  Ctrl+2").clicked() {
+                        if pane_count < 2 {
+                            action = MenuAction::SetDualPane;
+                        }
+                        ui.close_menu();
                     }
-                    ui.close_menu();
-                }
+                });
                 ui.separator();
-                ui.horizontal(|ui| { toggle_switch(ui, &mut settings.show_footer, "Footer  Tab", theme); });
-                ui.horizontal(|ui| { toggle_switch(ui, &mut settings.show_fps, "FPS Overlay", theme); });
-                ui.horizontal(|ui| { toggle_switch(ui, &mut settings.show_cache_overlay, "Cache Overlay", theme); });
+                hover_row(ui, "footer", theme, |ui| {
+                    toggle_switch(ui, &mut settings.show_footer, "Footer  Tab", theme);
+                });
+                hover_row(ui, "fps", theme, |ui| {
+                    toggle_switch(ui, &mut settings.show_fps, "FPS Overlay", theme);
+                });
+                hover_row(ui, "cache", theme, |ui| {
+                    toggle_switch(ui, &mut settings.show_cache_overlay, "Cache Overlay", theme);
+                });
             });
 
             ui.menu_button("Help", |ui| {
