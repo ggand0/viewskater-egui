@@ -15,6 +15,7 @@ fn accent_slider(
     ui: &mut egui::Ui,
     value: &mut usize,
     range: std::ops::RangeInclusive<usize>,
+    default: usize,
     theme: &UiTheme,
 ) {
     let lo = *range.start();
@@ -27,10 +28,14 @@ fn accent_slider(
 
     // Allocate rail + handle area, then value text to the right.
     let desired = egui::vec2(slider_width, thickness);
-    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::drag());
+    let (rect, response) =
+        ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
 
-    // Handle dragging.
-    if let Some(pos) = response.interact_pointer_pos() {
+    // Double-click resets to default.
+    if response.double_clicked() {
+        *value = default;
+    } else if let Some(pos) = response.interact_pointer_pos() {
+        // Handle dragging.
         let handle_radius = rect.height() / 2.5;
         let usable = rect.x_range().shrink(handle_radius);
         let t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
@@ -222,7 +227,12 @@ pub fn show_settings_modal(
                             .size(14.0)
                             .color(theme.heading),
                     );
-                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Double-click to reset")
+                            .size(11.0)
+                            .color(theme.muted),
+                    );
+                    ui.add_space(2.0);
                     egui::Frame::default()
                         .fill(theme.section_bg)
                         .corner_radius(6.0)
@@ -230,11 +240,13 @@ pub fn show_settings_modal(
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label("Cache Size");
-                                accent_slider(ui, &mut settings.cache_count, 1..=20, theme);
+                                let defaults = AppSettings::default();
+                                accent_slider(ui, &mut settings.cache_count, 1..=20, defaults.cache_count, theme);
                             });
                             ui.horizontal(|ui| {
                                 ui.label("LRU Capacity");
-                                accent_slider(ui, &mut settings.lru_capacity, 10..=200, theme);
+                                let defaults = AppSettings::default();
+                                accent_slider(ui, &mut settings.lru_capacity, 10..=200, defaults.lru_capacity, theme);
                             });
                         });
                 });
