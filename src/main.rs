@@ -4,6 +4,7 @@ use clap::Parser;
 use eframe::egui;
 
 mod app;
+mod build_info;
 mod cache;
 mod decode;
 mod file_io;
