@@ -7,6 +7,7 @@ use crate::menu::{self, MenuAction};
 use crate::pane::Pane;
 use crate::perf;
 use crate::settings::{self, AppSettings};
+use crate::theme::UiTheme;
 
 /// Target window size in physical pixels (matches iced version behavior).
 const DEFAULT_WINDOW_WIDTH: f32 = 1280.0;
@@ -17,6 +18,7 @@ pub struct App {
     perf: perf::ImagePerfTracker,
     divider_fraction: f32,
     settings: AppSettings,
+    theme: UiTheme,
     show_settings: bool,
     show_about: bool,
     initial_size_set: bool,
@@ -25,11 +27,14 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, paths: Vec<PathBuf>) -> Self {
         let settings = AppSettings::load();
+        let theme = UiTheme::teal_dark();
+        theme.apply_to_visuals(&cc.egui_ctx);
         let mut app = Self {
             panes: vec![Pane::new(settings.cache_count, settings.lru_capacity)],
             perf: perf::ImagePerfTracker::new(),
             divider_fraction: 0.5,
             settings,
+            theme,
             show_settings: false,
             show_about: false,
             initial_size_set: false,
@@ -381,16 +386,13 @@ impl App {
 
         // Semi-transparent backdrop
         let screen = ctx.screen_rect();
+        let theme = &self.theme;
         egui::Area::new(egui::Id::new("about_backdrop"))
             .fixed_pos(screen.min)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 let response = ui.allocate_response(screen.size(), egui::Sense::click());
-                ui.painter().rect_filled(
-                    screen,
-                    0.0,
-                    egui::Color32::from_black_alpha(200),
-                );
+                ui.painter().rect_filled(screen, 0.0, theme.backdrop);
                 if response.clicked() {
                     self.show_about = false;
                 }
@@ -402,8 +404,8 @@ impl App {
             .order(egui::Order::Tooltip)
             .show(ctx, |ui| {
                 egui::Frame::default()
-                    .fill(egui::Color32::from_gray(40))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(80)))
+                    .fill(theme.card_bg)
+                    .stroke(egui::Stroke::new(1.0, theme.card_stroke))
                     .corner_radius(8.0)
                     .inner_margin(20.0)
                     .show(ui, |ui| {
@@ -433,7 +435,7 @@ impl App {
                                     BuildInfo::build_profile()
                                 ))
                                 .size(12.0)
-                                .color(egui::Color32::from_gray(140)),
+                                .color(theme.muted),
                             );
 
                             // Commit
@@ -443,7 +445,7 @@ impl App {
                                     BuildInfo::git_hash_short()
                                 ))
                                 .size(12.0)
-                                .color(egui::Color32::from_gray(140)),
+                                .color(theme.muted),
                             );
 
                             // Platform
@@ -453,7 +455,7 @@ impl App {
                                     BuildInfo::target_platform()
                                 ))
                                 .size(12.0)
-                                .color(egui::Color32::from_gray(140)),
+                                .color(theme.muted),
                             );
 
                             ui.add_space(8.0);
@@ -464,7 +466,7 @@ impl App {
                                 ui.label(
                                     egui::RichText::new("Gota Gando")
                                         .size(15.0)
-                                        .color(egui::Color32::from_rgb(100, 160, 240)),
+                                        .color(theme.accent),
                                 );
                             });
 
@@ -478,7 +480,7 @@ impl App {
                                     egui::Label::new(
                                         egui::RichText::new(link_text)
                                             .size(16.0)
-                                            .color(egui::Color32::from_rgb(100, 160, 240)),
+                                            .color(theme.accent),
                                     )
                                     .sense(egui::Sense::click()),
                                 )
@@ -605,7 +607,7 @@ impl eframe::App for App {
 
         // Menu bar (top)
         let settings_snapshot = self.settings.clone();
-        let action = menu::show_menu_bar(ctx, &self.panes, &mut self.settings);
+        let action = menu::show_menu_bar(ctx, &self.panes, &mut self.settings, &self.theme);
         if self.settings != settings_snapshot {
             self.settings.save();
         }
@@ -638,7 +640,7 @@ impl eframe::App for App {
         // Settings modal
         let prev_show_settings = self.show_settings;
         let perf_changed =
-            settings::show_settings_modal(ctx, &mut self.settings, &mut self.show_settings);
+            settings::show_settings_modal(ctx, &mut self.settings, &mut self.show_settings, &self.theme);
         if perf_changed {
             self.apply_settings_to_caches();
         }

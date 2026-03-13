@@ -12,6 +12,7 @@ mod menu;
 mod pane;
 mod perf;
 mod settings;
+mod theme;
 
 #[derive(Parser)]
 #[command(name = "viewskater-egui", about = "Fast image viewer")]

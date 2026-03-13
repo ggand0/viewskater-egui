@@ -2,10 +2,11 @@ use eframe::egui;
 
 use crate::pane::Pane;
 use crate::settings::AppSettings;
+use crate::theme::UiTheme;
 
 /// Toggle switch widget (iOS/Steam style).
 /// Returns true if the value changed.
-pub(crate) fn toggle_switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> bool {
+pub(crate) fn toggle_switch(ui: &mut egui::Ui, on: &mut bool, label: &str, theme: &UiTheme) -> bool {
     let desired_size = egui::vec2(32.0, 16.0);
     let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
     if response.clicked() {
@@ -15,11 +16,11 @@ pub(crate) fn toggle_switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> bo
     let how_on = ui.ctx().animate_bool_with_time(response.id, *on, 0.15);
     let radius = rect.height() / 2.0;
     let bg = if *on {
-        egui::Color32::from_rgb(60, 130, 220)
+        theme.accent
     } else {
-        egui::Color32::from_gray(50)
+        theme.toggle_off
     };
-    let knob_color = egui::Color32::from_gray(240);
+    let knob_color = theme.toggle_knob;
 
     ui.painter().rect_filled(rect, radius, bg);
 
@@ -37,6 +38,7 @@ pub fn show_menu_bar(
     ctx: &egui::Context,
     panes: &[Pane],
     settings: &mut AppSettings,
+    theme: &UiTheme,
 ) -> MenuAction {
     let mut action = MenuAction::None;
     let is_dual = panes.len() >= 2;
@@ -98,9 +100,9 @@ pub fn show_menu_bar(
                     ui.close_menu();
                 }
                 ui.separator();
-                ui.horizontal(|ui| { toggle_switch(ui, &mut settings.show_footer, "Footer  Tab"); });
-                ui.horizontal(|ui| { toggle_switch(ui, &mut settings.show_fps, "FPS Overlay"); });
-                ui.horizontal(|ui| { toggle_switch(ui, &mut settings.show_cache_overlay, "Cache Overlay"); });
+                ui.horizontal(|ui| { toggle_switch(ui, &mut settings.show_footer, "Footer  Tab", theme); });
+                ui.horizontal(|ui| { toggle_switch(ui, &mut settings.show_fps, "FPS Overlay", theme); });
+                ui.horizontal(|ui| { toggle_switch(ui, &mut settings.show_cache_overlay, "Cache Overlay", theme); });
             });
 
             ui.menu_button("Help", |ui| {

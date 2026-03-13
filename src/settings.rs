@@ -4,6 +4,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::menu::toggle_switch;
+use crate::theme::UiTheme;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -65,6 +66,7 @@ pub fn show_settings_modal(
     ctx: &egui::Context,
     settings: &mut AppSettings,
     show: &mut bool,
+    theme: &UiTheme,
 ) -> bool {
     if !*show {
         return false;
@@ -80,11 +82,7 @@ pub fn show_settings_modal(
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             let response = ui.allocate_response(screen.size(), egui::Sense::click());
-            ui.painter().rect_filled(
-                screen,
-                0.0,
-                egui::Color32::from_black_alpha(200),
-            );
+            ui.painter().rect_filled(screen, 0.0, theme.backdrop);
             if response.clicked() {
                 *show = false;
             }
@@ -96,8 +94,8 @@ pub fn show_settings_modal(
         .order(egui::Order::Tooltip)
         .show(ctx, |ui| {
             egui::Frame::default()
-                .fill(egui::Color32::from_gray(40))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(80)))
+                .fill(theme.card_bg)
+                .stroke(egui::Stroke::new(1.0, theme.card_stroke))
                 .corner_radius(8.0)
                 .inner_margin(20.0)
                 .show(ui, |ui| {
@@ -112,25 +110,26 @@ pub fn show_settings_modal(
                     ui.label(
                         egui::RichText::new("Display")
                             .size(14.0)
-                            .color(egui::Color32::from_gray(180)),
+                            .color(theme.heading),
                     );
                     ui.add_space(4.0);
                     egui::Frame::default()
-                        .fill(egui::Color32::from_gray(30))
+                        .fill(theme.section_bg)
                         .corner_radius(6.0)
                         .inner_margin(10.0)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                toggle_switch(ui, &mut settings.show_footer, "Footer");
+                                toggle_switch(ui, &mut settings.show_footer, "Footer", theme);
                             });
                             ui.horizontal(|ui| {
-                                toggle_switch(ui, &mut settings.show_fps, "FPS Overlay");
+                                toggle_switch(ui, &mut settings.show_fps, "FPS Overlay", theme);
                             });
                             ui.horizontal(|ui| {
                                 toggle_switch(
                                     ui,
                                     &mut settings.show_cache_overlay,
                                     "Cache Overlay",
+                                    theme,
                                 );
                             });
                         });
@@ -141,11 +140,11 @@ pub fn show_settings_modal(
                     ui.label(
                         egui::RichText::new("Performance")
                             .size(14.0)
-                            .color(egui::Color32::from_gray(180)),
+                            .color(theme.heading),
                     );
                     ui.add_space(4.0);
                     egui::Frame::default()
-                        .fill(egui::Color32::from_gray(30))
+                        .fill(theme.section_bg)
                         .corner_radius(6.0)
                         .inner_margin(10.0)
                         .show(ui, |ui| {
