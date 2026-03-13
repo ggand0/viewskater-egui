@@ -65,6 +65,7 @@ impl ImagePerfTracker {
         egui::Window::new("fps")
             .title_bar(false)
             .resizable(false)
+            .auto_sized()
             .anchor(egui::Align2::RIGHT_TOP, [-10.0, 36.0])
             .interactable(false)
             .frame(
@@ -74,11 +75,14 @@ impl ImagePerfTracker {
                     .inner_margin(6.0),
             )
             .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(text)
-                        .monospace()
-                        .color(egui::Color32::WHITE)
-                        .size(14.0),
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(text)
+                            .monospace()
+                            .color(egui::Color32::WHITE)
+                            .size(14.0),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Extend),
                 );
             });
     }

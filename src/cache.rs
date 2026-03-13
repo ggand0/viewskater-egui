@@ -246,6 +246,7 @@ impl SlidingWindowCache {
         egui::Window::new("cache_state")
             .title_bar(false)
             .resizable(false)
+            .auto_sized()
             .anchor(egui::Align2::RIGHT_TOP, [-10.0, 66.0])
             .interactable(false)
             .frame(
@@ -256,15 +257,18 @@ impl SlidingWindowCache {
             )
             .show(ctx, |ui| {
                 let last_file = self.first_file_index + cache_size - 1;
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Cache [{}\u{2013}{}]",
-                        self.first_file_index,
-                        last_file.min(num_files.saturating_sub(1))
-                    ))
-                    .monospace()
-                    .color(egui::Color32::from_gray(200))
-                    .size(12.0),
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!(
+                            "Cache [{}\u{2013}{}]",
+                            self.first_file_index,
+                            last_file.min(num_files.saturating_sub(1))
+                        ))
+                        .monospace()
+                        .color(egui::Color32::from_gray(200))
+                        .size(12.0),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Extend),
                 );
 
                 ui.add_space(4.0);
