@@ -19,10 +19,12 @@ pub struct Pane {
     pub cache: Option<cache::SlidingWindowCache>,
     pub slider_loader: Option<cache::SliderLoader>,
     pub decode_cache: cache::DecodeLruCache,
+    pub cache_count: usize,
+    pub lru_capacity: usize,
 }
 
 impl Pane {
-    pub fn new() -> Self {
+    pub fn new(cache_count: usize, lru_capacity: usize) -> Self {
         Self {
             image_paths: Vec::new(),
             current_index: 0,
@@ -31,7 +33,9 @@ impl Pane {
             pan: egui::Vec2::ZERO,
             cache: None,
             slider_loader: None,
-            decode_cache: cache::DecodeLruCache::new(),
+            decode_cache: cache::DecodeLruCache::new(lru_capacity),
+            cache_count,
+            lru_capacity,
         }
     }
 
@@ -75,7 +79,7 @@ impl Pane {
         self.pan = egui::Vec2::ZERO;
         self.decode_cache.clear();
 
-        let mut c = cache::SlidingWindowCache::new(ctx);
+        let mut c = cache::SlidingWindowCache::new(ctx, self.cache_count);
         c.initialize(self.current_index, &self.image_paths);
         self.current_texture = c.current_texture_for(self.current_index);
         self.cache = Some(c);

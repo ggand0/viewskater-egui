@@ -1,10 +1,11 @@
 use eframe::egui;
 
 use crate::pane::Pane;
+use crate::settings::AppSettings;
 
 /// Toggle switch widget (iOS/Steam style).
 /// Returns true if the value changed.
-fn toggle_switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> bool {
+pub(crate) fn toggle_switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> bool {
     let desired_size = egui::vec2(32.0, 16.0);
     let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
     if response.clicked() {
@@ -35,9 +36,7 @@ fn toggle_switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> bool {
 pub fn show_menu_bar(
     ctx: &egui::Context,
     panes: &[Pane],
-    show_footer: &mut bool,
-    show_fps: &mut bool,
-    show_cache_overlay: &mut bool,
+    settings: &mut AppSettings,
 ) -> MenuAction {
     let mut action = MenuAction::None;
     let is_dual = panes.len() >= 2;
@@ -77,6 +76,13 @@ pub fn show_menu_bar(
                 }
             });
 
+            ui.menu_button("Edit", |ui| {
+                if ui.button("Preferences").clicked() {
+                    action = MenuAction::ShowSettings;
+                    ui.close_menu();
+                }
+            });
+
             ui.menu_button("View", |ui| {
                 let pane_count = panes.len();
                 if ui.radio(pane_count == 1, "Single Pane  Ctrl+1").clicked() {
@@ -92,9 +98,9 @@ pub fn show_menu_bar(
                     ui.close_menu();
                 }
                 ui.separator();
-                ui.horizontal(|ui| { toggle_switch(ui, show_footer, "Footer  Tab"); });
-                ui.horizontal(|ui| { toggle_switch(ui, show_fps, "FPS Overlay"); });
-                ui.horizontal(|ui| { toggle_switch(ui, show_cache_overlay, "Cache Overlay"); });
+                ui.horizontal(|ui| { toggle_switch(ui, &mut settings.show_footer, "Footer  Tab"); });
+                ui.horizontal(|ui| { toggle_switch(ui, &mut settings.show_fps, "FPS Overlay"); });
+                ui.horizontal(|ui| { toggle_switch(ui, &mut settings.show_cache_overlay, "Cache Overlay"); });
             });
 
             ui.menu_button("Help", |ui| {
@@ -171,4 +177,5 @@ pub enum MenuAction {
     SetSinglePane,
     SetDualPane,
     ShowAbout,
+    ShowSettings,
 }

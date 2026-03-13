@@ -5,8 +5,6 @@ use std::time::Instant;
 
 use eframe::egui;
 
-const DEFAULT_CACHE_COUNT: usize = 5;
-
 const COL_LOADED: egui::Color32 = egui::Color32::from_rgb(76, 175, 80);
 const COL_LOADING: egui::Color32 = egui::Color32::from_rgb(255, 183, 77);
 const COL_EMPTY: egui::Color32 = egui::Color32::from_rgb(60, 60, 60);
@@ -37,8 +35,7 @@ pub struct SlidingWindowCache {
 }
 
 impl SlidingWindowCache {
-    pub fn new(ctx: &egui::Context) -> Self {
-        let cache_count = DEFAULT_CACHE_COUNT;
+    pub fn new(ctx: &egui::Context, cache_count: usize) -> Self {
         let cache_size = cache_count * 2 + 1;
         let (tx, rx) = mpsc::channel();
 
@@ -175,6 +172,20 @@ impl SlidingWindowCache {
     /// Rebuild cache around a new position (slider release, Home/End).
     pub fn jump_to(&mut self, new_index: usize, image_paths: &[PathBuf]) {
         self.initialize(new_index, image_paths);
+    }
+
+    /// Change the sliding window half-size and reinitialize around current position.
+    pub fn set_cache_count(
+        &mut self,
+        cache_count: usize,
+        current_index: usize,
+        image_paths: &[PathBuf],
+    ) {
+        if self.cache_count == cache_count {
+            return;
+        }
+        self.cache_count = cache_count;
+        self.initialize(current_index, image_paths);
     }
 
     /// Get the TextureHandle for a given file index, if cached.
@@ -415,14 +426,12 @@ pub struct DecodeLruCache {
     capacity: usize,
 }
 
-const LRU_CAPACITY: usize = 50;
-
 impl DecodeLruCache {
-    pub fn new() -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
             entries: HashMap::new(),
             order: VecDeque::new(),
-            capacity: LRU_CAPACITY,
+            capacity,
         }
     }
 
@@ -459,6 +468,16 @@ impl DecodeLruCache {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
+    }
+
+    /// Change the maximum capacity, evicting LRU entries if over the new limit.
+    pub fn set_capacity(&mut self, capacity: usize) {
+        self.capacity = capacity;
+        while self.entries.len() > self.capacity {
+            if let Some(evicted) = self.order.pop_front() {
+                self.entries.remove(&evicted);
+            }
+        }
     }
 }
 

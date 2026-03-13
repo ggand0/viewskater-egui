@@ -6,6 +6,7 @@ use crate::build_info::BuildInfo;
 use crate::menu::{self, MenuAction};
 use crate::pane::Pane;
 use crate::perf;
+use crate::settings::{self, AppSettings};
 
 /// Target window size in physical pixels (matches iced version behavior).
 const DEFAULT_WINDOW_WIDTH: f32 = 1280.0;
@@ -15,22 +16,21 @@ pub struct App {
     panes: Vec<Pane>,
     perf: perf::ImagePerfTracker,
     divider_fraction: f32,
-    show_footer: bool,
-    show_fps: bool,
-    show_cache_overlay: bool,
+    settings: AppSettings,
+    show_settings: bool,
     show_about: bool,
     initial_size_set: bool,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, paths: Vec<PathBuf>) -> Self {
+        let settings = AppSettings::load();
         let mut app = Self {
-            panes: vec![Pane::new()],
+            panes: vec![Pane::new(settings.cache_count, settings.lru_capacity)],
             perf: perf::ImagePerfTracker::new(),
             divider_fraction: 0.5,
-            show_footer: true,
-            show_fps: true,
-            show_cache_overlay: false,
+            settings,
+            show_settings: false,
             show_about: false,
             initial_size_set: false,
         };
@@ -39,7 +39,7 @@ impl App {
             app.panes[0].open_path(&paths[0], &cc.egui_ctx);
         }
         if paths.len() >= 2 {
-            let mut pane1 = Pane::new();
+            let mut pane1 = Pane::new(app.settings.cache_count, app.settings.lru_capacity);
             pane1.open_path(&paths[1], &cc.egui_ctx);
             app.panes.push(pane1);
         }
@@ -59,7 +59,7 @@ impl App {
 
     fn set_dual_pane(&mut self, ctx: &egui::Context) {
         if self.panes.len() < 2 {
-            let mut pane = Pane::new();
+            let mut pane = Pane::new(self.settings.cache_count, self.settings.lru_capacity);
             if !self.panes[0].image_paths.is_empty() {
                 if let Some(dir) = self.panes[0].image_paths[0].parent() {
                     pane.open_path(dir, ctx);
@@ -105,6 +105,22 @@ impl App {
             MenuAction::SetSinglePane => self.set_single_pane(),
             MenuAction::SetDualPane => self.set_dual_pane(ctx),
             MenuAction::ShowAbout => self.show_about = true,
+            MenuAction::ShowSettings => self.show_settings = true,
+        }
+    }
+
+    fn apply_settings_to_caches(&mut self) {
+        for pane in &mut self.panes {
+            if let Some(cache) = &mut pane.cache {
+                cache.set_cache_count(
+                    self.settings.cache_count,
+                    pane.current_index,
+                    &pane.image_paths,
+                );
+            }
+            pane.decode_cache.set_capacity(self.settings.lru_capacity);
+            pane.cache_count = self.settings.cache_count;
+            pane.lru_capacity = self.settings.lru_capacity;
         }
     }
 
@@ -149,7 +165,8 @@ impl App {
             return;
         }
         if toggle_footer {
-            self.show_footer = !self.show_footer;
+            self.settings.show_footer = !self.settings.show_footer;
+            self.settings.save();
             return;
         }
 
@@ -587,11 +604,15 @@ impl eframe::App for App {
         self.update_title(ctx);
 
         // Menu bar (top)
-        let action = menu::show_menu_bar(ctx, &self.panes, &mut self.show_footer, &mut self.show_fps, &mut self.show_cache_overlay);
+        let settings_snapshot = self.settings.clone();
+        let action = menu::show_menu_bar(ctx, &self.panes, &mut self.settings);
+        if self.settings != settings_snapshot {
+            self.settings.save();
+        }
         self.handle_menu_action(action, ctx);
 
         // Footer (bottom, before slider so it's below the slider)
-        if self.show_footer {
+        if self.settings.show_footer {
             menu::show_footer(ctx, &self.panes);
         }
 
@@ -602,16 +623,27 @@ impl eframe::App for App {
         self.show_central_panel(ctx);
 
         // Overlays
-        if self.show_fps {
+        if self.settings.show_fps {
             self.perf.show_overlay(ctx);
         }
 
-        if self.show_cache_overlay {
+        if self.settings.show_cache_overlay {
             if let Some(pane) = self.panes.first() {
                 if let Some(cache) = &pane.cache {
                     cache.show_debug_overlay(ctx, pane.current_index, pane.image_paths.len());
                 }
             }
+        }
+
+        // Settings modal
+        let prev_show_settings = self.show_settings;
+        let perf_changed =
+            settings::show_settings_modal(ctx, &mut self.settings, &mut self.show_settings);
+        if perf_changed {
+            self.apply_settings_to_caches();
+        }
+        if prev_show_settings && !self.show_settings {
+            self.settings.save();
         }
 
         // About modal (on top of everything)
