@@ -301,55 +301,86 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane) {
             return;
         };
 
-        // Filename
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        ui.label(
-            egui::RichText::new(name.as_ref())
-                .monospace()
-                .color(egui::Color32::from_gray(200))
-                .size(13.0),
-        );
+        let font = egui::FontId::monospace(13.0);
+        let bright = egui::Color32::from_gray(200);
+        let dim = egui::Color32::from_gray(160);
+        let sep_w = 20.0; // approximate separator + spacing width
 
-        // Resolution
-        if let Some(tex) = &pane.current_texture {
-            let size = tex.size();
+        // Prepare text elements
+        let index_text = format!("{} / {}", pane.current_index + 1, pane.image_paths.len());
+        let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let resolution = pane
+            .current_texture
+            .as_ref()
+            .map(|tex| format!("{}x{}", tex.size()[0], tex.size()[1]));
+        let file_size = std::fs::metadata(path).ok().map(|m| format_file_size(m.len()));
+
+        // Measure all widths upfront to decide what fits
+        let total = ui.available_width();
+        let margin = 16.0;
+        let measure = |ui: &egui::Ui, text: &str| -> f32 {
+            ui.fonts(|f| f.layout_no_wrap(text.into(), font.clone(), bright).size().x)
+        };
+
+        let index_w = measure(ui, &index_text);
+        let short_index = format!("{}", pane.current_index + 1);
+        let short_index_w = measure(ui, &short_index);
+        let filename_w = measure(ui, &filename);
+        let res_w = resolution.as_ref().map_or(0.0, |r| measure(ui, r) + sep_w);
+        let size_w = file_size.as_ref().map_or(0.0, |s| measure(ui, s) + sep_w);
+
+        let remaining = total - index_w - margin;
+        let show_filename = remaining >= filename_w;
+        let show_res = show_filename && remaining >= filename_w + res_w;
+        let show_size = show_res && remaining >= filename_w + res_w + size_w;
+
+        // Render visible elements (priority: index > filename > resolution > file size)
+        if show_filename {
+            ui.label(egui::RichText::new(&filename).monospace().color(bright).size(13.0));
+        }
+        if show_res {
             ui.separator();
             ui.label(
-                egui::RichText::new(format!("{}x{}", size[0], size[1]))
+                egui::RichText::new(resolution.as_deref().unwrap_or(""))
                     .monospace()
-                    .color(egui::Color32::from_gray(160))
+                    .color(dim)
+                    .size(13.0),
+            );
+        }
+        if show_size {
+            ui.separator();
+            ui.label(
+                egui::RichText::new(file_size.as_deref().unwrap_or(""))
+                    .monospace()
+                    .color(dim)
                     .size(13.0),
             );
         }
 
-        // File size
-        if let Ok(meta) = std::fs::metadata(path) {
-            ui.separator();
-            ui.label(
-                egui::RichText::new(format_file_size(meta.len()))
-                    .monospace()
-                    .color(egui::Color32::from_gray(160))
-                    .size(13.0),
-            );
-        }
-
-        // Image index (right-aligned)
+        // Index (right-aligned), progressively shortened
         if !pane.image_paths.is_empty() {
-            ui.with_layout(
-                egui::Layout::right_to_left(egui::Align::Center),
-                |ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} / {}",
-                            pane.current_index + 1,
-                            pane.image_paths.len()
-                        ))
-                        .monospace()
-                        .color(egui::Color32::from_gray(200))
-                        .size(13.0),
-                    );
-                },
-            );
+            let used = ui.min_rect().width();
+            let space = total - used - margin;
+
+            if space >= index_w {
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(&index_text).monospace().color(bright).size(13.0),
+                        );
+                    },
+                );
+            } else if space >= short_index_w {
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(&short_index).monospace().color(bright).size(13.0),
+                        );
+                    },
+                );
+            }
         }
     });
 }
