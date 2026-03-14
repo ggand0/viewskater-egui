@@ -181,8 +181,10 @@ impl App {
         let current_idx = self
             .panes
             .iter()
-            .find(|p| !p.image_paths.is_empty())
-            .map_or(0, |p| p.current_index);
+            .filter(|p| !p.image_paths.is_empty())
+            .map(|p| p.current_index)
+            .max()
+            .unwrap_or(0);
 
         let accent = self.theme.accent;
         let result = egui::TopBottomPanel::bottom("nav")
