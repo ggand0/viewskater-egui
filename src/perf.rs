@@ -5,28 +5,25 @@ const WINDOW_DURATION: Duration = Duration::from_secs(2);
 
 /// Tracks image rendering performance — how many unique images are
 /// displayed per second, not UI event loop frame rate.
-pub struct ImagePerfTracker {
+pub(crate) struct ImagePerfTracker {
     image_timestamps: VecDeque<Instant>,
-    pub last_decode_ms: Option<f64>,
 }
 
 impl ImagePerfTracker {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             image_timestamps: VecDeque::new(),
-            last_decode_ms: None,
         }
     }
 
-    /// Record that a new image was decoded and uploaded to the GPU.
-    pub fn record_image_load(&mut self, decode_ms: f64) {
-        self.last_decode_ms = Some(decode_ms);
+    /// Record that a new image was displayed.
+    pub(crate) fn record_image_load(&mut self) {
         self.image_timestamps.push_back(Instant::now());
     }
 
     /// Calculate image rendering FPS from upload timestamps.
     /// Uses a 2-second rolling window, matching viewskater's ImageDisplayTracker.
-    pub fn image_fps(&mut self) -> f64 {
+    fn image_fps(&mut self) -> f64 {
         let now = Instant::now();
         let cutoff = now - WINDOW_DURATION;
         while let Some(front) = self.image_timestamps.front() {
@@ -53,12 +50,7 @@ impl ImagePerfTracker {
     }
 
     /// Build the FPS display string.
-    pub fn fps_text(&mut self) -> String {
-        let fps = self.image_fps();
-        let mut text = format!("Img: {:.1} FPS", fps);
-        if let Some(ms) = self.last_decode_ms {
-            text.push_str(&format!(" | Decode: {:.1}ms", ms));
-        }
-        text
+    pub(crate) fn fps_text(&mut self) -> String {
+        format!("Img: {:.1} FPS", self.image_fps())
     }
 }

@@ -10,21 +10,22 @@ use crate::file_io;
 const MIN_ZOOM: f32 = 0.05;
 const MAX_ZOOM: f32 = 100.0;
 
-pub struct Pane {
-    pub image_paths: Vec<PathBuf>,
-    pub current_index: usize,
-    pub current_texture: Option<egui::TextureHandle>,
-    pub zoom: f32,
-    pub pan: egui::Vec2,
-    pub cache: Option<cache::SlidingWindowCache>,
-    pub slider_loader: Option<cache::SliderLoader>,
-    pub decode_cache: cache::DecodeLruCache,
-    pub cache_count: usize,
-    pub lru_capacity: usize,
+pub(crate) struct Pane {
+    pub(crate) image_paths: Vec<PathBuf>,
+    pub(crate) current_index: usize,
+    pub(crate) current_texture: Option<egui::TextureHandle>,
+    pub(crate) zoom: f32,
+    pub(crate) pan: egui::Vec2,
+    pub(crate) cache: Option<cache::SlidingWindowCache>,
+    slider_loader: Option<cache::SliderLoader>,
+    pub(crate) decode_cache: cache::DecodeLruCache,
+    pub(crate) cache_count: usize,
+    pub(crate) lru_capacity: usize,
+    pub(crate) selected: bool,
 }
 
 impl Pane {
-    pub fn new(cache_count: usize, lru_capacity: usize) -> Self {
+    pub(crate) fn new(cache_count: usize, lru_capacity: usize) -> Self {
         Self {
             image_paths: Vec::new(),
             current_index: 0,
@@ -36,10 +37,11 @@ impl Pane {
             decode_cache: cache::DecodeLruCache::new(lru_capacity),
             cache_count,
             lru_capacity,
+            selected: true,
         }
     }
 
-    pub fn close(&mut self) {
+    pub(crate) fn close(&mut self) {
         self.image_paths.clear();
         self.current_index = 0;
         self.current_texture = None;
@@ -50,7 +52,7 @@ impl Pane {
         self.decode_cache.clear();
     }
 
-    pub fn open_path(&mut self, path: &std::path::Path, ctx: &egui::Context) {
+    pub(crate) fn open_path(&mut self, path: &std::path::Path, ctx: &egui::Context) {
         if !path.exists() {
             log::error!("Path does not exist: {}", path.display());
             return;
@@ -90,7 +92,7 @@ impl Pane {
     /// Checks the LRU decode cache first to skip the ~90ms decode on revisits.
     /// Reuses the existing TextureHandle via `set()` when possible to
     /// avoid GPU texture allocation overhead on every call.
-    pub fn load_sync(&mut self, ctx: &egui::Context) {
+    fn load_sync(&mut self, ctx: &egui::Context) {
         let Some(path) = self.image_paths.get(self.current_index) else {
             return;
         };
@@ -163,7 +165,7 @@ impl Pane {
     }
 
     /// Try to navigate by `delta` images. Returns true if the display advanced.
-    pub fn navigate(&mut self, delta: isize) -> bool {
+    pub(crate) fn navigate(&mut self, delta: isize) -> bool {
         if self.image_paths.is_empty() {
             return false;
         }
@@ -176,8 +178,6 @@ impl Pane {
         if let Some(cache) = &mut self.cache {
             if let Some(t) = cache.current_texture_for(new_index) {
                 self.current_index = new_index;
-                self.zoom = 1.0;
-                self.pan = egui::Vec2::ZERO;
                 self.current_texture = Some(t);
 
                 if delta > 0 {
@@ -191,15 +191,13 @@ impl Pane {
         false
     }
 
-    pub fn jump_to(&mut self, index: usize, ctx: &egui::Context) {
+    pub(crate) fn jump_to(&mut self, index: usize, ctx: &egui::Context) {
         let index = index.min(self.image_paths.len().saturating_sub(1));
         if index == self.current_index {
             return;
         }
 
         self.current_index = index;
-        self.zoom = 1.0;
-        self.pan = egui::Vec2::ZERO;
 
         if let Some(cache) = &mut self.cache {
             cache.jump_to(index, &self.image_paths);
@@ -212,17 +210,17 @@ impl Pane {
         }
     }
 
-    pub fn can_navigate_forward(&self) -> bool {
+    pub(crate) fn can_navigate_forward(&self) -> bool {
         !self.image_paths.is_empty()
             && self.current_index < self.image_paths.len() - 1
     }
 
-    pub fn can_navigate_backward(&self) -> bool {
+    pub(crate) fn can_navigate_backward(&self) -> bool {
         !self.image_paths.is_empty() && self.current_index > 0
     }
 
     /// Check whether the next image in the given direction is cached and ready.
-    pub fn is_next_cached(&self, delta: isize) -> bool {
+    pub(crate) fn is_next_cached(&self, delta: isize) -> bool {
         if self.image_paths.is_empty() {
             return false;
         }
@@ -236,37 +234,105 @@ impl Pane {
             .is_some_and(|c| c.current_texture_for(new_index).is_some())
     }
 
-    pub fn poll_cache(&mut self) {
+    pub(crate) fn poll_cache(&mut self) {
         if let Some(cache) = &mut self.cache {
             cache.poll(&self.image_paths);
         }
     }
 
-    pub fn show_content(&mut self, ui: &mut egui::Ui) {
+    /// Drag the slider to `idx`. Returns true if image was loaded.
+    pub(crate) fn apply_slider_target(&mut self, idx: usize, ctx: &egui::Context) -> bool {
+        let clamped = idx.min(self.image_paths.len().saturating_sub(1));
+        if clamped == self.current_index {
+            return false;
+        }
+        self.current_index = clamped;
+
+        let found_in_cache = self
+            .cache
+            .as_ref()
+            .and_then(|c| c.current_texture_for(clamped));
+
+        if let Some(tex) = found_in_cache {
+            self.current_texture = Some(tex);
+            true
+        } else if let Some(loader) = &mut self.slider_loader {
+            if loader.should_load() {
+                self.load_sync(ctx);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Finalize after slider drag released: cancel throttle, re-center cache.
+    pub(crate) fn apply_slider_release(&mut self) {
+        if let Some(loader) = &mut self.slider_loader {
+            loader.cancel();
+        }
+        if let Some(cache) = &mut self.cache {
+            cache.jump_to(self.current_index, &self.image_paths);
+            if let Some(t) = cache.current_texture_for(self.current_index) {
+                self.current_texture = Some(t);
+            }
+        }
+    }
+
+    /// Show the pane content. Returns true if zoom/pan was changed by user interaction.
+    pub(crate) fn show_content(&mut self, ui: &mut egui::Ui) -> bool {
         let tex = self.current_texture.clone();
         if let Some(tex) = tex {
-            self.show_image(ui, &tex);
-        } else if self.image_paths.is_empty() {
-            ui.centered_and_justified(|ui| {
-                ui.label("Drop an image or folder here, or pass a path as argument");
-            });
+            return self.show_image(ui, &tex);
+        }
+        if self.image_paths.is_empty() {
+            let available = ui.available_width();
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            let measure = |text: &str| -> f32 {
+                ui.fonts(|f| {
+                    f.layout_no_wrap(text.into(), font.clone(), egui::Color32::WHITE)
+                        .size()
+                        .x
+                })
+            };
+            let full = "Drop an image or folder here";
+            let short = "Drop image";
+            let label = if available >= measure(full) {
+                Some(full)
+            } else if available >= measure(short) {
+                Some(short)
+            } else {
+                None
+            };
+            if let Some(text) = label {
+                ui.centered_and_justified(|ui| {
+                    ui.label(text);
+                });
+            }
         } else {
             ui.centered_and_justified(|ui| {
                 ui.label("Failed to load image");
             });
         }
+        false
     }
 
-    fn show_image(&mut self, ui: &mut egui::Ui, tex: &egui::TextureHandle) {
+    /// Returns true if the user changed zoom or pan this frame.
+    fn show_image(&mut self, ui: &mut egui::Ui, tex: &egui::TextureHandle) -> bool {
         let tex_size = tex.size_vec2();
         let available = ui.available_rect_before_wrap();
 
         if available.width() <= 0.0 || available.height() <= 0.0 {
-            return;
+            return false;
         }
         if tex_size.x <= 0.0 || tex_size.y <= 0.0 {
-            return;
+            return false;
         }
+
+        let old_zoom = self.zoom;
+        let old_pan = self.pan;
 
         let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
 
@@ -310,8 +376,11 @@ impl Pane {
         let center = available.center() + self.pan;
         let display_rect = egui::Rect::from_center_size(center, display_size);
 
+        // Clip to the pane rect so zoomed images don't bleed into adjacent panes
+        let painter = ui.painter_at(available);
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-        ui.painter()
-            .image(tex.id(), display_rect, uv, egui::Color32::WHITE);
+        painter.image(tex.id(), display_rect, uv, egui::Color32::WHITE);
+
+        self.zoom != old_zoom || self.pan != old_pan
     }
 }

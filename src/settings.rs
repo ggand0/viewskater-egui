@@ -97,6 +97,7 @@ pub struct AppSettings {
     pub show_footer: bool,
     pub show_fps: bool,
     pub show_cache_overlay: bool,
+    pub sync_zoom_pan: bool,
     pub cache_count: usize,
     pub lru_capacity: usize,
 }
@@ -107,6 +108,7 @@ impl Default for AppSettings {
             show_footer: true,
             show_fps: true,
             show_cache_overlay: false,
+            sync_zoom_pan: true,
             cache_count: 5,
             lru_capacity: 50,
         }
@@ -214,6 +216,14 @@ pub fn show_settings_modal(
                                     ui,
                                     &mut settings.show_cache_overlay,
                                     "Cache Overlay",
+                                    theme,
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                toggle_switch(
+                                    ui,
+                                    &mut settings.sync_zoom_pan,
+                                    "Sync Zoom/Pan",
                                     theme,
                                 );
                             });
