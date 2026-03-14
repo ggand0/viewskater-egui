@@ -222,6 +222,13 @@ pub fn show_menu_bar(
                     }
                 });
                 ui.separator();
+                hover_row(ui, "reset_zoom", theme, ml, mw, |ui| {
+                    if ui.button("Reset Zoom").clicked() {
+                        action = MenuAction::ResetZoom;
+                        ui.close_menu();
+                    }
+                });
+                ui.separator();
                 hover_row(ui, "footer", theme, ml, mw, |ui| {
                     ui.horizontal(|ui| {
                         toggle_switch(ui, &mut settings.show_footer, "Footer  Tab", theme);
@@ -462,6 +469,7 @@ pub enum MenuAction {
     SetSinglePane,
     SetDualPane,
     SetDualPaneIndependent,
+    ResetZoom,
     ShowAbout,
     ShowSettings,
 }

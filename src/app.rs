@@ -195,6 +195,12 @@ impl App {
                 self.set_dual_pane(ctx);
                 self.dual_pane_mode = DualPaneMode::Independent;
             }
+            MenuAction::ResetZoom => {
+                for pane in &mut self.panes {
+                    pane.zoom = 1.0;
+                    pane.pan = egui::Vec2::ZERO;
+                }
+            }
             MenuAction::ShowAbout => self.show_about = true,
             MenuAction::ShowSettings => self.show_settings = true,
         }
