@@ -240,6 +240,47 @@ impl Pane {
         }
     }
 
+    /// Drag the slider to `idx`. Returns true if image was loaded.
+    pub fn apply_slider_target(&mut self, idx: usize, ctx: &egui::Context) -> bool {
+        let clamped = idx.min(self.image_paths.len().saturating_sub(1));
+        if clamped == self.current_index {
+            return false;
+        }
+        self.current_index = clamped;
+
+        let found_in_cache = self
+            .cache
+            .as_ref()
+            .and_then(|c| c.current_texture_for(clamped));
+
+        if let Some(tex) = found_in_cache {
+            self.current_texture = Some(tex);
+            true
+        } else if let Some(loader) = &mut self.slider_loader {
+            if loader.should_load() {
+                self.load_sync(ctx);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Finalize after slider drag released: cancel throttle, re-center cache.
+    pub fn apply_slider_release(&mut self) {
+        if let Some(loader) = &mut self.slider_loader {
+            loader.cancel();
+        }
+        if let Some(cache) = &mut self.cache {
+            cache.jump_to(self.current_index, &self.image_paths);
+            if let Some(t) = cache.current_texture_for(self.current_index) {
+                self.current_texture = Some(t);
+            }
+        }
+    }
+
     /// Show the pane content. Returns true if zoom/pan was changed by user interaction.
     pub fn show_content(&mut self, ui: &mut egui::Ui) -> bool {
         let tex = self.current_texture.clone();
