@@ -244,11 +244,13 @@ impl Pane {
         }
     }
 
-    pub fn show_content(&mut self, ui: &mut egui::Ui) {
+    /// Show the pane content. Returns true if zoom/pan was changed by user interaction.
+    pub fn show_content(&mut self, ui: &mut egui::Ui) -> bool {
         let tex = self.current_texture.clone();
         if let Some(tex) = tex {
-            self.show_image(ui, &tex);
-        } else if self.image_paths.is_empty() {
+            return self.show_image(ui, &tex);
+        }
+        if self.image_paths.is_empty() {
             let available = ui.available_width();
             let font = egui::TextStyle::Body.resolve(ui.style());
             let measure = |text: &str| -> f32 {
@@ -277,18 +279,23 @@ impl Pane {
                 ui.label("Failed to load image");
             });
         }
+        false
     }
 
-    fn show_image(&mut self, ui: &mut egui::Ui, tex: &egui::TextureHandle) {
+    /// Returns true if the user changed zoom or pan this frame.
+    fn show_image(&mut self, ui: &mut egui::Ui, tex: &egui::TextureHandle) -> bool {
         let tex_size = tex.size_vec2();
         let available = ui.available_rect_before_wrap();
 
         if available.width() <= 0.0 || available.height() <= 0.0 {
-            return;
+            return false;
         }
         if tex_size.x <= 0.0 || tex_size.y <= 0.0 {
-            return;
+            return false;
         }
+
+        let old_zoom = self.zoom;
+        let old_pan = self.pan;
 
         let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
 
@@ -336,5 +343,7 @@ impl Pane {
         let painter = ui.painter_at(available);
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         painter.image(tex.id(), display_rect, uv, egui::Color32::WHITE);
+
+        self.zoom != old_zoom || self.pan != old_pan
     }
 }

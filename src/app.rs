@@ -613,17 +613,33 @@ impl App {
                         egui::Stroke::new(divider_w, divider_color),
                     );
 
+                    let sync_zp = self.settings.sync_zoom_pan;
                     let (first, rest) = self.panes.split_at_mut(1);
 
                     // Pane images
-                    ui.allocate_new_ui(
-                        egui::UiBuilder::new().max_rect(left_rect),
-                        |ui| first[0].show_content(ui),
-                    );
-                    ui.allocate_new_ui(
-                        egui::UiBuilder::new().max_rect(right_rect),
-                        |ui| rest[0].show_content(ui),
-                    );
+                    let left_interacted = ui
+                        .allocate_new_ui(
+                            egui::UiBuilder::new().max_rect(left_rect),
+                            |ui| first[0].show_content(ui),
+                        )
+                        .inner;
+                    let right_interacted = ui
+                        .allocate_new_ui(
+                            egui::UiBuilder::new().max_rect(right_rect),
+                            |ui| rest[0].show_content(ui),
+                        )
+                        .inner;
+
+                    // Sync zoom/pan across panes
+                    if sync_zp {
+                        if right_interacted {
+                            first[0].zoom = rest[0].zoom;
+                            first[0].pan = rest[0].pan;
+                        } else if left_interacted {
+                            rest[0].zoom = first[0].zoom;
+                            rest[0].pan = first[0].pan;
+                        }
+                    }
 
                     // Clickable selection strips at top of each pane (independent mode)
                     if independent {
