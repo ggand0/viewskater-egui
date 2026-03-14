@@ -553,7 +553,8 @@ impl App {
                     let grab_w = 12.0;
                     let left_w = (available.width() - divider_w) * self.divider_fraction;
 
-                    // Reserve space for per-pane sliders in independent mode
+                    // Reserve space for selection strip and per-pane sliders
+                    let strip_h = if independent { 18.0 } else { 0.0 };
                     let slider_h = if independent {
                         ui.text_style_height(&egui::TextStyle::Body)
                             .max(ui.spacing().interact_size.y)
@@ -561,16 +562,17 @@ impl App {
                         0.0
                     };
 
-                    let content_h = available.height() - slider_h;
+                    let content_h = available.height() - strip_h - slider_h;
                     let right_x = available.min.x + left_w + divider_w;
                     let right_w = available.width() - left_w - divider_w;
+                    let content_y = available.min.y + strip_h;
 
                     let left_rect = egui::Rect::from_min_size(
-                        available.min,
+                        egui::pos2(available.min.x, content_y),
                         egui::vec2(left_w, content_h),
                     );
                     let right_rect = egui::Rect::from_min_size(
-                        egui::pos2(right_x, available.min.y),
+                        egui::pos2(right_x, content_y),
                         egui::vec2(right_w, content_h),
                     );
 
@@ -623,17 +625,55 @@ impl App {
                         |ui| rest[0].show_content(ui),
                     );
 
-                    // Selection indicator: accent bar at top of each selected pane
-                    // (only shown in independent mode)
+                    // Clickable selection strips at top of each pane (independent mode)
                     if independent {
-                        let bar_h = 3.0;
-                        for (pane, rect) in [(&first[0], &left_rect), (&rest[0], &right_rect)] {
-                            if pane.selected {
-                                let bar_rect = egui::Rect::from_min_size(
-                                    rect.min,
-                                    egui::vec2(rect.width(), bar_h),
+                        let muted = egui::Color32::from_gray(50);
+                        for (i, (pane, x, w)) in [
+                            (&first[0], available.min.x, left_w),
+                            (&rest[0], right_x, right_w),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            let strip_rect = egui::Rect::from_min_size(
+                                egui::pos2(x, available.min.y),
+                                egui::vec2(w, strip_h),
+                            );
+                            let color = if pane.selected { accent } else { muted };
+                            ui.painter().rect_filled(strip_rect, 0.0, color);
+
+                            let label = format!("{}", i + 1);
+                            let text_color = if pane.selected {
+                                egui::Color32::BLACK
+                            } else {
+                                egui::Color32::from_gray(120)
+                            };
+                            ui.painter().text(
+                                strip_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                label,
+                                egui::FontId::monospace(11.0),
+                                text_color,
+                            );
+                        }
+
+                        // Handle clicks on strips (use raw pointer to avoid
+                        // conflicting with divider/pane interactions)
+                        if ui.input(|i| i.pointer.any_click()) {
+                            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                                let strip_area = egui::Rect::from_min_size(
+                                    available.min,
+                                    egui::vec2(available.width(), strip_h),
                                 );
-                                ui.painter().rect_filled(bar_rect, 0.0, accent);
+                                if strip_area.contains(pos) {
+                                    let divider_center =
+                                        available.min.x + left_w + divider_w / 2.0;
+                                    if pos.x < divider_center {
+                                        first[0].selected = !first[0].selected;
+                                    } else {
+                                        rest[0].selected = !rest[0].selected;
+                                    }
+                                }
                             }
                         }
                     }
