@@ -763,10 +763,10 @@ impl eframe::App for App {
         self.update_title(ctx);
 
         // Menu bar (top)
-        let fps_text = if self.settings.show_fps {
-            Some(self.perf.fps_text())
+        let (fps_primary, fps_secondary) = if self.settings.show_fps {
+            (Some(self.perf.fps_primary()), self.perf.fps_secondary())
         } else {
-            None
+            (None, None)
         };
         let settings_snapshot = self.settings.clone();
         let action = menu::show_menu_bar(
@@ -775,7 +775,8 @@ impl eframe::App for App {
             self.dual_pane_mode,
             &mut self.settings,
             &self.theme,
-            fps_text.as_deref(),
+            fps_primary.as_deref(),
+            fps_secondary.as_deref(),
         );
         if self.settings != settings_snapshot {
             self.settings.save();

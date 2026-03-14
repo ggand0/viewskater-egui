@@ -96,15 +96,27 @@ pub fn show_menu_bar(
     dual_pane_mode: DualPaneMode,
     settings: &mut AppSettings,
     theme: &UiTheme,
-    fps_text: Option<&str>,
+    fps_primary: Option<&str>,
+    fps_secondary: Option<&str>,
 ) -> MenuAction {
     let mut action = MenuAction::None;
     let is_dual = panes.len() >= 2;
     let has_images = panes.first().is_some_and(|p| !p.image_paths.is_empty());
 
     egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+        let total_w = ui.available_width();
+        // Ultra-narrow: hide everything
+        if total_w < 25.0 {
+            return;
+        }
+        let file_label = if total_w < 50.0 { "F" } else { "File" };
+        let menu_unit = 50.0;
+        let show_edit = total_w >= menu_unit * 2.0;
+        let show_view = total_w >= menu_unit * 3.0;
+        let show_help = total_w >= menu_unit * 4.0;
+
         egui::menu::bar(ui, |ui| {
-            ui.menu_button("File", |ui| {
+            ui.menu_button(file_label, |ui| {
                 let (ml, mw) = setup_menu_hover(ui);
                 hover_row(ui, "open_folder", theme, ml, mw, |ui| {
                     ui.menu_button("Open Folder  Ctrl+Shift+O", |ui| {
@@ -162,22 +174,26 @@ pub fn show_menu_bar(
                 });
             });
 
-            ui.menu_button("Edit", |ui| {
-                let (ml, mw) = setup_menu_hover(ui);
-                hover_row(ui, "preferences", theme, ml, mw, |ui| {
-                    if ui.button("Preferences").clicked() {
-                        action = MenuAction::ShowSettings;
-                        ui.close_menu();
-                    }
+            if show_edit {
+                ui.menu_button("Edit", |ui| {
+                    let (ml, mw) = setup_menu_hover(ui);
+                    hover_row(ui, "preferences", theme, ml, mw, |ui| {
+                        if ui.button("Preferences").clicked() {
+                            action = MenuAction::ShowSettings;
+                            ui.close_menu();
+                        }
+                    });
                 });
-            });
+            }
 
-            ui.menu_button("View", |ui| {
+            if show_view {
+                ui.menu_button("View", |ui| {
                 let (ml, mw) = setup_menu_hover(ui);
                 let pane_count = panes.len();
                 let is_single = pane_count == 1;
                 let is_synced = pane_count >= 2 && dual_pane_mode == DualPaneMode::Synced;
-                let is_independent = pane_count >= 2 && dual_pane_mode == DualPaneMode::Independent;
+                let is_independent =
+                    pane_count >= 2 && dual_pane_mode == DualPaneMode::Independent;
                 hover_row(ui, "single_pane", theme, ml, mw, |ui| {
                     if ui.radio(is_single, "Single Pane  Ctrl+1").clicked() {
                         if !is_single {
@@ -195,7 +211,10 @@ pub fn show_menu_bar(
                     }
                 });
                 hover_row(ui, "dual_independent", theme, ml, mw, |ui| {
-                    if ui.radio(is_independent, "Dual Pane (Independent)  Ctrl+3").clicked() {
+                    if ui
+                        .radio(is_independent, "Dual Pane (Independent)  Ctrl+3")
+                        .clicked()
+                    {
                         if !is_independent {
                             action = MenuAction::SetDualPaneIndependent;
                         }
@@ -224,26 +243,64 @@ pub fn show_menu_bar(
                     });
                 });
             });
+            }
 
-            ui.menu_button("Help", |ui| {
-                let (ml, mw) = setup_menu_hover(ui);
-                hover_row(ui, "about", theme, ml, mw, |ui| {
-                    if ui.button("About").clicked() {
-                        action = MenuAction::ShowAbout;
-                        ui.close_menu();
-                    }
+            if show_help {
+                ui.menu_button("Help", |ui| {
+                    let (ml, mw) = setup_menu_hover(ui);
+                    hover_row(ui, "about", theme, ml, mw, |ui| {
+                        if ui.button("About").clicked() {
+                            action = MenuAction::ShowAbout;
+                            ui.close_menu();
+                        }
+                    });
                 });
-            });
+            }
 
-            // FPS display (right-aligned in menu bar)
-            if let Some(text) = fps_text {
+            // FPS display (right-aligned, only if space remains after menus)
+            if fps_primary.is_some() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(text)
-                            .monospace()
-                            .color(egui::Color32::from_gray(220))
-                            .size(12.0),
-                    );
+                    let remaining = ui.available_width();
+                    let font = egui::FontId::monospace(12.0);
+                    let fps_color = egui::Color32::from_gray(220);
+
+                    let primary = fps_primary.unwrap();
+                    let primary_w = ui.fonts(|f| {
+                        f.layout_no_wrap(primary.into(), font.clone(), fps_color)
+                            .size()
+                            .x
+                    });
+
+                    if let Some(secondary) = fps_secondary {
+                        let full = format!("{} | {}", primary, secondary);
+                        let full_w = ui.fonts(|f| {
+                            f.layout_no_wrap(full.clone(), font.clone(), fps_color)
+                                .size()
+                                .x
+                        });
+                        if remaining >= full_w + 8.0 {
+                            ui.label(
+                                egui::RichText::new(full)
+                                    .monospace()
+                                    .color(fps_color)
+                                    .size(12.0),
+                            );
+                        } else if remaining >= primary_w + 8.0 {
+                            ui.label(
+                                egui::RichText::new(primary)
+                                    .monospace()
+                                    .color(fps_color)
+                                    .size(12.0),
+                            );
+                        }
+                    } else if remaining >= primary_w + 8.0 {
+                        ui.label(
+                            egui::RichText::new(primary)
+                                .monospace()
+                                .color(fps_color)
+                                .size(12.0),
+                        );
+                    }
                 });
             }
         });

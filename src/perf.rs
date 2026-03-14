@@ -52,13 +52,13 @@ impl ImagePerfTracker {
         }
     }
 
-    /// Build the FPS display string.
-    pub fn fps_text(&mut self) -> String {
-        let fps = self.image_fps();
-        let mut text = format!("Img: {:.1} FPS", fps);
-        if let Some(ms) = self.last_decode_ms {
-            text.push_str(&format!(" | Decode: {:.1}ms", ms));
-        }
-        text
+    /// Build the FPS display string (primary only).
+    pub fn fps_primary(&mut self) -> String {
+        format!("Img: {:.1} FPS", self.image_fps())
+    }
+
+    /// Build the decode time string (secondary).
+    pub fn fps_secondary(&self) -> Option<String> {
+        self.last_decode_ms.map(|ms| format!("Decode: {:.1}ms", ms))
     }
 }
