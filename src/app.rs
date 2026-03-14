@@ -306,7 +306,8 @@ impl App {
     fn handle_keyboard(&mut self, ctx: &egui::Context) {
         let (home, end, shift, nav_right_pressed, nav_left_pressed,
              nav_right_held, nav_left_held, toggle_dual, set_single, set_dual,
-             set_independent, toggle_footer, open_folder, open_file, close, quit) =
+             set_independent, select_pane1, select_pane2,
+             toggle_footer, open_folder, open_file, close, quit) =
             ctx.input(|i| {
                 (
                     i.key_pressed(egui::Key::Home),
@@ -320,6 +321,8 @@ impl App {
                     i.key_pressed(egui::Key::Num1) && i.modifiers.command,
                     i.key_pressed(egui::Key::Num2) && i.modifiers.command,
                     i.key_pressed(egui::Key::Num3) && i.modifiers.command,
+                    i.key_pressed(egui::Key::Num1) && !i.modifiers.command,
+                    i.key_pressed(egui::Key::Num2) && !i.modifiers.command,
                     i.key_pressed(egui::Key::Tab),
                     i.key_pressed(egui::Key::O) && i.modifiers.command && i.modifiers.shift,
                     i.key_pressed(egui::Key::O) && i.modifiers.command && !i.modifiers.shift,
@@ -348,6 +351,18 @@ impl App {
             self.settings.show_footer = !self.settings.show_footer;
             self.settings.save();
             return;
+        }
+
+        // Pane selection toggle (bare 1/2 keys, only in independent dual-pane mode)
+        if self.panes.len() >= 2 && self.dual_pane_mode == DualPaneMode::Independent {
+            if select_pane1 {
+                self.panes[0].selected = !self.panes[0].selected;
+                return;
+            }
+            if select_pane2 {
+                self.panes[1].selected = !self.panes[1].selected;
+                return;
+            }
         }
 
         // Skate mode (Shift held): advance every frame while key is down
@@ -379,39 +394,55 @@ impl App {
             return;
         }
 
+        // In independent mode, only navigate selected panes;
+        // in synced mode, navigate all panes.
+        let use_selection = self.dual_pane_mode == DualPaneMode::Independent;
+        let is_active = |p: &Pane| !use_selection || p.selected;
+
         if home {
             for pane in &mut self.panes {
-                pane.jump_to(0, ctx);
+                if is_active(pane) {
+                    pane.jump_to(0, ctx);
+                }
             }
             self.perf.record_image_load(0.0);
         } else if end {
             for pane in &mut self.panes {
-                let last = pane.image_paths.len().saturating_sub(1);
-                pane.jump_to(last, ctx);
+                if is_active(pane) {
+                    let last = pane.image_paths.len().saturating_sub(1);
+                    pane.jump_to(last, ctx);
+                }
             }
             self.perf.record_image_load(0.0);
         } else if nav_right {
-            // Only advance if all panes *that have images* have the next image cached
-            let all_ready = self.panes.iter().all(|p| p.image_paths.is_empty() || p.is_next_cached(1));
+            let all_ready = self.panes.iter().all(|p| {
+                !is_active(p) || p.image_paths.is_empty() || p.is_next_cached(1)
+            });
             if all_ready {
-                let any_advanced = self.panes.iter_mut().fold(false, |acc, p| p.navigate(1) || acc);
+                let any_advanced = self.panes.iter_mut().fold(false, |acc, p| {
+                    if is_active(p) { p.navigate(1) || acc } else { acc }
+                });
                 if any_advanced {
                     self.perf.record_image_load(0.0);
                 }
             }
-            let any_can = self.panes.iter().any(|p| p.can_navigate_forward());
+            let any_can = self.panes.iter().any(|p| is_active(p) && p.can_navigate_forward());
             if any_can {
                 ctx.request_repaint();
             }
         } else if nav_left {
-            let all_ready = self.panes.iter().all(|p| p.image_paths.is_empty() || p.is_next_cached(-1));
+            let all_ready = self.panes.iter().all(|p| {
+                !is_active(p) || p.image_paths.is_empty() || p.is_next_cached(-1)
+            });
             if all_ready {
-                let any_advanced = self.panes.iter_mut().fold(false, |acc, p| p.navigate(-1) || acc);
+                let any_advanced = self.panes.iter_mut().fold(false, |acc, p| {
+                    if is_active(p) { p.navigate(-1) || acc } else { acc }
+                });
                 if any_advanced {
                     self.perf.record_image_load(0.0);
                 }
             }
-            let any_can = self.panes.iter().any(|p| p.can_navigate_backward());
+            let any_can = self.panes.iter().any(|p| is_active(p) && p.can_navigate_backward());
             if any_can {
                 ctx.request_repaint();
             }
@@ -591,6 +622,21 @@ impl App {
                         egui::UiBuilder::new().max_rect(right_rect),
                         |ui| rest[0].show_content(ui),
                     );
+
+                    // Selection indicator: accent bar at top of each selected pane
+                    // (only shown in independent mode)
+                    if independent {
+                        let bar_h = 3.0;
+                        for (pane, rect) in [(&first[0], &left_rect), (&rest[0], &right_rect)] {
+                            if pane.selected {
+                                let bar_rect = egui::Rect::from_min_size(
+                                    rect.min,
+                                    egui::vec2(rect.width(), bar_h),
+                                );
+                                ui.painter().rect_filled(bar_rect, 0.0, accent);
+                            }
+                        }
+                    }
 
                     // Per-pane sliders (independent mode)
                     if independent {

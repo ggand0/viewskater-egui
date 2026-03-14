@@ -21,6 +21,7 @@ pub struct Pane {
     pub decode_cache: cache::DecodeLruCache,
     pub cache_count: usize,
     pub lru_capacity: usize,
+    pub selected: bool,
 }
 
 impl Pane {
@@ -36,6 +37,7 @@ impl Pane {
             decode_cache: cache::DecodeLruCache::new(lru_capacity),
             cache_count,
             lru_capacity,
+            selected: true,
         }
     }
 
