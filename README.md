@@ -48,9 +48,11 @@ sed -i "s|Exec=.*|Exec=/path/to/viewskater-egui.AppImage %f|" \
 Drag and drop an image or a directory of images onto a pane, and navigate through the images using the **A / D** keys or the slider.
 Use the mouse wheel to zoom in/out of an image.
 
-In dual-pane mode (**Ctrl+2**), the slider syncs images in both panes by default.
+In dual-pane mode (**Ctrl+2** / **Cmd+2**), the slider syncs images in both panes by default.
 
 ## Shortcuts
+
+On macOS, use **Cmd** instead of **Ctrl**.
 
 | Input | Action |
 |---|---|
@@ -58,6 +60,10 @@ In dual-pane mode (**Ctrl+2**), the slider syncs images in both panes by default
 | Hold A / D or arrows | Skate mode (continuous scroll) |
 | Home / End | First / last image |
 | Ctrl+1 / Ctrl+2 | Single / dual pane |
+| Ctrl+O | Open file |
+| Ctrl+Shift+O | Open folder |
+| Ctrl+W | Close images |
+| Ctrl+Q | Quit |
 | Scroll wheel | Zoom (centered on cursor) |
 | Click + drag | Pan |
 | Double-click | Reset zoom and pan |
