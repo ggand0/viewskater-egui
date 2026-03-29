@@ -36,7 +36,8 @@ fn load_icon() -> Option<egui::IconData> {
 }
 
 fn main() -> eframe::Result {
-    env_logger::init();
+    let log_buffer = file_io::setup_logger();
+    file_io::setup_panic_hook(log_buffer.clone());
     let args = Args::parse();
 
     let mut viewport = egui::ViewportBuilder::default()
@@ -56,6 +57,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "viewskater-egui",
         options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, args.paths)))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, args.paths, log_buffer)))),
     )
 }

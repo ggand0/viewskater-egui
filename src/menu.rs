@@ -270,6 +270,19 @@ pub(crate) fn show_menu_bar(
                 ui.menu_button("Help", |ui| {
                     let (ml, mw) = setup_menu_hover(ui);
                     hover_row(ui, theme, ml, mw, |ui| {
+                        if ui.button("Show Logs").clicked() {
+                            action = MenuAction::ShowLogs;
+                            ui.close_menu();
+                        }
+                    });
+                    hover_row(ui, theme, ml, mw, |ui| {
+                        if ui.button("Export debug logs").clicked() {
+                            action = MenuAction::ExportDebugLogs;
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
+                    hover_row(ui, theme, ml, mw, |ui| {
                         if ui.button("About").clicked() {
                             action = MenuAction::ShowAbout;
                             ui.close_menu();
@@ -462,4 +475,6 @@ pub(crate) enum MenuAction {
     ToggleFullscreen,
     ShowAbout,
     ShowSettings,
+    ShowLogs,
+    ExportDebugLogs,
 }

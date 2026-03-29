@@ -75,6 +75,14 @@ impl App {
             MenuAction::ToggleFullscreen => self.toggle_fullscreen(ctx),
             MenuAction::ShowAbout => self.show_about = true,
             MenuAction::ShowSettings => self.show_settings = true,
+            MenuAction::ShowLogs => {
+                let log_dir = crate::file_io::get_log_directory();
+                let _ = std::fs::create_dir_all(&log_dir);
+                crate::file_io::open_in_file_explorer(&log_dir.to_string_lossy());
+            }
+            MenuAction::ExportDebugLogs => {
+                crate::file_io::export_and_open_debug_logs(&self.log_buffer);
+            }
         }
     }
 

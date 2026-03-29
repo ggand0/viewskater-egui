@@ -1,6 +1,8 @@
 mod handlers;
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 
@@ -107,11 +109,16 @@ pub struct App {
     pub(crate) show_about: bool,
     pub(crate) is_fullscreen: bool,
     pub(crate) menu_open: bool,
+    pub(crate) log_buffer: Arc<Mutex<VecDeque<String>>>,
     initial_size_set: bool,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, paths: Vec<PathBuf>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        paths: Vec<PathBuf>,
+        log_buffer: Arc<Mutex<VecDeque<String>>>,
+    ) -> Self {
         let settings = AppSettings::load();
         let theme = UiTheme::teal_dark();
         theme.apply_to_visuals(&cc.egui_ctx);
@@ -126,6 +133,7 @@ impl App {
             show_about: false,
             is_fullscreen: false,
             menu_open: false,
+            log_buffer,
             initial_size_set: false,
         };
 
