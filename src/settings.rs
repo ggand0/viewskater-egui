@@ -110,7 +110,7 @@ impl Default for AppSettings {
             show_cache_overlay: false,
             sync_zoom_pan: true,
             cache_count: 5,
-            lru_budget_mb: 512,
+            lru_budget_mb: 1024,
         }
     }
 }
