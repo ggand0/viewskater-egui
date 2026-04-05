@@ -72,6 +72,10 @@ On macOS, use **Cmd** instead of **Ctrl**.
 | F11 | Toggle fullscreen |
 | Escape | Exit fullscreen |
 
+## Memory usage
+
+ViewSkater caches decoded images in RAM to enable smooth slider scrubbing without re-decoding. The cache uses a memory budget (default 512 MB, adjustable in Preferences). Since decoded pixels are much larger than compressed files on disk (e.g. a 10 MB PNG at 3840×2160 becomes ~32 MB as raw RGBA), higher-resolution images will result in fewer cached entries for the same budget. The current process memory is shown in the FPS overlay.
+
 ## License
 
 ViewSkater is licensed under either of

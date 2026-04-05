@@ -436,23 +436,33 @@ impl SliderLoader {
 /// equivalent of iced's raster cache where `Memory::Device(entry)` returns
 /// instantly for previously-loaded images.
 ///
-/// Memory budget: a 4K RGBA8 image is ~32MB. With capacity 50 that's ~1.6GB
-/// worst case. For 1080p images (~8MB each), 50 images = ~400MB.
+/// Uses a memory budget (in bytes) instead of a fixed entry count so the
+/// cache self-adjusts for any resolution: 4K images (~32 MB each) get fewer
+/// entries than 1080p images (~8 MB each) for the same budget.
 pub struct DecodeLruCache {
     /// Map from file_index → decoded ColorImage
     entries: HashMap<usize, egui::ColorImage>,
     /// Access order for LRU eviction — most recently used at the back
     order: VecDeque<usize>,
-    capacity: usize,
+    /// Maximum total bytes for cached images
+    budget_bytes: usize,
+    /// Current total bytes of cached images
+    total_bytes: usize,
 }
 
 impl DecodeLruCache {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(budget_mb: usize) -> Self {
         Self {
             entries: HashMap::new(),
             order: VecDeque::new(),
-            capacity,
+            budget_bytes: budget_mb * 1024 * 1024,
+            total_bytes: 0,
         }
+    }
+
+    /// Byte size of a ColorImage (width × height × 4 bytes per Color32).
+    fn image_bytes(image: &egui::ColorImage) -> usize {
+        image.size[0] * image.size[1] * 4
     }
 
     /// Get a decoded image if cached. Moves entry to most-recently-used.
@@ -467,16 +477,29 @@ impl DecodeLruCache {
         }
     }
 
-    /// Insert a decoded image. Evicts the least recently used if at capacity.
+    /// Insert a decoded image. Evicts least recently used entries until the
+    /// total stays within the memory budget.
     pub fn insert(&mut self, file_index: usize, image: egui::ColorImage) {
-        if self.entries.contains_key(&file_index) {
+        let new_bytes = Self::image_bytes(&image);
+
+        // If replacing an existing entry, remove its bytes first
+        if let Some(old) = self.entries.remove(&file_index) {
+            self.total_bytes -= Self::image_bytes(&old);
             self.order.retain(|&i| i != file_index);
-        } else if self.entries.len() >= self.capacity {
-            // Evict LRU (front of order)
+        }
+
+        // Evict LRU entries until there's room
+        while self.total_bytes + new_bytes > self.budget_bytes {
             if let Some(evicted) = self.order.pop_front() {
-                self.entries.remove(&evicted);
+                if let Some(img) = self.entries.remove(&evicted) {
+                    self.total_bytes -= Self::image_bytes(&img);
+                }
+            } else {
+                break;
             }
         }
+
+        self.total_bytes += new_bytes;
         self.entries.insert(file_index, image);
         self.order.push_back(file_index);
     }
@@ -485,17 +508,26 @@ impl DecodeLruCache {
         self.entries.len()
     }
 
+    pub fn total_mb(&self) -> f64 {
+        self.total_bytes as f64 / (1024.0 * 1024.0)
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
+        self.total_bytes = 0;
     }
 
-    /// Change the maximum capacity, evicting LRU entries if over the new limit.
-    pub fn set_capacity(&mut self, capacity: usize) {
-        self.capacity = capacity;
-        while self.entries.len() > self.capacity {
+    /// Change the memory budget, evicting LRU entries if over the new limit.
+    pub fn set_budget_mb(&mut self, budget_mb: usize) {
+        self.budget_bytes = budget_mb * 1024 * 1024;
+        while self.total_bytes > self.budget_bytes {
             if let Some(evicted) = self.order.pop_front() {
-                self.entries.remove(&evicted);
+                if let Some(img) = self.entries.remove(&evicted) {
+                    self.total_bytes -= Self::image_bytes(&img);
+                }
+            } else {
+                break;
             }
         }
     }

@@ -123,7 +123,7 @@ impl App {
         let theme = UiTheme::teal_dark();
         theme.apply_to_visuals(&cc.egui_ctx);
         let mut app = Self {
-            panes: vec![Pane::new(settings.cache_count, settings.lru_capacity)],
+            panes: vec![Pane::new(settings.cache_count, settings.lru_budget_mb)],
             perf: perf::ImagePerfTracker::new(),
             divider_fraction: 0.5,
             dual_pane_mode: DualPaneMode::Synced,
@@ -141,7 +141,7 @@ impl App {
             app.panes[0].open_path(&paths[0], &cc.egui_ctx);
         }
         if paths.len() >= 2 {
-            let mut pane1 = Pane::new(app.settings.cache_count, app.settings.lru_capacity);
+            let mut pane1 = Pane::new(app.settings.cache_count, app.settings.lru_budget_mb);
             pane1.open_path(&paths[1], &cc.egui_ctx);
             app.panes.push(pane1);
         }
