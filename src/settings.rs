@@ -99,7 +99,7 @@ pub struct AppSettings {
     pub show_cache_overlay: bool,
     pub sync_zoom_pan: bool,
     pub cache_count: usize,
-    pub lru_capacity: usize,
+    pub lru_budget_mb: usize,
 }
 
 impl Default for AppSettings {
@@ -110,7 +110,7 @@ impl Default for AppSettings {
             show_cache_overlay: false,
             sync_zoom_pan: true,
             cache_count: 5,
-            lru_capacity: 50,
+            lru_budget_mb: 1024,
         }
     }
 }
@@ -148,7 +148,7 @@ impl AppSettings {
     }
 }
 
-/// Show the settings modal. Returns true if performance settings (cache_count or lru_capacity) changed.
+/// Show the settings modal. Returns true if performance settings (cache_count or lru_budget_mb) changed.
 pub fn show_settings_modal(
     ctx: &egui::Context,
     settings: &mut AppSettings,
@@ -160,7 +160,7 @@ pub fn show_settings_modal(
     }
 
     let prev_cache_count = settings.cache_count;
-    let prev_lru_capacity = settings.lru_capacity;
+    let prev_lru_budget = settings.lru_budget_mb;
 
     // Semi-transparent backdrop
     let screen = ctx.screen_rect();
@@ -254,9 +254,9 @@ pub fn show_settings_modal(
                                 accent_slider(ui, &mut settings.cache_count, 1..=20, defaults.cache_count, theme);
                             });
                             ui.horizontal(|ui| {
-                                ui.label("LRU Capacity");
+                                ui.label("LRU Budget (MB)");
                                 let defaults = AppSettings::default();
-                                accent_slider(ui, &mut settings.lru_capacity, 10..=200, defaults.lru_capacity, theme);
+                                accent_slider(ui, &mut settings.lru_budget_mb, 128..=4096, defaults.lru_budget_mb, theme);
                             });
                         });
                 });
@@ -267,5 +267,5 @@ pub fn show_settings_modal(
         *show = false;
     }
 
-    settings.cache_count != prev_cache_count || settings.lru_capacity != prev_lru_capacity
+    settings.cache_count != prev_cache_count || settings.lru_budget_mb != prev_lru_budget
 }

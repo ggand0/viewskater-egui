@@ -20,12 +20,12 @@ pub(crate) struct Pane {
     slider_loader: Option<cache::SliderLoader>,
     pub(crate) decode_cache: cache::DecodeLruCache,
     pub(crate) cache_count: usize,
-    pub(crate) lru_capacity: usize,
+    pub(crate) lru_budget_mb: usize,
     pub(crate) selected: bool,
 }
 
 impl Pane {
-    pub(crate) fn new(cache_count: usize, lru_capacity: usize) -> Self {
+    pub(crate) fn new(cache_count: usize, lru_budget_mb: usize) -> Self {
         Self {
             image_paths: Vec::new(),
             current_index: 0,
@@ -34,9 +34,9 @@ impl Pane {
             pan: egui::Vec2::ZERO,
             cache: None,
             slider_loader: None,
-            decode_cache: cache::DecodeLruCache::new(lru_capacity),
+            decode_cache: cache::DecodeLruCache::new(lru_budget_mb),
             cache_count,
-            lru_capacity,
+            lru_budget_mb,
             selected: true,
         }
     }
@@ -150,11 +150,12 @@ impl Pane {
                 let upload_ms = t3.elapsed().as_secs_f64() * 1000.0;
 
                 log::debug!(
-                    "load_sync [{}] ({}x{}): decode={:.1}ms convert={:.1}ms cache={:.1}ms upload={:.1}ms total={:.1}ms [LRU: {}]",
+                    "load_sync [{}] ({}x{}): decode={:.1}ms convert={:.1}ms cache={:.1}ms upload={:.1}ms total={:.1}ms [LRU: {} / {:.0} MB]",
                     file_index, size[0], size[1],
                     decode_ms, convert_ms, cache_ms, upload_ms,
                     t0.elapsed().as_secs_f64() * 1000.0,
                     self.decode_cache.len(),
+                    self.decode_cache.total_mb(),
                 );
             }
             Err(e) => {
@@ -246,6 +247,13 @@ impl Pane {
         self.cache
             .as_ref()
             .is_some_and(|c| c.current_texture_for(new_index).is_some())
+    }
+
+    /// Returns (lru_mb, sliding_window_mb).
+    pub(crate) fn cache_memory_mb(&self) -> (f64, f64) {
+        let lru = self.decode_cache.total_mb();
+        let sw = self.cache.as_ref().map_or(0.0, |c| c.total_mb());
+        (lru, sw)
     }
 
     pub(crate) fn poll_cache(&mut self) {

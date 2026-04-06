@@ -123,7 +123,7 @@ impl App {
         let theme = UiTheme::teal_dark();
         theme.apply_to_visuals(&cc.egui_ctx);
         let mut app = Self {
-            panes: vec![Pane::new(settings.cache_count, settings.lru_capacity)],
+            panes: vec![Pane::new(settings.cache_count, settings.lru_budget_mb)],
             perf: perf::ImagePerfTracker::new(),
             divider_fraction: 0.5,
             dual_pane_mode: DualPaneMode::Synced,
@@ -141,7 +141,7 @@ impl App {
             app.panes[0].open_path(&paths[0], &cc.egui_ctx);
         }
         if paths.len() >= 2 {
-            let mut pane1 = Pane::new(app.settings.cache_count, app.settings.lru_capacity);
+            let mut pane1 = Pane::new(app.settings.cache_count, app.settings.lru_budget_mb);
             pane1.open_path(&paths[1], &cc.egui_ctx);
             app.panes.push(pane1);
         }
@@ -472,12 +472,20 @@ impl eframe::App for App {
             (false, false)
         };
 
+        // Compute cache memory breakdown for FPS overlay
+        let cache_mb = if self.settings.show_fps {
+            let (lru, sw) = self.panes.first().map_or((0.0, 0.0), |p| p.cache_memory_mb());
+            Some((lru, sw))
+        } else {
+            None
+        };
+
         // Menu bar (top) — in fullscreen, revealed when cursor near top edge
         // or when a menu dropdown is open (so user can interact with items)
         let show_menu = !self.is_fullscreen || cursor_near_top || self.menu_open;
         if show_menu {
             let fps_text = if self.settings.show_fps && !self.is_fullscreen {
-                Some(self.perf.fps_text())
+                Some(self.perf.fps_text(cache_mb))
             } else {
                 None
             };
@@ -515,7 +523,7 @@ impl eframe::App for App {
 
         // FPS overlay in fullscreen (painted over central panel, top-right corner)
         if self.is_fullscreen && self.settings.show_fps {
-            let fps = self.perf.fps_text();
+            let fps = self.perf.fps_text(cache_mb);
             let screen = ctx.screen_rect();
             let font = egui::FontId::monospace(14.0);
             let color = egui::Color32::from_rgba_unmultiplied(220, 220, 220, 200);

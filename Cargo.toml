@@ -27,6 +27,8 @@ webbrowser = "1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 dirs = "6"
+sysinfo = "0.33"
+libc = "0.2"
 
 [build-dependencies]
 chrono = "0.4"
