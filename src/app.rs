@@ -432,8 +432,7 @@ impl eframe::App for App {
         // submit → present) can finish at variable times, causing irregular
         // frame spacing during rapid keyboard navigation of 4K images.
         // Blocking here until the previous frame's GPU work completes gives
-        // deterministic frame pacing comparable to glow's glSwapBuffers.
-        // Returns None when using the glow backend, so this is a no-op there.
+        // deterministic frame pacing.
         if let Some(render_state) = frame.wgpu_render_state() {
             render_state.device.poll(eframe::wgpu::Maintain::Wait);
         }
@@ -567,15 +566,11 @@ impl eframe::App for App {
             }
         }
 
-        // Settings modal
-        let prev_show_settings = self.show_settings;
+        // Settings modal — auto-saves on any change inside the modal.
         let perf_changed =
             settings::show_settings_modal(ctx, &mut self.settings, &mut self.show_settings, &self.theme);
         if perf_changed {
             self.apply_settings_to_caches();
-        }
-        if prev_show_settings && !self.show_settings {
-            self.settings.save();
         }
 
         // About modal (on top of everything)

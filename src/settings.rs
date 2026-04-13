@@ -91,6 +91,74 @@ fn accent_slider(
     );
 }
 
+/// Custom radio row for GPU memory mode: an accent-colored circle indicator,
+/// a primary label, and a muted description on the next line.
+fn gpu_memory_radio(
+    ui: &mut egui::Ui,
+    current: &mut GpuMemoryMode,
+    value: GpuMemoryMode,
+    label: &str,
+    description: &str,
+    theme: &UiTheme,
+) {
+    let selected = *current == value;
+    ui.horizontal(|ui| {
+        let radius = 7.0_f32;
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(radius * 2.0 + 4.0, radius * 2.0 + 4.0),
+            egui::Sense::click(),
+        );
+        let center = rect.center();
+        ui.painter().circle_stroke(
+            center,
+            radius,
+            egui::Stroke::new(1.5, egui::Color32::from_gray(140)),
+        );
+        if selected {
+            ui.painter()
+                .circle_filled(center, radius - 3.0, theme.accent);
+        }
+        if response.clicked() {
+            *current = value;
+        }
+
+        ui.vertical(|ui| {
+            let label_response = ui.add(
+                egui::Label::new(egui::RichText::new(label).size(13.0))
+                    .sense(egui::Sense::click()),
+            );
+            if label_response.clicked() {
+                *current = value;
+            }
+            ui.label(
+                egui::RichText::new(description)
+                    .size(11.0)
+                    .color(theme.muted),
+            );
+        });
+    });
+    ui.add_space(4.0);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuMemoryMode {
+    /// gpu_allocator default (~256 MB blocks). Highest navigation speed,
+    /// largest GPU memory footprint.
+    Performance,
+    /// 64 MB device / 32 MB host blocks. Recommended balance.
+    Balanced,
+    /// 8 MB device / 4 MB host blocks. Lowest GPU memory, but a 4K texture
+    /// no longer fits in a single block — degrades navigation performance.
+    LowMemory,
+}
+
+impl Default for GpuMemoryMode {
+    fn default() -> Self {
+        Self::Balanced
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
@@ -100,6 +168,7 @@ pub struct AppSettings {
     pub sync_zoom_pan: bool,
     pub cache_count: usize,
     pub lru_budget_mb: usize,
+    pub gpu_memory_mode: GpuMemoryMode,
 }
 
 impl Default for AppSettings {
@@ -111,6 +180,7 @@ impl Default for AppSettings {
             sync_zoom_pan: true,
             cache_count: 5,
             lru_budget_mb: 1024,
+            gpu_memory_mode: GpuMemoryMode::default(),
         }
     }
 }
@@ -159,6 +229,13 @@ pub fn show_settings_modal(
         return false;
     }
 
+    // Snapshot at start of frame; if anything changes we save immediately
+    // and stamp the save time so the "Saved" indicator can fade in.
+    let snapshot = settings.clone();
+
+    let saved_at_id = egui::Id::new("settings_saved_at");
+    let now = ctx.input(|i| i.time);
+
     let prev_cache_count = settings.cache_count;
     let prev_lru_budget = settings.lru_budget_mb;
 
@@ -175,6 +252,9 @@ pub fn show_settings_modal(
             }
         });
 
+    // Cap the modal height so it fits even on very short windows.
+    let max_modal_height = (screen.height() - 60.0).max(200.0);
+
     // Modal card
     egui::Area::new(egui::Id::new("settings_modal"))
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -187,11 +267,16 @@ pub fn show_settings_modal(
                 .inner_margin(20.0)
                 .show(ui, |ui| {
                     ui.set_width(360.0);
+                    ui.set_max_height(max_modal_height);
 
-                    // Title
+                    // Title (outside the scroll area so it stays pinned)
                     ui.label(egui::RichText::new("Preferences").size(20.0).strong());
                     ui.separator();
                     ui.add_space(8.0);
+
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
 
                     // Display section
                     ui.label(
@@ -231,6 +316,58 @@ pub fn show_settings_modal(
 
                     ui.add_space(12.0);
 
+                    // Graphics section
+                    ui.label(
+                        egui::RichText::new("Graphics")
+                            .size(14.0)
+                            .color(theme.heading),
+                    );
+                    ui.add_space(2.0);
+                    egui::Frame::default()
+                        .fill(theme.section_bg)
+                        .corner_radius(6.0)
+                        .inner_margin(10.0)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new("GPU Memory Mode")
+                                    .size(12.0)
+                                    .color(theme.muted),
+                            );
+                            ui.add_space(4.0);
+                            gpu_memory_radio(
+                                ui,
+                                &mut settings.gpu_memory_mode,
+                                GpuMemoryMode::Performance,
+                                "Performance",
+                                "Highest nav speed, largest GPU memory",
+                                theme,
+                            );
+                            gpu_memory_radio(
+                                ui,
+                                &mut settings.gpu_memory_mode,
+                                GpuMemoryMode::Balanced,
+                                "Balanced",
+                                "Recommended for most users",
+                                theme,
+                            );
+                            gpu_memory_radio(
+                                ui,
+                                &mut settings.gpu_memory_mode,
+                                GpuMemoryMode::LowMemory,
+                                "Low Memory",
+                                "Lowest GPU memory, slower navigation",
+                                theme,
+                            );
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new("⚠ Restart required to apply")
+                                    .size(11.0)
+                                    .color(theme.muted),
+                            );
+                        });
+
+                    ui.add_space(12.0);
+
                     // Performance section
                     ui.label(
                         egui::RichText::new("Performance")
@@ -259,12 +396,44 @@ pub fn show_settings_modal(
                                 accent_slider(ui, &mut settings.lru_budget_mb, 128..=4096, defaults.lru_budget_mb, theme);
                             });
                         });
+
+                    ui.add_space(10.0);
+
+                        }); // close ScrollArea
+
+                    // "Saved" indicator pinned below the scroll area
+                    let saved_at: Option<f64> = ctx.data(|d| d.get_temp(saved_at_id));
+                    if let Some(t) = saved_at {
+                        let elapsed = now - t;
+                        if elapsed < 2.0 {
+                            let alpha = ((1.0 - elapsed / 2.0) as f32).clamp(0.0, 1.0);
+                            let green = egui::Color32::from_rgba_unmultiplied(
+                                120,
+                                220,
+                                120,
+                                (alpha * 255.0) as u8,
+                            );
+                            ui.label(
+                                egui::RichText::new("✓ Saved")
+                                    .size(11.0)
+                                    .color(green),
+                            );
+                            ctx.request_repaint();
+                        }
+                    }
                 });
         });
 
     // Escape to close
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         *show = false;
+    }
+
+    // Auto-save on any change inside the modal and stamp the save time so
+    // the green "✓ Saved" indicator can show.
+    if *settings != snapshot {
+        settings.save();
+        ctx.data_mut(|d| d.insert_temp(saved_at_id, now));
     }
 
     settings.cache_count != prev_cache_count || settings.lru_budget_mb != prev_lru_budget
