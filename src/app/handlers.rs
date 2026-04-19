@@ -300,6 +300,20 @@ impl App {
         }
     }
 
+    /// Drain any paths forwarded from the platform layer (e.g. macOS Finder
+    /// "Open With"). Each path goes through the same entrypoint as CLI args
+    /// and drag-and-drop, so it loads the image and its sibling directory.
+    pub(super) fn handle_external_open_requests(&mut self, ctx: &egui::Context) {
+        while let Ok(path) = self.file_receiver.try_recv() {
+            log::info!("External open request: {}", path.display());
+            self.panes[0].open_path(&path, ctx);
+            if self.panes[0].current_texture.is_some() {
+                self.perf.record_image_load();
+            }
+            ctx.request_repaint();
+        }
+    }
+
     pub(super) fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
         if let Some(file) = dropped.first() {

@@ -2,6 +2,7 @@ mod handlers;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
 use eframe::egui;
@@ -111,6 +112,7 @@ pub struct App {
     pub(crate) menu_open: bool,
     pub(crate) log_buffer: Arc<Mutex<VecDeque<String>>>,
     initial_size_set: bool,
+    file_receiver: Receiver<PathBuf>,
 }
 
 impl App {
@@ -119,6 +121,7 @@ impl App {
         paths: Vec<PathBuf>,
         log_buffer: Arc<Mutex<VecDeque<String>>>,
         settings: AppSettings,
+        file_receiver: Receiver<PathBuf>,
     ) -> Self {
         let theme = UiTheme::teal_dark();
         theme.apply_to_visuals(&cc.egui_ctx);
@@ -135,6 +138,7 @@ impl App {
             menu_open: false,
             log_buffer,
             initial_size_set: false,
+            file_receiver,
         };
 
         if !paths.is_empty() {
@@ -461,6 +465,7 @@ impl eframe::App for App {
             pane.poll_cache();
         }
 
+        self.handle_external_open_requests(ctx);
         self.handle_dropped_files(ctx);
         self.handle_keyboard(ctx);
         self.update_title(ctx);

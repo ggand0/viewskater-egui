@@ -20,3 +20,7 @@ devlogs/
 
 # Claude Code instructions (local only)
 CLAUDE.md
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store

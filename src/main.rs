@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 use std::path::PathBuf;
+use std::sync::mpsc;
 
 use clap::Parser;
 use eframe::{egui, egui_wgpu, wgpu};
@@ -16,6 +17,7 @@ mod file_io;
 mod menu;
 mod pane;
 mod perf;
+mod platform;
 mod settings;
 mod theme;
 
@@ -148,9 +150,32 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
+    let (file_tx, file_rx) = mpsc::channel::<PathBuf>();
+    #[cfg(target_os = "macos")]
+    {
+        platform::macos::set_file_channel(file_tx.clone());
+        // Must run before eframe::run_native so the observer is registered
+        // before AppKit starts -finishLaunching and dispatches the initial
+        // openFiles: event.
+        platform::macos::install_launch_observer();
+    }
+    // Silence unused warnings on non-macOS targets.
+    #[cfg(not(target_os = "macos"))]
+    let _ = file_tx;
+
     eframe::run_native(
         "viewskater-egui",
         options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, args.paths, log_buffer, settings)))),
+        Box::new(move |cc| {
+            #[cfg(target_os = "macos")]
+            platform::macos::register_file_handler();
+            Ok(Box::new(app::App::new(
+                cc,
+                args.paths,
+                log_buffer,
+                settings,
+                file_rx,
+            )))
+        }),
     )
 }

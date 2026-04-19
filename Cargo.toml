@@ -37,6 +37,20 @@ sysinfo = "0.33"
 libc = "0.2"
 pollster = "0.4"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSArray",
+    "NSString",
+    "NSDictionary",
+    "NSUserDefaults",
+    "NSURL",
+] }
+objc2-app-kit = { version = "0.2", features = [
+    "NSApplication",
+    "NSResponder",
+] }
+
 [build-dependencies]
 chrono = "0.4"
 winres = "0.1"
@@ -53,6 +67,9 @@ name = "ViewSkater"
 identifier = "com.ggando.viewskater-egui"
 icon = ["assets/ViewSkater.icns"]
 short_description = "A fast image viewer built with egui"
+# NOTE: cargo-bundle 0.6.1 has no hook for extending the generated Info.plist.
+# scripts/bundle-macos.sh merges resources/macos/Info.plist after bundling to
+# inject CFBundleDocumentTypes.
 
 [profile.opt-dev]
 inherits = "release"
