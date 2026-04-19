@@ -37,10 +37,10 @@ pub fn set_file_channel(sender: Sender<PathBuf>) {
 }
 
 fn send_path(path: String) {
-    log::debug!("macOS Finder opened: {}", path);
+    log::debug!("macOS Finder opened: {path}");
     if let Some(sender) = FILE_CHANNEL.get() {
         if let Err(e) = sender.send(PathBuf::from(path)) {
-            log::error!("Failed to forward opened path to UI thread: {}", e);
+            log::error!("Failed to forward opened path to UI thread: {e}");
         }
     } else {
         log::warn!("FILE_CHANNEL not set; dropping opened path");
