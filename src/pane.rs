@@ -268,11 +268,8 @@ impl Pane {
         }
     }
 
-    /// Finalize after slider drag released: cancel throttle, re-center cache.
+    /// Finalize after slider drag released: re-center cache.
     pub(crate) fn apply_slider_release(&mut self) {
-        if let Some(loader) = &mut self.slider_loader {
-            loader.cancel();
-        }
         if let Some(cache) = &mut self.cache {
             cache.jump_to(self.current_index, &self.image_paths);
             if let Some(t) = cache.current_texture_for(self.current_index) {

@@ -12,7 +12,6 @@ const COL_EMPTY: egui::Color32 = egui::Color32::from_rgb(60, 60, 60);
 pub struct DecodeResult {
     pub file_index: usize,
     pub image: Option<egui::ColorImage>,
-    #[allow(dead_code)]
     pub decode_ms: f64,
 }
 
@@ -31,10 +30,8 @@ pub struct SlidingWindowCache {
     rx: mpsc::Receiver<DecodeResult>,
     in_flight: HashSet<usize>,
 
-    /// Completed decodes that haven't been uploaded to the GPU yet. `poll()`
-    /// drains `rx` into this queue and then uploads up to
-    /// `UPLOADS_PER_FRAME` entries, so the initial 11-texture burst no
-    /// longer peaks staging buffers and glibc arenas at ~363 MB.
+    /// Completed decodes waiting for GPU upload. `poll()` drains `rx` into
+    /// this queue and uploads up to `UPLOADS_PER_FRAME` per frame.
     pending_uploads: VecDeque<(usize, egui::ColorImage, String)>,
 
     /// Decode requests waiting for a thread slot. `spawn_load` pushes here
@@ -121,17 +118,18 @@ impl SlidingWindowCache {
     /// Poll for completed background decodes and upload textures.
     /// Call this every frame from `update()`.
     ///
-    /// Split into two phases:
-    /// 1. Drain completed decodes from the channel into `pending_uploads`
-    ///    (cheap, just moves `ColorImage`s into the queue).
-    /// 2. Issue up to `UPLOADS_PER_FRAME` GPU uploads. This caps the
-    ///    staging-buffer peak that previously inflated gpu_allocator's
-    ///    host pool and glibc arenas on directory open.
+    /// Drains completed background decodes into `pending_uploads`, then
+    /// issues up to `UPLOADS_PER_FRAME` GPU uploads per call.
     pub fn poll(&mut self, image_paths: &[PathBuf]) {
         // Phase 1: drain decode results into the upload queue.
         while let Ok(result) = self.rx.try_recv() {
             self.in_flight.remove(&result.file_index);
             if let Some(color_image) = result.image {
+                log::debug!(
+                    "bg decode [{}]: {:.1}ms",
+                    result.file_index,
+                    result.decode_ms,
+                );
                 let name = image_paths
                     .get(result.file_index)
                     .and_then(|p| p.file_name())
@@ -509,10 +507,6 @@ impl SliderLoader {
         }
     }
 
-    /// Reset on slider release.
-    pub fn cancel(&mut self) {
-        // nothing to clean up
-    }
 }
 
 /// LRU cache of uploaded GPU textures, keyed by file index.
