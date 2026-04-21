@@ -37,6 +37,7 @@ sysinfo = "0.33"
 libc = "0.2"
 pollster = "0.4"
 wgpu = { version = "24", default-features = false, features = ["counters"] }
+mimalloc = { version = "0.1", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"

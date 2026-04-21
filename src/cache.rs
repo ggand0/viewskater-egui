@@ -37,15 +37,22 @@ pub struct SlidingWindowCache {
     /// longer peaks staging buffers and glibc arenas at ~363 MB.
     pending_uploads: VecDeque<(usize, egui::ColorImage, String)>,
 
+    /// Decode requests waiting for a thread slot. `spawn_load` pushes here
+    /// when `in_flight.len() >= MAX_CONCURRENT_DECODES`; `poll` spawns the
+    /// next one when a decode completes and frees a slot.
+    pending_decodes: VecDeque<(usize, PathBuf)>,
+
     ctx: egui::Context,
 }
 
 /// Maximum number of GPU uploads issued by `SlidingWindowCache::poll` per
-/// frame. Higher values shorten the time to fully populate the cache on
-/// directory open but increase peak CPU staging + glibc arena pressure.
-/// 2 uploads × 33 MB per 4K texture ≈ 66 MB peak staging, fully populates
-/// an 11-slot window in ~5 frames.
+/// frame.
 const UPLOADS_PER_FRAME: usize = 2;
+
+/// Maximum number of background decode threads running simultaneously.
+/// Each 4K decode uses ~60 MB of temporary CPU memory (PNG decompression +
+/// RGB→RGBA conversion). Capping at 1 keeps the transient CPU peak low.
+const MAX_CONCURRENT_DECODES: usize = 10;
 
 impl SlidingWindowCache {
     pub fn new(ctx: &egui::Context, cache_count: usize) -> Self {
@@ -60,6 +67,7 @@ impl SlidingWindowCache {
             rx,
             in_flight: HashSet::new(),
             pending_uploads: VecDeque::new(),
+            pending_decodes: VecDeque::new(),
             ctx: ctx.clone(),
         }
     }
@@ -79,9 +87,8 @@ impl SlidingWindowCache {
         // Drain any pending results from previous window
         while self.rx.try_recv().is_ok() {}
         self.in_flight.clear();
-        // Drop any not-yet-uploaded ColorImages from the previous window —
-        // their slots are about to be reassigned.
         self.pending_uploads.clear();
+        self.pending_decodes.clear();
 
         let cache_size = self.cache_size();
 
@@ -134,11 +141,21 @@ impl SlidingWindowCache {
                 self.pending_uploads
                     .push_back((result.file_index, color_image, name));
             }
+
+            // A decode slot freed up — spawn the next queued decode if any.
+            while self.in_flight.len() < MAX_CONCURRENT_DECODES {
+                if let Some((idx, path)) = self.pending_decodes.pop_front() {
+                    if self.slot_index_for(idx).is_some() {
+                        self.spawn_thread(idx, &path);
+                    }
+                    // else: stale, skip and try the next
+                } else {
+                    break;
+                }
+            }
         }
 
-        // Phase 2: upload at most UPLOADS_PER_FRAME. Any entry whose slot
-        // has fallen outside the window (because navigate/jump shifted it
-        // while this upload was pending) is dropped on the floor.
+        // Phase 2: upload at most UPLOADS_PER_FRAME.
         for _ in 0..UPLOADS_PER_FRAME {
             let Some((file_index, color_image, name)) = self.pending_uploads.pop_front() else {
                 break;
@@ -152,14 +169,10 @@ impl SlidingWindowCache {
                     );
                     self.slots[slot_idx] = Some(texture);
                 }
-                // else: another decode already filled this slot, drop.
             }
-            // else: stale for current window, drop.
         }
 
-        // Keep ticking frames until the queue drains, even if nothing else
-        // in the UI requests a repaint.
-        if !self.pending_uploads.is_empty() {
+        if !self.pending_uploads.is_empty() || !self.pending_decodes.is_empty() {
             self.ctx.request_repaint();
         }
     }
@@ -278,11 +291,26 @@ impl SlidingWindowCache {
         }
     }
 
-    /// Spawn a background thread to decode an image.
+    /// Queue a background decode. If fewer than `MAX_CONCURRENT_DECODES`
+    /// threads are running, spawns immediately; otherwise queues until a
+    /// slot opens in `poll`.
     fn spawn_load(&mut self, file_index: usize, path: &Path) {
         if self.in_flight.contains(&file_index) {
             return;
         }
+        if self.pending_decodes.iter().any(|(idx, _)| *idx == file_index) {
+            return;
+        }
+
+        if self.in_flight.len() < MAX_CONCURRENT_DECODES {
+            self.spawn_thread(file_index, path);
+        } else {
+            self.pending_decodes.push_back((file_index, path.to_path_buf()));
+        }
+    }
+
+    /// Actually spawn the decode thread.
+    fn spawn_thread(&mut self, file_index: usize, path: &Path) {
         self.in_flight.insert(file_index);
 
         let path = path.to_path_buf();
