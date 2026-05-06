@@ -22,6 +22,10 @@ const DEFAULT_WINDOW_HEIGHT: f32 = 720.0;
 const FULLSCREEN_TOP_ZONE: f32 = 50.0;
 const FULLSCREEN_BOTTOM_ZONE: f32 = 100.0;
 
+/// Thumbnail UI size
+pub const THUMBNAIL_WIDTH: f32 = 300.0;
+pub const THUMBNAIL_HEIGHT: f32 = 200.0;
+
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum DualPaneMode {
     Synced,
@@ -40,6 +44,7 @@ pub(crate) fn paint_nav_slider(
     current_idx: usize,
     max_images: usize,
     accent: egui::Color32,
+    panes: &mut [Pane],
 ) -> SliderResult {
     if max_images <= 1 {
         return SliderResult {
@@ -95,6 +100,35 @@ pub(crate) fn paint_nav_slider(
         accent,
         egui::Stroke::NONE,
     );
+
+    if let Some(pos) = response.hover_pos() {
+        let usable = rect.x_range().shrink(handle_radius);
+        let drag_t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
+        let cursor_index = (max as f32 * drag_t).round() as usize;
+        response.on_hover_ui_at_pointer(|ui| {
+            if let Some(pane) = panes.get_mut(0) {
+                if let Some(swc) = pane.cache.as_mut() {
+                    let (response, painter) = ui.allocate_painter(
+                        egui::Vec2::new(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT), egui::Sense::hover());
+                    if let Some(tex) = swc.current_thumbnail_for(cursor_index, &pane.image_paths[cursor_index]) {
+                        let tex_size = tex.size_vec2();
+                        let available = response.rect;
+
+                        if available.width() <= 0.0 || available.height() <= 0.0 {
+                            return;
+                        }
+                        if tex_size.x <= 0.0 || tex_size.y <= 0.0 {
+                            return;
+                        }
+                        let display_rect = egui::Rect::from_center_size(available.center(), tex_size);
+                        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                        painter.image(tex.id(), display_rect, uv, egui::Color32::WHITE);
+                    }
+                }
+                ui.label(format!("{} / {max_images}",  cursor_index + 1));
+            }
+        });
+    }
 
     SliderResult { target, released }
 }
@@ -208,7 +242,7 @@ impl App {
 
         let accent = self.theme.accent;
         let result = egui::TopBottomPanel::bottom("nav")
-            .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent))
+            .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent, &mut self.panes))
             .inner;
 
         self.apply_slider_result_all(result, ctx);
@@ -392,6 +426,7 @@ impl App {
                                         first[0].current_index,
                                         first[0].image_paths.len(),
                                         accent,
+                                        first,
                                     )
                                 },
                             )
@@ -411,6 +446,7 @@ impl App {
                                         rest[0].current_index,
                                         rest[0].image_paths.len(),
                                         accent,
+                                        rest,
                                     )
                                 },
                             )

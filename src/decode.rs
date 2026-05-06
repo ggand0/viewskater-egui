@@ -1,4 +1,7 @@
+use image::DynamicImage;
 use eframe::egui;
+use eframe::egui::ColorImage;
+use image::imageops::FilterType;
 
 /// Maximum texture dimension supported by most GPUs. Images exceeding this
 /// in either dimension are downscaled to fit before uploading to the GPU.
@@ -11,9 +14,12 @@ const MAX_TEXTURE_SIZE: u32 = 8192;
 ///
 /// Images larger than `MAX_TEXTURE_SIZE` in either dimension are
 /// automatically downscaled to prevent GPU texture allocation failures.
-pub fn image_to_color_image(img: image::DynamicImage) -> egui::ColorImage {
+pub fn image_to_color_image(img: DynamicImage) -> ColorImage {
     let img = downscale_if_needed(img);
-    use image::DynamicImage;
+    convert_image(img)
+}
+
+fn convert_image(img: DynamicImage) -> ColorImage {
     match img {
         DynamicImage::ImageRgb8(buf) => {
             let w = buf.width() as usize;
@@ -53,7 +59,7 @@ pub fn image_to_color_image(img: image::DynamicImage) -> egui::ColorImage {
 
 /// Downscale the image if either dimension exceeds [`MAX_TEXTURE_SIZE`],
 /// preserving aspect ratio. Uses Lanczos3 for quality.
-fn downscale_if_needed(img: image::DynamicImage) -> image::DynamicImage {
+fn downscale_if_needed(img: DynamicImage) -> DynamicImage {
     let (w, h) = (img.width(), img.height());
     if w <= MAX_TEXTURE_SIZE && h <= MAX_TEXTURE_SIZE {
         return img;
@@ -65,5 +71,11 @@ fn downscale_if_needed(img: image::DynamicImage) -> image::DynamicImage {
         "Downscaling {}x{} -> {}x{} (exceeds {}px GPU limit)",
         w, h, new_w, new_h, MAX_TEXTURE_SIZE,
     );
-    img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3)
+    img.resize_exact(new_w, new_h, FilterType::Lanczos3)
+}
+
+/// Convert [`image::DynamicImage`] to [`egui::ColorImage`] and downscale it for the thumbnail
+pub fn image_to_thumbnail(img: DynamicImage) -> ColorImage {
+    let img = img.resize(crate::app::THUMBNAIL_WIDTH as u32, crate::app::THUMBNAIL_HEIGHT as u32, FilterType::Triangle);
+    convert_image(img)
 }
