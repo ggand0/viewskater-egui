@@ -36,7 +36,7 @@ impl App {
     pub(super) fn open_file_dialog(&mut self, pane_idx: usize, ctx: &egui::Context) {
         if let Some(pane) = self.panes.get_mut(pane_idx) {
             if let Some(file) = rfd::FileDialog::new()
-                .add_filter("Images", &["jpg", "jpeg", "png", "bmp", "webp", "gif", "tiff", "tif", "qoi", "tga"])
+                .add_filter("Images", &["jpg", "jpeg", "jxl", "png", "bmp", "webp", "gif", "tiff", "tif", "qoi", "tga"])
                 .pick_file()
             {
                 pane.open_path(&file, ctx);

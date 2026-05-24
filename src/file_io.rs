@@ -3,7 +3,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 
 use image::{DynamicImage, ImageReader, ImageResult};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
@@ -11,8 +11,10 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 const APP_NAME: &str = "viewskater-egui";
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "bmp", "webp", "gif", "tiff", "tif", "qoi", "tga",
+    "jpg", "jpeg", "jxl", "png", "bmp", "webp", "gif", "tiff", "tif", "qoi", "tga",
 ];
+
+static REGISTER_IMAGE_DECODERS: Once = Once::new();
 
 pub fn is_supported_image(path: &Path) -> bool {
     path.extension()
@@ -49,8 +51,15 @@ pub fn enumerate_images(dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
+fn ensure_image_decoders_registered() {
+    REGISTER_IMAGE_DECODERS.call_once(|| {
+        jxl_oxide::integration::register_image_decoding_hook();
+    });
+}
+
 /// Convenience wrapper around ImageReader::open().with_guessed_format().decode()
 pub fn open_image(path: &Path) -> ImageResult<DynamicImage> {
+    ensure_image_decoders_registered();
     ImageReader::open(path)?.with_guessed_format()?.decode()
 }
 

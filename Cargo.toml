@@ -23,6 +23,7 @@ image = { version = "0.25", default-features = false, features = [
     "qoi",
     "tga",
 ] }
+jxl-oxide = { version = "0.12.5", features = ["image"] }
 clap = { version = "4", features = ["derive"] }
 log = "0.4"
 tracing = "0.1"
