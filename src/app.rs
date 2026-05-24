@@ -777,6 +777,7 @@ impl eframe::App for App {
 
         for pane in &mut self.panes {
             pane.poll_cache();
+            pane.poll_animation();
         }
 
         self.handle_external_open_requests(ctx);

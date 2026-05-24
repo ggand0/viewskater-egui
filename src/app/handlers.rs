@@ -54,7 +54,7 @@ impl App {
         let current_discovery_options = self.current_discovery_options();
         if let Some(pane) = self.panes.get_mut(pane_idx) {
             if let Some(file) = rfd::FileDialog::new()
-                .add_filter("Images", &["jpg", "jpeg", "png", "bmp", "webp", "gif", "tiff", "tif", "qoi", "tga"])
+                .add_filter("Images", &["jpg", "jpeg", "png", "apng", "bmp", "webp", "gif", "tiff", "tif", "qoi", "tga"])
                 .pick_file()
             {
                 pane.open_path(
@@ -127,7 +127,7 @@ impl App {
 
         if result.released {
             for pane in &mut self.panes {
-                pane.apply_slider_release();
+                pane.apply_slider_release(ctx);
             }
         }
     }
@@ -150,7 +150,7 @@ impl App {
 
         if result.released {
             if let Some(pane) = self.panes.get_mut(pane_idx) {
-                pane.apply_slider_release();
+                pane.apply_slider_release(ctx);
             }
         }
     }
@@ -338,7 +338,7 @@ impl App {
             });
             if all_ready {
                 let any_advanced = self.panes.iter_mut().fold(false, |acc, p| {
-                    if is_active(p) { p.navigate(1) || acc } else { acc }
+                    if is_active(p) { p.navigate(1, ctx) || acc } else { acc }
                 });
                 if any_advanced {
                     self.perf.record_image_load();
@@ -354,7 +354,7 @@ impl App {
             });
             if all_ready {
                 let any_advanced = self.panes.iter_mut().fold(false, |acc, p| {
-                    if is_active(p) { p.navigate(-1) || acc } else { acc }
+                    if is_active(p) { p.navigate(-1, ctx) || acc } else { acc }
                 });
                 if any_advanced {
                     self.perf.record_image_load();
@@ -373,7 +373,7 @@ impl App {
             });
             if all_ready {
                 let any_advanced = self.panes.iter_mut().fold(false, |acc, p| {
-                    if is_active(p) { p.navigate(dir) || acc } else { acc }
+                    if is_active(p) { p.navigate(dir, ctx) || acc } else { acc }
                 });
                 if any_advanced {
                     self.perf.record_image_load();
