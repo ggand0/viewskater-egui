@@ -5,6 +5,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::sync::Arc;
 
 use clap::Parser;
 use eframe::{egui, egui_wgpu, wgpu};
@@ -31,8 +32,8 @@ struct Args {
     paths: Vec<PathBuf>,
 }
 
-/// Create a wgpu Instance/Adapter/Device/Queue with the user-selected
-/// MemoryHints. The hint controls gpu_allocator block sizes:
+/// Configure eframe's wgpu setup with the user-selected MemoryHints. The hint
+/// controls gpu_allocator block sizes:
 ///
 /// - Performance: ~256 MB blocks (wgpu default). Largest memory footprint,
 ///   fastest texture allocation.
@@ -41,7 +42,7 @@ struct Args {
 /// - LowMemory: 8 MB device / 4 MB host blocks. A 4K RGBA texture (31.6 MB)
 ///   exceeds the block size, forcing dedicated allocations per texture and
 ///   degrading keyboard navigation performance.
-fn build_wgpu_setup(mode: GpuMemoryMode) -> egui_wgpu::WgpuSetupExisting {
+fn build_wgpu_setup(mode: GpuMemoryMode) -> egui_wgpu::WgpuSetup {
     const MB: u64 = 1024 * 1024;
     let memory_hints = match mode {
         GpuMemoryMode::Performance => wgpu::MemoryHints::Performance,
@@ -51,61 +52,27 @@ fn build_wgpu_setup(mode: GpuMemoryMode) -> egui_wgpu::WgpuSetupExisting {
         GpuMemoryMode::LowMemory => wgpu::MemoryHints::MemoryUsage,
     };
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::from_env()
-            .unwrap_or(wgpu::Backends::PRIMARY | wgpu::Backends::GL),
-        flags: wgpu::InstanceFlags::from_build_config().with_env(),
-        backend_options: wgpu::BackendOptions::from_env_or_default(),
-    });
+    egui_wgpu::WgpuSetupCreateNew {
+        device_descriptor: Arc::new(move |adapter| {
+            let base_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
+                wgpu::Limits::downlevel_webgl2_defaults()
+            } else {
+                wgpu::Limits::default()
+            };
 
-    // Adapter selection runs before any window or surface exists, so we pass
-    // `compatible_surface: None`. On desktop GPUs with normal drivers, any
-    // primary adapter is compatible with any window surface, so this is safe.
-    // eframe's default path does surface-aware adapter selection, which we
-    // bypass here to gain explicit control over DeviceDescriptor.memory_hints.
-    // If exotic environments (headless, VNC, unusual virtualization) report
-    // startup failures, reverting to eframe's default setup path is the fix.
-    let (adapter, device, queue) = pollster::block_on(async {
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await
-            .expect("Failed to find a wgpu adapter");
-
-        let base_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
-            wgpu::Limits::downlevel_webgl2_defaults()
-        } else {
-            wgpu::Limits::default()
-        };
-
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("viewskater wgpu device"),
-                    required_features: wgpu::Features::default(),
-                    required_limits: wgpu::Limits {
-                        max_texture_dimension_2d: 8192,
-                        ..base_limits
-                    },
-                    memory_hints,
+            wgpu::DeviceDescriptor {
+                label: Some("viewskater wgpu device"),
+                required_features: wgpu::Features::default(),
+                required_limits: wgpu::Limits {
+                    max_texture_dimension_2d: 8192,
+                    ..base_limits
                 },
-                None,
-            )
-            .await
-            .expect("Failed to create wgpu device");
-
-        (adapter, device, queue)
-    });
-
-    egui_wgpu::WgpuSetupExisting {
-        instance,
-        adapter,
-        device,
-        queue,
+                memory_hints: memory_hints.clone(),
+            }
+        }),
+        ..Default::default()
     }
+    .into()
 }
 
 fn load_icon() -> Option<egui::IconData> {
@@ -141,7 +108,7 @@ fn main() -> eframe::Result {
 
     let wgpu_options = egui_wgpu::WgpuConfiguration {
         desired_maximum_frame_latency: Some(1),
-        wgpu_setup: egui_wgpu::WgpuSetup::Existing(wgpu_setup),
+        wgpu_setup,
         ..Default::default()
     };
 
