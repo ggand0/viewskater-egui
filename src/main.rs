@@ -124,10 +124,17 @@ fn main() -> eframe::Result {
     file_io::setup_panic_hook(log_buffer.clone());
     let args = Args::parse();
 
+    let has_persisted_state = eframe::storage_dir("viewskater-egui")
+        .map(|d| d.join("app.ron").exists())
+        .unwrap_or(false);
+
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([1280.0, 720.0])
         .with_drag_and_drop(true)
         .with_app_id("viewskater-egui");
+
+    if !has_persisted_state {
+        viewport = viewport.with_inner_size([1280.0, 720.0]);
+    }
 
     if let Some(icon) = load_icon() {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
@@ -178,6 +185,7 @@ fn main() -> eframe::Result {
                 log_buffer,
                 settings,
                 file_rx,
+                !has_persisted_state,
             )))
         }),
     )

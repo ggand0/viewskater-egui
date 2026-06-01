@@ -270,7 +270,7 @@ pub(crate) fn show_menu_bar(
                     }
                 });
                 hover_row(ui, theme, ml, mw, |ui| {
-                    let label = if is_fullscreen {
+                    let label = if ui.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
                         "Exit Fullscreen  F11"
                     } else {
                         "Fullscreen  F11"

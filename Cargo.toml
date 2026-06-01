@@ -11,6 +11,7 @@ eframe = { version = "0.31", default-features = false, features = [
     "wgpu",
     "wayland",
     "x11",
+    "persistence",
 ] }
 egui = "0.31"
 image = { version = "0.25", default-features = false, features = [
