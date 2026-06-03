@@ -28,7 +28,7 @@ impl App {
                     pane.open_path(
                         dir,
                         ctx,
-                        self.current_sort,
+                        self.current_discovery_options,
                     );
                     pane.jump_to(self.panes[0].current_index, ctx);
                 }
@@ -43,7 +43,7 @@ impl App {
                 pane.open_path(
                     &dir,
                     ctx,
-                    self.current_sort,
+                    self.current_discovery_options,
                 );
             }
         }
@@ -58,7 +58,7 @@ impl App {
                 pane.open_path(
                     &file,
                     ctx,
-                    self.current_sort,
+                    self.current_discovery_options,
                 );
             }
         }
@@ -184,7 +184,7 @@ impl App {
             pane.open_path(
                 &path,
                 ctx,
-                self.current_sort,
+                self.current_discovery_options,
             );
             pane.zoom = zoom;
             pane.pan = pan;
@@ -374,7 +374,7 @@ impl App {
             self.panes[0].open_path(
                 &path,
                 ctx,
-                self.current_sort,
+                self.current_discovery_options,
             );
             if self.panes[0].current_texture.is_some() {
                 self.perf.record_image_load();
@@ -407,13 +407,13 @@ impl App {
                     self.panes[target].open_path(
                         path,
                         ctx,
-                        self.current_sort,
+                        self.current_discovery_options,
                     );
                 } else {
                     self.panes[0].open_path(
                         path,
                         ctx,
-                        self.current_sort,
+                        self.current_discovery_options,
                     );
                 }
             }

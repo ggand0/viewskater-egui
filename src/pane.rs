@@ -6,7 +6,7 @@ use eframe::egui;
 use crate::cache;
 use crate::decode::image_to_color_image;
 use crate::file_io::{self, open_image};
-use crate::settings::ImageSortOrder;
+use crate::settings::{ImageDiscoveryOptions};
 
 const MIN_ZOOM: f32 = 0.05;
 const MAX_ZOOM: f32 = 100.0;
@@ -76,7 +76,7 @@ impl Pane {
         &mut self,
         path: &std::path::Path,
         ctx: &egui::Context,
-        sort_order: ImageSortOrder,
+        discovery_options: ImageDiscoveryOptions,
     ) {
         if !path.exists() {
             log::error!("Path does not exist: {}", path.display());
@@ -84,7 +84,7 @@ impl Pane {
         }
 
         let (dir, target_filename) = file_io::resolve_path(path);
-        self.image_paths = file_io::enumerate_images(&dir, sort_order);
+        self.image_paths = file_io::enumerate_images(&dir, discovery_options);
 
         if self.image_paths.is_empty() {
             log::warn!("No supported images found in {}", dir.display());
