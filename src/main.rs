@@ -142,6 +142,16 @@ fn main() -> eframe::Result {
     let wgpu_options = egui_wgpu::WgpuConfiguration {
         desired_maximum_frame_latency: Some(1),
         wgpu_setup: egui_wgpu::WgpuSetup::Existing(wgpu_setup),
+        on_surface_error: std::sync::Arc::new(|err| match err {
+            wgpu::SurfaceError::Outdated => {
+                tracing::warn!("wgpu: surface Outdated, recreating");
+                egui_wgpu::SurfaceErrorAction::RecreateSurface
+            }
+            other => {
+                tracing::warn!("wgpu: surface error: {other}, skipping frame");
+                egui_wgpu::SurfaceErrorAction::SkipFrame
+            }
+        }),
         ..Default::default()
     };
 
