@@ -84,14 +84,34 @@ pub fn show_about_modal(ctx: &egui::Context, show: &mut bool, theme: &UiTheme) {
 
                         ui.add_space(8.0);
 
-                        // Author
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Author: ").size(15.0));
-                            ui.label(
-                                egui::RichText::new("Gota Gando")
-                                    .size(15.0)
-                                    .color(theme.accent),
-                            );
+                        // Contributors
+                        ui.label(egui::RichText::new("Contributors:").size(15.0));
+                        ui.horizontal_wrapped(|ui| {
+                            let contributors = [
+                                ("@ggand0", "https://github.com/ggand0"),
+                                ("@hml-pip", "https://github.com/hml-pip"),
+                                ("@BafDyce", "https://github.com/BafDyce"),
+                                ("@YelovSK", "https://github.com/YelovSK"),
+                            ];
+                            for (i, (name, url)) in contributors.iter().enumerate() {
+                                if i > 0 {
+                                    ui.label(egui::RichText::new("·").size(15.0).color(theme.muted));
+                                }
+                                if ui
+                                    .add(
+                                        egui::Label::new(
+                                            egui::RichText::new(*name)
+                                                .size(15.0)
+                                                .color(theme.accent),
+                                        )
+                                        .sense(egui::Sense::click()),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    let _ = webbrowser::open(url);
+                                }
+                            }
                         });
 
                         ui.add_space(4.0);
