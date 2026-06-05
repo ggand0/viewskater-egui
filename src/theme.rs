@@ -54,6 +54,7 @@ impl UiTheme {
 
         // Accent colors for selection, active widgets, hyperlinks
         style.visuals.selection.bg_fill = self.accent;
+        style.visuals.selection.stroke.color = egui::Color32::from_gray(30);
         style.visuals.hyperlink_color = self.accent;
         style.visuals.widgets.active.bg_fill = self.accent;
 

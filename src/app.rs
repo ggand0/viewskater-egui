@@ -11,7 +11,7 @@ use crate::about;
 use crate::menu;
 use crate::pane::Pane;
 use crate::perf;
-use crate::settings::{self, AppSettings};
+use crate::settings::{self, AppSettings, ImageSortOrder};
 use crate::theme::UiTheme;
 
 /// Target window size in physical pixels (matches iced version behavior).
@@ -108,6 +108,7 @@ pub struct App {
     pub(crate) divider_fraction: f32,
     pub(crate) dual_pane_mode: DualPaneMode,
     pub(crate) settings: AppSettings,
+    pub(crate) current_sort: ImageSortOrder,
     pub(crate) theme: UiTheme,
     pub(crate) show_settings: bool,
     pub(crate) show_about: bool,
@@ -115,6 +116,7 @@ pub struct App {
     pub(crate) menu_open: bool,
     pub(crate) log_buffer: Arc<Mutex<VecDeque<String>>>,
     initial_size_set: bool,
+    title: Option<String>,
     file_receiver: Receiver<PathBuf>,
 }
 
@@ -133,6 +135,7 @@ impl App {
             perf: perf::ImagePerfTracker::new(),
             divider_fraction: 0.5,
             dual_pane_mode: DualPaneMode::Synced,
+            current_sort: settings.image_sort_order,
             settings,
             theme,
             show_settings: false,
@@ -141,15 +144,24 @@ impl App {
             menu_open: false,
             log_buffer,
             initial_size_set: false,
+            title: None,
             file_receiver,
         };
 
         if !paths.is_empty() {
-            app.panes[0].open_path(&paths[0], &cc.egui_ctx);
+            app.panes[0].open_path(
+                &paths[0],
+                &cc.egui_ctx,
+                app.current_sort,
+            );
         }
         if paths.len() >= 2 {
             let mut pane1 = Pane::new(&cc.egui_ctx, app.settings.cache_count, app.settings.lru_budget_mb, app.settings.decode_threads, app.settings.mouse_wheel_zoom);
-            pane1.open_path(&paths[1], &cc.egui_ctx);
+            pane1.open_path(
+                &paths[1],
+                &cc.egui_ctx,
+                app.current_sort,
+            );
             app.panes.push(pane1);
         }
 
@@ -162,7 +174,7 @@ impl App {
         app
     }
 
-    fn update_title(&self, ctx: &egui::Context) {
+    fn current_title(&self) -> String {
         let name = |pane: &Pane| -> Option<String> {
             pane.image_paths.get(pane.current_index).map(|path| {
                 path.file_name()
@@ -172,7 +184,7 @@ impl App {
             })
         };
 
-        let title = if self.panes.len() >= 2 {
+        if self.panes.len() >= 2 {
             let left = name(&self.panes[0]).unwrap_or_default();
             let right = name(&self.panes[1]).unwrap_or_default();
             if left.is_empty() && right.is_empty() {
@@ -183,8 +195,15 @@ impl App {
         } else {
             self.panes.first().and_then(name)
                 .unwrap_or_else(|| "ViewSkater".to_string())
-        };
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
+    }
+
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let title = self.current_title();
+        if self.title.as_deref() != Some(title.as_str()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = Some(title);
+        }
     }
 
     fn show_slider_panel(&mut self, ctx: &egui::Context) {
@@ -511,18 +530,26 @@ impl eframe::App for App {
                 None
             };
             let settings_snapshot = self.settings.clone();
+            let sort_snapshot = self.current_sort;
+            let mut menu_state = menu::MenuBarState {
+                settings: &mut self.settings,
+                current_sort: &mut self.current_sort,
+                is_fullscreen: self.is_fullscreen,
+            };
             let (action, menu_is_open) = menu::show_menu_bar(
                 ctx,
                 &self.panes,
                 self.dual_pane_mode,
-                &mut self.settings,
+                &mut menu_state,
                 &self.theme,
                 fps_text.as_deref(),
-                self.is_fullscreen,
             );
             self.menu_open = menu_is_open;
             if self.settings != settings_snapshot {
                 self.settings.save();
+            }
+            if self.current_sort != sort_snapshot {
+                self.reload_sorted_panes(ctx);
             }
             self.handle_menu_action(action, ctx);
         } else {
@@ -578,9 +605,9 @@ impl eframe::App for App {
         }
 
         // Settings modal — auto-saves on any change inside the modal.
-        let perf_changed =
+        let settings_changes =
             settings::show_settings_modal(ctx, &mut self.settings, &mut self.show_settings, &self.theme);
-        if perf_changed {
+        if settings_changes.pane_settings {
             self.apply_settings_to_caches();
         }
 
