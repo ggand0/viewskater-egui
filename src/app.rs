@@ -131,7 +131,14 @@ impl App {
         let theme = UiTheme::teal_dark();
         theme.apply_to_visuals(&cc.egui_ctx);
         let mut app = Self {
-            panes: vec![Pane::new(&cc.egui_ctx, settings.cache_count, settings.lru_budget_mb, settings.decode_threads, settings.mouse_wheel_zoom)],
+            panes: vec![Pane::new(
+                &cc.egui_ctx,
+                settings.cache_count,
+                settings.lru_budget_mb,
+                settings.decode_threads,
+                settings.mouse_wheel_zoom,
+                settings.reset_zoom_pan_on_navigation,
+            )],
             perf: perf::ImagePerfTracker::new(),
             divider_fraction: 0.5,
             dual_pane_mode: DualPaneMode::Synced,
@@ -156,7 +163,14 @@ impl App {
             );
         }
         if paths.len() >= 2 {
-            let mut pane1 = Pane::new(&cc.egui_ctx, app.settings.cache_count, app.settings.lru_budget_mb, app.settings.decode_threads, app.settings.mouse_wheel_zoom);
+            let mut pane1 = Pane::new(
+                &cc.egui_ctx,
+                app.settings.cache_count,
+                app.settings.lru_budget_mb,
+                app.settings.decode_threads,
+                app.settings.mouse_wheel_zoom,
+                app.settings.reset_zoom_pan_on_navigation,
+            );
             pane1.open_path(
                 &paths[1],
                 &cc.egui_ctx,

@@ -25,6 +25,7 @@ pub(crate) struct Pane {
     pub(crate) decode_threads: usize,
     pub(crate) selected: bool,
     pub(crate) mouse_wheel_zoom: bool,
+    pub(crate) reset_zoom_pan_on_navigation: bool,
 }
 
 impl Pane {
@@ -34,6 +35,7 @@ impl Pane {
         lru_budget_mb: usize,
         decode_threads: usize,
         mouse_wheel_zoom: bool,
+        reset_zoom_pan_on_navigation: bool,
     ) -> Self {
         Self {
             image_paths: Vec::new(),
@@ -49,6 +51,7 @@ impl Pane {
             decode_threads,
             selected: true,
             mouse_wheel_zoom,
+            reset_zoom_pan_on_navigation,
         }
     }
 
@@ -182,7 +185,10 @@ impl Pane {
                 }
 
                 let summary = cache.summary();
-                self.reset_view();
+
+                if self.reset_zoom_pan_on_navigation {
+                    self.reset_view();
+                }
 
                 let dir = if delta > 0 { "→" } else { "←" };
                 log::debug!(
@@ -205,7 +211,10 @@ impl Pane {
         }
 
         self.current_index = index;
-        self.reset_view();
+
+        if self.reset_zoom_pan_on_navigation {
+            self.reset_view();
+        }
 
         if let Some(cache) = &mut self.cache {
             cache.jump_to(index, &self.image_paths);
@@ -270,7 +279,10 @@ impl Pane {
             return false;
         }
         self.current_index = clamped;
-        self.reset_view();
+
+        if self.reset_zoom_pan_on_navigation {
+            self.reset_view();
+        }
 
         let found_in_cache = self
             .cache
