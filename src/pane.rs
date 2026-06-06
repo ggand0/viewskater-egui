@@ -11,6 +11,16 @@ use crate::settings::ImageSortOrder;
 const MIN_ZOOM: f32 = 0.05;
 const MAX_ZOOM: f32 = 100.0;
 
+const IMAGE_DOUBLE_CLICK_MAX_DELAY: f64 = 0.30;
+const IMAGE_DOUBLE_CLICK_MAX_DISTANCE: f32 = 8.0;
+
+#[derive(Clone, Copy)]
+struct ImageClick {
+    time: f64,
+    pos: egui::Pos2,
+    image_index: usize,
+}
+
 pub(crate) struct Pane {
     pub(crate) image_paths: Vec<PathBuf>,
     pub(crate) current_index: usize,
@@ -25,6 +35,7 @@ pub(crate) struct Pane {
     pub(crate) decode_threads: usize,
     pub(crate) selected: bool,
     pub(crate) mouse_wheel_zoom: bool,
+    last_image_click: Option<ImageClick>,
 }
 
 impl Pane {
@@ -49,6 +60,7 @@ impl Pane {
             decode_threads,
             selected: true,
             mouse_wheel_zoom,
+            last_image_click: None,
         }
     }
 
@@ -336,6 +348,31 @@ impl Pane {
         false
     }
 
+    fn image_double_clicked(&mut self, response: &egui::Response, now: f64) -> Option<egui::Pos2> {
+        if !response.clicked_by(egui::PointerButton::Primary) {
+            return None;
+        }
+
+        let pos = response.interact_pointer_pos()?;
+        let double_clicked = self.last_image_click.is_some_and(|last| {
+            last.image_index == self.current_index
+                && now - last.time <= IMAGE_DOUBLE_CLICK_MAX_DELAY
+                && last.pos.distance(pos) <= IMAGE_DOUBLE_CLICK_MAX_DISTANCE
+        });
+
+        if double_clicked {
+            self.last_image_click = None;
+            Some(pos)
+        } else {
+            self.last_image_click = Some(ImageClick {
+                time: now,
+                pos,
+                image_index: self.current_index,
+            });
+            None
+        }
+    }
+
     /// Returns true if the user changed zoom or pan this frame.
     fn show_image(&mut self, ui: &mut egui::Ui, tex: &egui::TextureHandle) -> bool {
         let tex_size = tex.size_vec2();
@@ -361,20 +398,20 @@ impl Pane {
 
         // Pan: drag
         if response.dragged() {
+            self.last_image_click = None;
             self.pan += response.drag_delta();
         }
 
         // Double-click: toggle between fit-to-screen and 1:1.
-        if response.double_clicked() {
+        let now = ui.input(|i| i.time);
+        if let Some(click_pos) = self.image_double_clicked(&response, now) {
             let is_fit_to_screen = (self.zoom - 1.0).abs() < f32::EPSILON;
             let actual_size_zoom = (1.0 / scale).clamp(MIN_ZOOM, MAX_ZOOM);
 
             if is_fit_to_screen {
                 self.zoom = actual_size_zoom;
                 if self.zoom >= 1.0 {
-                    if let Some(hover_pos) = response.hover_pos() {
-                        self.pan = (hover_pos - available.center()) * (1.0 - self.zoom);
-                    }
+                    self.pan = (click_pos - available.center()) * (1.0 - self.zoom);
                 } else {
                     self.pan = egui::Vec2::ZERO;
                 }
