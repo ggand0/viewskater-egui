@@ -7,12 +7,14 @@ use crate::cache;
 use crate::decode::image_to_color_image;
 use crate::file_io::{self, open_image};
 use crate::settings::ImageSortOrder;
+use crate::view_animation::{Easing, ViewAnimation, ViewTransform};
 
 const MIN_ZOOM: f32 = 0.05;
 const MAX_ZOOM: f32 = 100.0;
 
 const IMAGE_DOUBLE_CLICK_MAX_DELAY: f64 = 0.30;
 const IMAGE_DOUBLE_CLICK_MAX_DISTANCE: f32 = 8.0;
+const DOUBLE_CLICK_ZOOM_ANIMATION_DURATION: f64 = 0.12;
 
 #[derive(Clone, Copy)]
 struct ImageClick {
@@ -36,6 +38,7 @@ pub(crate) struct Pane {
     pub(crate) selected: bool,
     pub(crate) mouse_wheel_zoom: bool,
     last_image_click: Option<ImageClick>,
+    view_animation: Option<ViewAnimation>,
 }
 
 impl Pane {
@@ -61,6 +64,7 @@ impl Pane {
             selected: true,
             mouse_wheel_zoom,
             last_image_click: None,
+            view_animation: None,
         }
     }
 
@@ -373,6 +377,40 @@ impl Pane {
         }
     }
 
+    fn zoom_target(
+        &self,
+        zoom_factor: f32,
+        anchor: egui::Pos2,
+        available: &egui::Rect,
+    ) -> (f32, egui::Vec2) {
+        let target_zoom = (self.zoom * zoom_factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        let old_center = available.center() + self.pan;
+        let cursor_rel = anchor - old_center;
+        let target_pan = self.pan + cursor_rel * (1.0 - target_zoom / self.zoom);
+        (target_zoom, target_pan)
+    }
+
+    /// Zooms around a given anchor point, keeping that point fixed under the cursor.
+    fn zoom_to(&mut self, zoom_factor: f32, anchor: egui::Pos2, available: &egui::Rect) {
+        (self.zoom, self.pan) = self.zoom_target(zoom_factor, anchor, available);
+    }
+
+    fn advance_view_animation(&mut self, now: f64, ctx: &egui::Context) {
+        let Some(animation) = self.view_animation else {
+            return;
+        };
+
+        let sample = animation.sample(now);
+        self.zoom = sample.transform.zoom;
+        self.pan = sample.transform.pan;
+
+        if sample.done {
+            self.view_animation = None;
+        } else {
+            ctx.request_repaint();
+        }
+    }
+
     /// Returns true if the user changed zoom or pan this frame.
     fn show_image(&mut self, ui: &mut egui::Ui, tex: &egui::TextureHandle) -> bool {
         let tex_size = tex.size_vec2();
@@ -387,6 +425,9 @@ impl Pane {
 
         let old_zoom = self.zoom;
         let old_pan = self.pan;
+        let now = ui.input(|i| i.time);
+
+        self.advance_view_animation(now, ui.ctx());
 
         let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
         let scale = (available.width() / tex_size.x).min(available.height() / tex_size.y);
@@ -399,26 +440,33 @@ impl Pane {
         // Pan: drag
         if response.dragged() {
             self.last_image_click = None;
+            self.view_animation = None;
             self.pan += response.drag_delta();
         }
 
         // Double-click: toggle between fit-to-screen and 1:1.
-        let now = ui.input(|i| i.time);
         if let Some(click_pos) = self.image_double_clicked(&response, now) {
             let is_fit_to_screen = (self.zoom - 1.0).abs() < f32::EPSILON;
-            let actual_size_zoom = (1.0 / scale).clamp(MIN_ZOOM, MAX_ZOOM);
 
-            if is_fit_to_screen {
-                self.zoom = actual_size_zoom;
-                if self.zoom >= 1.0 {
-                    self.pan = (click_pos - available.center()) * (1.0 - self.zoom);
+            let (target_zoom, target_pan) = if is_fit_to_screen {
+                let actual_size_zoom = 1.0 / scale;
+                if actual_size_zoom >= 1.0 {
+                    self.zoom_target(actual_size_zoom / self.zoom, click_pos, &available)
                 } else {
-                    self.pan = egui::Vec2::ZERO;
+                    (actual_size_zoom, egui::Vec2::ZERO)
                 }
             } else {
-                self.zoom = 1.0;
-                self.pan = egui::Vec2::ZERO;
-            }
+                (1.0, egui::Vec2::ZERO)
+            };
+
+            self.view_animation = Some(ViewAnimation::new(
+                ViewTransform::new(self.zoom, self.pan),
+                ViewTransform::new(target_zoom, target_pan),
+                now,
+                DOUBLE_CLICK_ZOOM_ANIMATION_DURATION,
+                Easing::EaseOutCubic,
+            ));
+            ui.ctx().request_repaint();
         }
 
         // Compute display rect with updated zoom/pan (zero-frame-delay)
@@ -443,13 +491,9 @@ impl Pane {
         let zoom_factor = pinch * scroll_factor;
 
         if zoom_factor != 1.0 {
-            let old_zoom = self.zoom;
-            self.zoom = (self.zoom * zoom_factor).clamp(MIN_ZOOM, MAX_ZOOM);
-
             if let Some(hover_pos) = response.hover_pos() {
-                let old_center = available.center() + self.pan;
-                let cursor_rel = hover_pos - old_center;
-                self.pan += cursor_rel * (1.0 - self.zoom / old_zoom);
+                self.view_animation = None;
+                self.zoom_to(zoom_factor, hover_pos, available);
             }
         }
     }
