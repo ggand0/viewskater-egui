@@ -426,25 +426,25 @@ pub fn show_settings_modal(
                     let prev_max: f32 =
                         ctx.data(|d| d.get_temp(max_h_id)).unwrap_or(0.0);
 
-                    let scroll_out = egui::ScrollArea::vertical()
+                    let mut scroll = egui::ScrollArea::vertical()
                         .id_salt(egui::Id::new("settings_scroll").with(active_tab))
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            let top = ui.cursor().top();
-                            match active_tab {
-                                SettingsTab::General => {
-                                    render_general_tab(ui, settings, theme);
-                                }
-                                SettingsTab::Performance => {
-                                    render_performance_tab(ui, settings, theme);
-                                }
-                            }
-                            let content_h = ui.cursor().top() - top;
-                            ui.set_min_height(prev_max);
-                            content_h
-                        });
+                        .auto_shrink([false, true]);
+                    if prev_max > 0.0 {
+                        scroll = scroll.max_height(prev_max).auto_shrink([false, false]);
+                    }
 
-                    let content_h = scroll_out.inner;
+                    let scroll_out = scroll.show(ui, |ui| {
+                        match active_tab {
+                            SettingsTab::General => {
+                                render_general_tab(ui, settings, theme);
+                            }
+                            SettingsTab::Performance => {
+                                render_performance_tab(ui, settings, theme);
+                            }
+                        }
+                    });
+
+                    let content_h = scroll_out.content_size.y;
                     if content_h > prev_max {
                         ctx.data_mut(|d| d.insert_temp(max_h_id, content_h));
                     }
