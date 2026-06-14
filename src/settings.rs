@@ -222,6 +222,7 @@ pub struct AppSettings {
     pub decode_threads: usize,
     pub gpu_memory_mode: GpuMemoryMode,
     pub mouse_wheel_zoom: bool,
+    pub reset_zoom_pan_on_navigation: bool,
     pub image_sort_order: ImageSortOrder,
 }
 
@@ -237,6 +238,7 @@ impl Default for AppSettings {
             decode_threads: 10,
             gpu_memory_mode: GpuMemoryMode::default(),
             mouse_wheel_zoom: false,
+            reset_zoom_pan_on_navigation: true,
             image_sort_order: ImageSortOrder::default(),
         }
     }
@@ -253,7 +255,8 @@ impl SettingsChanges {
             pane_settings: after.cache_count != before.cache_count
                 || after.lru_budget_mb != before.lru_budget_mb
                 || after.decode_threads != before.decode_threads
-                || after.mouse_wheel_zoom != before.mouse_wheel_zoom,
+                || after.mouse_wheel_zoom != before.mouse_wheel_zoom
+                || after.reset_zoom_pan_on_navigation != before.reset_zoom_pan_on_navigation,
         }
     }
 }
@@ -358,7 +361,7 @@ pub fn show_settings_modal(
                         .corner_radius(6.0)
                         .inner_margin(10.0)
                         .show(ui, |ui|{
-                            ui.horizontal(|ui|{
+                            ui.horizontal(|ui| {
                                 toggle_switch(ui, &mut settings.mouse_wheel_zoom, "Mouse Wheel Zoom", theme);
                             });
                         });
@@ -446,6 +449,14 @@ pub fn show_settings_modal(
                                     ui,
                                     &mut settings.sync_zoom_pan,
                                     "Sync Zoom/Pan",
+                                    theme,
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                toggle_switch(
+                                    ui,
+                                    &mut settings.reset_zoom_pan_on_navigation,
+                                    "Reset Zoom/Pan on Navigation",
                                     theme,
                                 );
                             });

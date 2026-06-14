@@ -14,7 +14,14 @@ impl App {
 
     pub(super) fn set_dual_pane(&mut self, ctx: &egui::Context) {
         if self.panes.len() < 2 {
-            let mut pane = Pane::new(ctx, self.settings.cache_count, self.settings.lru_budget_mb, self.settings.decode_threads, self.settings.mouse_wheel_zoom);
+            let mut pane = Pane::new(
+                ctx,
+                self.settings.cache_count,
+                self.settings.lru_budget_mb,
+                self.settings.decode_threads,
+                self.settings.mouse_wheel_zoom,
+                self.settings.reset_zoom_pan_on_navigation,
+            );
             if !self.panes[0].image_paths.is_empty() {
                 if let Some(dir) = self.panes[0].image_paths[0].parent() {
                     pane.open_path(
@@ -162,6 +169,7 @@ impl App {
             pane.lru_budget_mb = self.settings.lru_budget_mb;
             pane.decode_threads = self.settings.decode_threads;
             pane.mouse_wheel_zoom = self.settings.mouse_wheel_zoom;
+            pane.reset_zoom_pan_on_navigation = self.settings.reset_zoom_pan_on_navigation;
         }
     }
 
