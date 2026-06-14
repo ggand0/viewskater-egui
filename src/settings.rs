@@ -361,7 +361,7 @@ pub fn show_settings_modal(
                         .corner_radius(6.0)
                         .inner_margin(10.0)
                         .show(ui, |ui|{
-                            ui.horizontal(|ui|{
+                            ui.horizontal(|ui| {
                                 toggle_switch(ui, &mut settings.mouse_wheel_zoom, "Mouse Wheel Zoom", theme);
                             });
                         });
@@ -452,7 +452,7 @@ pub fn show_settings_modal(
                                     theme,
                                 );
                             });
-                            ui.horizontal(|ui|{
+                            ui.horizontal(|ui| {
                                 toggle_switch(
                                     ui,
                                     &mut settings.reset_zoom_pan_on_navigation,
