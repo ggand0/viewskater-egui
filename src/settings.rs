@@ -110,32 +110,43 @@ impl SettingsTab {
 }
 
 fn tab_bar(ui: &mut egui::Ui, active: &mut SettingsTab, theme: &UiTheme) {
+    let font = egui::FontId::proportional(14.0);
+    let padding = egui::vec2(6.0, 4.0);
+    let underline_gap = 3.0;
+
     ui.horizontal(|ui| {
         for tab in SettingsTab::ALL {
             let is_active = *active == tab;
 
-            let inactive_color = egui::Color32::from_gray(160);
-            let text = egui::RichText::new(tab.label()).size(14.0).color(
-                if is_active { theme.accent } else { inactive_color },
+            let galley = ui.painter().layout_no_wrap(
+                tab.label().to_string(),
+                font.clone(),
+                egui::Color32::PLACEHOLDER,
             );
-            let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+            let desired = galley.size() + padding * 2.0 + egui::vec2(0.0, underline_gap);
+            let (rect, response) =
+                ui.allocate_exact_size(desired, egui::Sense::click());
 
-            if !is_active && response.hovered() {
-                let rect = response.rect;
-                ui.painter().text(
-                    rect.min,
-                    egui::Align2::LEFT_TOP,
-                    tab.label(),
-                    egui::FontId::proportional(14.0),
-                    egui::Color32::from_gray(220),
-                );
-            }
+            let color = if is_active {
+                theme.accent
+            } else if response.hovered() {
+                egui::Color32::WHITE
+            } else {
+                egui::Color32::from_gray(160)
+            };
+
+            ui.painter().text(
+                rect.min + padding,
+                egui::Align2::LEFT_TOP,
+                tab.label(),
+                font.clone(),
+                color,
+            );
 
             if is_active {
-                let rect = response.rect;
                 ui.painter().hline(
-                    rect.x_range(),
-                    rect.max.y + 2.0,
+                    (rect.min.x + padding.x)..=(rect.max.x - padding.x),
+                    rect.max.y - 1.0,
                     egui::Stroke::new(2.0, theme.accent),
                 );
             }
@@ -143,11 +154,9 @@ fn tab_bar(ui: &mut egui::Ui, active: &mut SettingsTab, theme: &UiTheme) {
             if response.clicked() {
                 *active = tab;
             }
-
-            ui.add_space(12.0);
         }
     });
-    ui.add_space(4.0);
+    ui.add_space(2.0);
 }
 
 /// Custom radio row for GPU memory mode: an accent-colored circle indicator,
@@ -413,15 +422,15 @@ pub fn show_settings_modal(
                     ui.separator();
                     ui.add_space(4.0);
 
-                    let scroll_id = egui::Id::new("settings_scroll");
-                    let max_tab_height_id = egui::Id::new("settings_max_tab_h");
-                    let prev_max: f32 = ctx.data(|d| d.get_temp(max_tab_height_id)).unwrap_or(0.0);
+                    let max_h_id = egui::Id::new("settings_max_tab_h");
+                    let prev_max: f32 =
+                        ctx.data(|d| d.get_temp(max_h_id)).unwrap_or(0.0);
 
                     let scroll_out = egui::ScrollArea::vertical()
-                        .id_salt(scroll_id.with(active_tab))
-                        .min_scrolled_height(prev_max)
+                        .id_salt(egui::Id::new("settings_scroll").with(active_tab))
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
+                            let top = ui.cursor().top();
                             match active_tab {
                                 SettingsTab::General => {
                                     render_general_tab(ui, settings, theme);
@@ -430,11 +439,14 @@ pub fn show_settings_modal(
                                     render_performance_tab(ui, settings, theme);
                                 }
                             }
+                            let content_h = ui.cursor().top() - top;
+                            ui.set_min_height(prev_max);
+                            content_h
                         });
 
-                    let content_h = scroll_out.content_size.y;
+                    let content_h = scroll_out.inner;
                     if content_h > prev_max {
-                        ctx.data_mut(|d| d.insert_temp(max_tab_height_id, content_h));
+                        ctx.data_mut(|d| d.insert_temp(max_h_id, content_h));
                     }
 
                     ctx.data_mut(|d| d.insert_temp(tab_id, active_tab));
