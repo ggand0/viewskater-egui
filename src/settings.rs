@@ -113,11 +113,23 @@ fn tab_bar(ui: &mut egui::Ui, active: &mut SettingsTab, theme: &UiTheme) {
     ui.horizontal(|ui| {
         for tab in SettingsTab::ALL {
             let is_active = *active == tab;
-            let text = egui::RichText::new(tab.label())
-                .size(14.0)
-                .color(if is_active { theme.accent } else { egui::Color32::from_gray(160) });
 
+            let inactive_color = egui::Color32::from_gray(160);
+            let text = egui::RichText::new(tab.label()).size(14.0).color(
+                if is_active { theme.accent } else { inactive_color },
+            );
             let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+
+            if !is_active && response.hovered() {
+                let rect = response.rect;
+                ui.painter().text(
+                    rect.min,
+                    egui::Align2::LEFT_TOP,
+                    tab.label(),
+                    egui::FontId::proportional(14.0),
+                    egui::Color32::from_gray(220),
+                );
+            }
 
             if is_active {
                 let rect = response.rect;
@@ -401,8 +413,13 @@ pub fn show_settings_modal(
                     ui.separator();
                     ui.add_space(4.0);
 
-                    egui::ScrollArea::vertical()
-                        .id_salt(egui::Id::new("settings_scroll").with(active_tab))
+                    let scroll_id = egui::Id::new("settings_scroll");
+                    let max_tab_height_id = egui::Id::new("settings_max_tab_h");
+                    let prev_max: f32 = ctx.data(|d| d.get_temp(max_tab_height_id)).unwrap_or(0.0);
+
+                    let scroll_out = egui::ScrollArea::vertical()
+                        .id_salt(scroll_id.with(active_tab))
+                        .min_scrolled_height(prev_max)
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
                             match active_tab {
@@ -414,6 +431,11 @@ pub fn show_settings_modal(
                                 }
                             }
                         });
+
+                    let content_h = scroll_out.content_size.y;
+                    if content_h > prev_max {
+                        ctx.data_mut(|d| d.insert_temp(max_tab_height_id, content_h));
+                    }
 
                     ctx.data_mut(|d| d.insert_temp(tab_id, active_tab));
 
