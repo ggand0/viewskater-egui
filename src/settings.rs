@@ -423,31 +423,47 @@ pub fn show_settings_modal(
                     ui.add_space(4.0);
 
                     let max_h_id = egui::Id::new("settings_max_tab_h");
-                    let prev_max: f32 =
+                    let mut target_h: f32 =
                         ctx.data(|d| d.get_temp(max_h_id)).unwrap_or(0.0);
 
-                    let mut scroll = egui::ScrollArea::vertical()
-                        .id_salt(egui::Id::new("settings_scroll").with(active_tab))
-                        .auto_shrink([false, true]);
-                    if prev_max > 0.0 {
-                        scroll = scroll.max_height(prev_max).auto_shrink([false, false]);
-                    }
-
-                    let scroll_out = scroll.show(ui, |ui| {
-                        match active_tab {
-                            SettingsTab::General => {
-                                render_general_tab(ui, settings, theme);
+                    if target_h == 0.0 {
+                        for tab in SettingsTab::ALL {
+                            let rect = egui::Rect::from_min_size(
+                                ui.cursor().min,
+                                egui::vec2(ui.available_width(), 10000.0),
+                            );
+                            #[allow(deprecated)]
+                            let mut child = ui.child_ui_with_id_source(
+                                rect,
+                                *ui.layout(),
+                                ("settings_measure", tab as u8),
+                                None,
+                            );
+                            child.set_invisible();
+                            let mut tmp = settings.clone();
+                            match tab {
+                                SettingsTab::General => render_general_tab(&mut child, &mut tmp, theme),
+                                SettingsTab::Performance => render_performance_tab(&mut child, &mut tmp, theme),
                             }
-                            SettingsTab::Performance => {
-                                render_performance_tab(ui, settings, theme);
-                            }
+                            target_h = target_h.max(child.min_rect().height());
                         }
-                    });
-
-                    let content_h = scroll_out.content_size.y;
-                    if content_h > prev_max {
-                        ctx.data_mut(|d| d.insert_temp(max_h_id, content_h));
+                        ctx.data_mut(|d| d.insert_temp(max_h_id, target_h));
                     }
+
+                    egui::ScrollArea::vertical()
+                        .id_salt(egui::Id::new("settings_scroll").with(active_tab))
+                        .max_height(target_h)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            match active_tab {
+                                SettingsTab::General => {
+                                    render_general_tab(ui, settings, theme);
+                                }
+                                SettingsTab::Performance => {
+                                    render_performance_tab(ui, settings, theme);
+                                }
+                            }
+                        });
 
                     ctx.data_mut(|d| d.insert_temp(tab_id, active_tab));
 
@@ -489,227 +505,178 @@ pub fn show_settings_modal(
     SettingsChanges::between(&snapshot, settings)
 }
 
+fn section(
+    ui: &mut egui::Ui,
+    heading: &str,
+    subtitle: Option<&str>,
+    theme: &UiTheme,
+    content: impl FnOnce(&mut egui::Ui),
+) {
+    ui.label(
+        egui::RichText::new(heading)
+            .size(14.0)
+            .color(theme.heading),
+    );
+    if let Some(sub) = subtitle {
+        ui.label(
+            egui::RichText::new(sub)
+                .size(11.0)
+                .color(theme.muted),
+        );
+    }
+    ui.add_space(4.0);
+    egui::Frame::default()
+        .fill(theme.section_bg)
+        .corner_radius(6.0)
+        .inner_margin(10.0)
+        .show(ui, content);
+}
+
 fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiTheme) {
-    // Control section
-    ui.label(
-        egui::RichText::new("Control")
-            .size(14.0)
-            .color(theme.heading),
-    );
-    ui.add_space(4.0);
-    egui::Frame::default()
-        .fill(theme.section_bg)
-        .corner_radius(6.0)
-        .inner_margin(10.0)
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                toggle_switch(ui, &mut settings.mouse_wheel_zoom, "Mouse Wheel Zoom", theme);
-            });
+    section(ui, "Control", None, theme, |ui| {
+        ui.horizontal(|ui| {
+            toggle_switch(ui, &mut settings.mouse_wheel_zoom, "Mouse Wheel Zoom", theme);
         });
+    });
 
     ui.add_space(12.0);
 
-    // Files section
-    ui.label(
-        egui::RichText::new("Files")
-            .size(14.0)
-            .color(theme.heading),
-    );
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new("Default sorting for newly opened folders")
-            .size(11.0)
-            .color(theme.muted),
-    );
-    ui.add_space(4.0);
-    egui::Frame::default()
-        .fill(theme.section_bg)
-        .corner_radius(6.0)
-        .inner_margin(10.0)
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Sort By");
-                egui::ComboBox::from_id_salt("image_sort_order_key")
-                    .selected_text(settings.image_sort_order.key.label())
-                    .show_ui(ui, |ui| {
-                        for sort_key in ImageSortKey::ALL {
-                            ui.selectable_value(
-                                &mut settings.image_sort_order.key,
-                                sort_key,
-                                sort_key.label(),
-                            );
-                        }
-                    });
-            });
-            ui.horizontal(|ui| {
-                ui.label("Direction");
-                egui::ComboBox::from_id_salt("image_sort_order_direction")
-                    .selected_text(settings.image_sort_order.direction.label())
-                    .show_ui(ui, |ui| {
-                        for direction in SortDirection::ALL {
-                            ui.selectable_value(
-                                &mut settings.image_sort_order.direction,
-                                direction,
-                                direction.label(),
-                            );
-                        }
-                    });
-            });
+    section(ui, "Files", Some("Default sorting for newly opened folders"), theme, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Sort By");
+            egui::ComboBox::from_id_salt("image_sort_order_key")
+                .selected_text(settings.image_sort_order.key.label())
+                .show_ui(ui, |ui| {
+                    for sort_key in ImageSortKey::ALL {
+                        ui.selectable_value(
+                            &mut settings.image_sort_order.key,
+                            sort_key,
+                            sort_key.label(),
+                        );
+                    }
+                });
         });
+        ui.horizontal(|ui| {
+            ui.label("Direction");
+            egui::ComboBox::from_id_salt("image_sort_order_direction")
+                .selected_text(settings.image_sort_order.direction.label())
+                .show_ui(ui, |ui| {
+                    for direction in SortDirection::ALL {
+                        ui.selectable_value(
+                            &mut settings.image_sort_order.direction,
+                            direction,
+                            direction.label(),
+                        );
+                    }
+                });
+        });
+    });
 
     ui.add_space(12.0);
 
-    // Display section
-    ui.label(
-        egui::RichText::new("Display")
-            .size(14.0)
-            .color(theme.heading),
-    );
-    ui.add_space(4.0);
-    egui::Frame::default()
-        .fill(theme.section_bg)
-        .corner_radius(6.0)
-        .inner_margin(10.0)
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                toggle_switch(ui, &mut settings.show_footer, "Footer", theme);
-            });
-            ui.horizontal(|ui| {
-                toggle_switch(ui, &mut settings.show_fps, "FPS Overlay", theme);
-            });
-            ui.horizontal(|ui| {
-                toggle_switch(
-                    ui,
-                    &mut settings.show_cache_overlay,
-                    "Cache Overlay",
-                    theme,
-                );
-            });
-            ui.horizontal(|ui| {
-                toggle_switch(
-                    ui,
-                    &mut settings.sync_zoom_pan,
-                    "Sync Zoom/Pan",
-                    theme,
-                );
-            });
-            ui.horizontal(|ui| {
-                toggle_switch(
-                    ui,
-                    &mut settings.reset_zoom_pan_on_navigation,
-                    "Reset Zoom/Pan on Navigation",
-                    theme,
-                );
-            });
+    section(ui, "Display", None, theme, |ui| {
+        ui.horizontal(|ui| {
+            toggle_switch(ui, &mut settings.show_footer, "Footer", theme);
         });
+        ui.horizontal(|ui| {
+            toggle_switch(ui, &mut settings.show_fps, "FPS Overlay", theme);
+        });
+        ui.horizontal(|ui| {
+            toggle_switch(ui, &mut settings.show_cache_overlay, "Cache Overlay", theme);
+        });
+        ui.horizontal(|ui| {
+            toggle_switch(ui, &mut settings.sync_zoom_pan, "Sync Zoom/Pan", theme);
+        });
+        ui.horizontal(|ui| {
+            toggle_switch(
+                ui,
+                &mut settings.reset_zoom_pan_on_navigation,
+                "Reset Zoom/Pan on Navigation",
+                theme,
+            );
+        });
+    });
 
     ui.add_space(10.0);
 }
 
 fn render_performance_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiTheme) {
-    // Graphics section
-    ui.label(
-        egui::RichText::new("Graphics")
-            .size(14.0)
-            .color(theme.heading),
-    );
-    ui.add_space(2.0);
-    egui::Frame::default()
-        .fill(theme.section_bg)
-        .corner_radius(6.0)
-        .inner_margin(10.0)
-        .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new("GPU Memory Mode")
-                    .size(12.0)
-                    .color(theme.muted),
-            );
-            ui.add_space(4.0);
-            gpu_memory_radio(
-                ui,
-                &mut settings.gpu_memory_mode,
-                GpuMemoryMode::Performance,
-                "Performance",
-                "Highest nav speed, largest GPU memory",
-                theme,
-            );
-            gpu_memory_radio(
-                ui,
-                &mut settings.gpu_memory_mode,
-                GpuMemoryMode::Balanced,
-                "Balanced",
-                "Recommended for most users",
-                theme,
-            );
-            gpu_memory_radio(
-                ui,
-                &mut settings.gpu_memory_mode,
-                GpuMemoryMode::LowMemory,
-                "Low Memory",
-                "Lowest GPU memory, slower navigation",
-                theme,
-            );
-            ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new("⚠ Restart required to apply")
-                    .size(11.0)
-                    .color(theme.muted),
-            );
-        });
+    section(ui, "Graphics", None, theme, |ui| {
+        ui.label(
+            egui::RichText::new("GPU Memory Mode")
+                .size(12.0)
+                .color(theme.muted),
+        );
+        ui.add_space(4.0);
+        gpu_memory_radio(
+            ui,
+            &mut settings.gpu_memory_mode,
+            GpuMemoryMode::Performance,
+            "Performance",
+            "Highest nav speed, largest GPU memory",
+            theme,
+        );
+        gpu_memory_radio(
+            ui,
+            &mut settings.gpu_memory_mode,
+            GpuMemoryMode::Balanced,
+            "Balanced",
+            "Recommended for most users",
+            theme,
+        );
+        gpu_memory_radio(
+            ui,
+            &mut settings.gpu_memory_mode,
+            GpuMemoryMode::LowMemory,
+            "Low Memory",
+            "Lowest GPU memory, slower navigation",
+            theme,
+        );
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new("⚠ Restart required to apply")
+                .size(11.0)
+                .color(theme.muted),
+        );
+    });
 
     ui.add_space(12.0);
 
-    // Performance section
-    ui.label(
-        egui::RichText::new("Performance")
-            .size(14.0)
-            .color(theme.heading),
-    );
-    ui.label(
-        egui::RichText::new("Double-click to reset")
-            .size(11.0)
-            .color(theme.muted),
-    );
-    ui.add_space(2.0);
-    egui::Frame::default()
-        .fill(theme.section_bg)
-        .corner_radius(6.0)
-        .inner_margin(10.0)
-        .show(ui, |ui| {
-            let defaults = AppSettings::default();
+    section(ui, "Performance", Some("Double-click to reset"), theme, |ui| {
+        let defaults = AppSettings::default();
 
-            ui.horizontal(|ui| {
-                ui.label("Cache Size");
-                accent_slider(ui, &mut settings.cache_count, 1..=20, defaults.cache_count, theme);
-            });
-            ui.label(
-                egui::RichText::new("Images prefetched in each direction. Higher = smoother keyboard nav, more GPU memory.")
-                    .size(11.0)
-                    .color(theme.muted),
-            );
-            ui.add_space(6.0);
-
-            ui.horizontal(|ui| {
-                ui.label("LRU Budget (MB)");
-                accent_slider(ui, &mut settings.lru_budget_mb, 128..=4096, defaults.lru_budget_mb, theme);
-            });
-            ui.label(
-                egui::RichText::new("GPU memory for caching slider-visited images. Higher = faster revisits, more VRAM.")
-                    .size(11.0)
-                    .color(theme.muted),
-            );
-            ui.add_space(6.0);
-
-            ui.horizontal(|ui| {
-                ui.label("Decode Threads");
-                accent_slider(ui, &mut settings.decode_threads, 1..=16, defaults.decode_threads, theme);
-            });
-            ui.label(
-                egui::RichText::new("Concurrent image decodes. Higher = faster cache fill, larger memory spikes.")
-                    .size(11.0)
-                    .color(theme.muted),
-            );
+        ui.horizontal(|ui| {
+            ui.label("Cache Size");
+            accent_slider(ui, &mut settings.cache_count, 1..=20, defaults.cache_count, theme);
         });
+        ui.label(
+            egui::RichText::new("Images prefetched in each direction. Higher = smoother keyboard nav, more GPU memory.")
+                .size(11.0)
+                .color(theme.muted),
+        );
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.label("LRU Budget (MB)");
+            accent_slider(ui, &mut settings.lru_budget_mb, 128..=4096, defaults.lru_budget_mb, theme);
+        });
+        ui.label(
+            egui::RichText::new("GPU memory for caching slider-visited images. Higher = faster revisits, more VRAM.")
+                .size(11.0)
+                .color(theme.muted),
+        );
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Decode Threads");
+            accent_slider(ui, &mut settings.decode_threads, 1..=16, defaults.decode_threads, theme);
+        });
+        ui.label(
+            egui::RichText::new("Concurrent image decodes. Higher = faster cache fill, larger memory spikes.")
+                .size(11.0)
+                .color(theme.muted),
+        );
+    });
 
     ui.add_space(10.0);
 }
