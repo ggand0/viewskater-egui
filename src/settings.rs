@@ -393,8 +393,7 @@ pub fn show_settings_modal(
             }
         });
 
-    // Cap the modal height so it fits even on very short windows.
-    let max_modal_height = (screen.height() - 60.0).max(200.0);
+    let max_modal_height = (screen.height() * 0.75).min(600.0).max(200.0);
 
     // Modal card
     egui::Area::new(egui::Id::new("settings_modal"))
