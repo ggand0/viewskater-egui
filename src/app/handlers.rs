@@ -294,6 +294,10 @@ impl App {
         let use_selection = self.dual_pane_mode == DualPaneMode::Independent;
         let is_active = |p: &Pane| !use_selection || p.selected;
 
+        if self.show_settings || self.show_about {
+            return;
+        }
+
         if home {
             for pane in &mut self.panes {
                 if is_active(pane) {
