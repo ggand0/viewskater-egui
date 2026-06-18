@@ -479,7 +479,7 @@ pub fn show_settings_modal(
                                 (alpha * 255.0) as u8,
                             );
                             ui.label(
-                                egui::RichText::new("✓ Saved")
+                                egui::RichText::new("✔ Saved")
                                     .size(11.0)
                                     .color(green),
                             );
