@@ -466,22 +466,22 @@ pub fn show_settings_modal(
 
                     ctx.data_mut(|d| d.insert_temp(tab_id, active_tab));
 
-                    // "Saved" indicator pinned below the scroll area
                     let saved_at: Option<f64> = ctx.data(|d| d.get_temp(saved_at_id));
                     if let Some(t) = saved_at {
                         let elapsed = now - t;
                         if elapsed < 2.0 {
                             let alpha = ((1.0 - elapsed / 2.0) as f32).clamp(0.0, 1.0);
                             let green = egui::Color32::from_rgba_unmultiplied(
-                                120,
-                                220,
-                                120,
+                                120, 220, 120,
                                 (alpha * 255.0) as u8,
                             );
-                            ui.label(
-                                egui::RichText::new("✔ Saved")
-                                    .size(11.0)
-                                    .color(green),
+                            let card_rect = ui.min_rect();
+                            ui.painter().text(
+                                egui::pos2(card_rect.right() - 10.0, card_rect.bottom() - 6.0),
+                                egui::Align2::RIGHT_BOTTOM,
+                                "✔ Saved",
+                                egui::FontId::proportional(11.0),
+                                green,
                             );
                             ctx.request_repaint();
                         }
