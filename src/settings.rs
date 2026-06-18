@@ -495,7 +495,7 @@ pub fn show_settings_modal(
     }
 
     // Auto-save on any change inside the modal and stamp the save time so
-    // the green "✓ Saved" indicator can show.
+    // the green "Saved" indicator can show.
     if *settings != snapshot {
         settings.save();
         ctx.data_mut(|d| d.insert_temp(saved_at_id, now));
