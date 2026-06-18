@@ -343,7 +343,7 @@ impl App {
             }
         }
 
-        if !self.settings.mouse_wheel_zoom && !command_held && scroll_delta != 0.0 {
+        if !self.settings.mouse_wheel_zoom && !command_held && scroll_delta != 0.0 && !self.show_settings && !self.show_about {
             let dir: isize = if scroll_delta > 0.0 { -1 } else { 1 };
             let all_ready = self.panes.iter().all(|p| {
                 !is_active(p) || p.image_paths.is_empty() || p.is_next_cached(dir)
