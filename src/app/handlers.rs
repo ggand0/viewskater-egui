@@ -294,6 +294,10 @@ impl App {
         let use_selection = self.dual_pane_mode == DualPaneMode::Independent;
         let is_active = |p: &Pane| !use_selection || p.selected;
 
+        if self.show_settings || self.show_about {
+            return;
+        }
+
         if home {
             for pane in &mut self.panes {
                 if is_active(pane) {
@@ -343,7 +347,7 @@ impl App {
             }
         }
 
-        if !self.settings.mouse_wheel_zoom && !command_held && scroll_delta != 0.0 && !self.show_settings && !self.show_about {
+        if !self.settings.mouse_wheel_zoom && !command_held && scroll_delta != 0.0 {
             let dir: isize = if scroll_delta > 0.0 { -1 } else { 1 };
             let all_ready = self.panes.iter().all(|p| {
                 !is_active(p) || p.image_paths.is_empty() || p.is_next_cached(dir)
