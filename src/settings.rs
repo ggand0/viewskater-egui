@@ -393,7 +393,7 @@ pub fn show_settings_modal(
             }
         });
 
-    let max_modal_height = (screen.height() * 0.75).min(600.0).max(200.0);
+    let max_modal_height = (screen.height() * 0.75).clamp(200.0, 600.0);
 
     // Modal card
     egui::Area::new(egui::Id::new("settings_modal"))
