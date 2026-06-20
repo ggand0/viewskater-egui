@@ -1,6 +1,5 @@
 use eframe::egui;
-
-use crate::menu::MenuAction;
+use crate::{menu::MenuAction, settings::WindowState};
 use crate::pane::Pane;
 
 use super::{App, DualPaneMode, SliderResult};
@@ -81,7 +80,10 @@ impl App {
             MenuAction::OpenFolder(idx) => self.open_folder_dialog(idx, ctx),
             MenuAction::OpenFile(idx) => self.open_file_dialog(idx, ctx),
             MenuAction::Close => self.close_images(),
-            MenuAction::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            MenuAction::Quit => {
+                self.save_window_states(ctx);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
             MenuAction::SetSinglePane => self.set_single_pane(),
             MenuAction::SetDualPane => {
                 self.set_dual_pane(ctx);
@@ -191,8 +193,9 @@ impl App {
     }
 
     pub(super) fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
-        self.is_fullscreen = !self.is_fullscreen;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.is_fullscreen));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(
+            !ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)))
+        );
     }
 
     pub(super) fn handle_keyboard(&mut self, ctx: &egui::Context) {
@@ -228,6 +231,7 @@ impl App {
             });
 
         if quit {
+            self.save_window_states(ctx);
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
@@ -235,7 +239,7 @@ impl App {
             self.toggle_fullscreen(ctx);
             return;
         }
-        if escape && self.is_fullscreen {
+        if escape && ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
             self.toggle_fullscreen(ctx);
             return;
         }
@@ -417,5 +421,25 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Save window states for next startup
+    pub(super) fn save_window_states(&mut self, ctx: &egui::Context) {
+        ctx.input(|i| {
+            if let Some(screen) = i.viewport().outer_rect {
+                let position = screen.left_top();
+                self.states.window_position = position;
+                self.states.window_size = screen.size();
+            }
+
+            if i.viewport().maximized.is_some_and(|x| x) {
+                self.states.window_state = WindowState::Maximized;
+            } else if i.viewport().fullscreen.is_some_and(|x| x) {
+                self.states.window_state = WindowState::FullScreen;
+            } else {
+                self.states.window_state = WindowState::Window;
+            }
+            self.states.save();
+        });
     }
 }

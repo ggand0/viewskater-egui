@@ -10,7 +10,7 @@ use std::sync::Arc;
 use clap::Parser;
 use eframe::{egui, egui_wgpu, wgpu};
 
-use crate::settings::{AppSettings, GpuMemoryMode};
+use crate::settings::{AppSettings, GpuMemoryMode, WindowStates};
 
 mod about;
 mod app;
@@ -92,9 +92,25 @@ fn main() -> eframe::Result {
     let args = Args::parse();
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([1280.0, 720.0])
         .with_drag_and_drop(true)
         .with_app_id("viewskater-egui");
+
+    let states = WindowStates::load();
+    if states.window_position != egui::Pos2::default() {
+        viewport = viewport.with_position(states.window_position);
+    }
+
+    match states.window_state {
+        settings::WindowState::Window => {
+            viewport = viewport.with_inner_size(states.window_size);
+        },
+        settings::WindowState::Maximized => {
+            viewport = viewport.with_maximized(true);
+        },
+        settings::WindowState::FullScreen => {
+            viewport = viewport.with_fullscreen(true);
+        },
+    }
 
     if let Some(icon) = load_icon() {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
@@ -155,6 +171,8 @@ fn main() -> eframe::Result {
                 log_buffer,
                 settings,
                 file_rx,
+                states == WindowStates::default(),
+                states,
             )))
         }),
     )

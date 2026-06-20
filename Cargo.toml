@@ -12,7 +12,7 @@ eframe = { version = "0.31", default-features = false, features = [
     "wayland",
     "x11",
 ] }
-egui = "0.31"
+egui = { version = "0.31", features = ["serde"] }
 image = { version = "0.25", default-features = false, features = [
     "jpeg",
     "png",

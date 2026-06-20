@@ -362,6 +362,68 @@ impl AppSettings {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowState {
+    #[default]
+    Window,
+    Maximized,
+    FullScreen,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowStates {
+    /// Window inner_size for [`egui::ViewportBuilder`]
+    pub window_size: egui::Vec2,
+    /// Window position for [`egui::ViewportBuilder`]
+    pub window_position: egui::Pos2,
+    pub window_state: WindowState,
+}
+
+impl Default for WindowStates {
+    fn default() -> Self {
+        Self {
+            window_size: egui::vec2(1280.0, 720.0),
+            window_position: egui::Pos2::default(),
+            window_state: WindowState::default(),
+        }
+    }
+}
+
+impl WindowStates {
+    fn config_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|d| d.join("viewskater-egui").join("states.yaml"))
+    }
+
+    pub fn load() -> Self {
+        let states = Self::config_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_yaml::from_str(&s).ok())
+            .unwrap_or_default();
+        log::debug!("Loaded window states: {:?}", states);
+        states
+    }
+
+    pub fn save(&self) {
+        if let Some(path) = Self::config_path() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match serde_yaml::to_string(self) {
+                Ok(yaml) => {
+                    if let Err(e) = std::fs::write(&path, yaml) {
+                        log::error!("Failed to save states to {}: {}", path.display(), e);
+                    } else {
+                        log::debug!("Window states saved to {}", path.display());
+                    }
+                }
+                Err(e) => log::error!("Failed to serialize window states: {}", e),
+            }
+        }
+    }
+}
+
 /// Show the settings modal and report which settings changed.
 pub fn show_settings_modal(
     ctx: &egui::Context,
