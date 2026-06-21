@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use eframe::egui;
 
@@ -65,6 +66,7 @@ pub(crate) fn paint_nav_slider(
     max_images: usize,
     accent: egui::Color32,
     panes: &mut [Pane],
+    preview_stale_since: &mut Option<Instant>,
 ) -> SliderResult {
     if max_images <= 1 {
         return SliderResult {
@@ -165,9 +167,7 @@ pub(crate) fn paint_nav_slider(
                     let ratio = (ui_width / tex_size.x).min(ui_height / tex_size.y);
                     let scaled = tex_size * ratio;
 
-                    let loading = if opt.1 {""} else {" ?"};
-                    // Pre-layout label to compute total frame size
-                    let label_text = format!("{}{loading} / {max_images}", cursor_index + 1);
+                    let label_text = format!("{} / {max_images}", cursor_index + 1);
                     let label_font = egui::FontId::proportional(14.0);
                     let label_galley = ui.ctx().fonts(|f| {
                         f.layout_no_wrap(label_text, label_font, style.visuals.text_color())
@@ -214,7 +214,26 @@ pub(crate) fn paint_nav_slider(
                     );
 
                     if let Some(tex) = opt.0 {
+                        let is_exact = opt.1;
                         painter.image(tex.id(), img_rect, uv, egui::Color32::WHITE);
+
+                        if is_exact {
+                            *preview_stale_since = None;
+                        } else {
+                            let since = preview_stale_since.get_or_insert_with(Instant::now);
+                            let elapsed = since.elapsed().as_secs_f32();
+                            const GRACE: f32 = 0.15;
+                            const FADE_DURATION: f32 = 0.3;
+                            const MAX_ALPHA: f32 = 120.0;
+                            if elapsed >= GRACE {
+                                let t = ((elapsed - GRACE) / FADE_DURATION).min(1.0);
+                                let alpha = (MAX_ALPHA * t) as u8;
+                                painter.rect_filled(img_rect, 0.0, egui::Color32::from_black_alpha(alpha));
+                            }
+                            if elapsed < GRACE + FADE_DURATION {
+                                ui.ctx().request_repaint();
+                            }
+                        }
                     }
 
                     // Index label
@@ -245,6 +264,7 @@ pub struct App {
     initial_size_set: bool,
     file_receiver: Receiver<PathBuf>,
     last_preview_idx: Option<usize>,
+    preview_stale_since: Option<Instant>,
 }
 
 impl App {
@@ -272,6 +292,7 @@ impl App {
             initial_size_set: false,
             file_receiver,
             last_preview_idx: None,
+            preview_stale_since: None,
         };
 
         if !paths.is_empty() {
@@ -364,9 +385,11 @@ impl App {
             .unwrap_or(0);
 
         let accent = self.theme.accent;
+        let mut stale_since = self.preview_stale_since;
         let result = egui::TopBottomPanel::bottom("nav")
-            .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent, &mut self.panes))
+            .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent, &mut self.panes, &mut stale_since))
             .inner;
+        self.preview_stale_since = stale_since;
         if result.preview_active {
             if result.preview_cursor_index != self.last_preview_idx {
                 self.perf.record_frame();
@@ -375,6 +398,7 @@ impl App {
         } else {
             self.perf.clear_frames();
             self.last_preview_idx = None;
+            self.preview_stale_since = None;
         }
 
         self.apply_slider_result_all(result, ctx);
@@ -384,6 +408,7 @@ impl App {
         let independent =
             self.panes.len() >= 2 && self.dual_pane_mode == DualPaneMode::Independent;
         let accent = self.theme.accent;
+        let mut preview_stale_since = self.preview_stale_since;
 
         let slider_results = egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(egui::Color32::from_gray(20)))
@@ -549,6 +574,7 @@ impl App {
                             egui::pos2(available.min.x, slider_y),
                             egui::vec2(left_w, slider_h),
                         );
+                        let mut stale_l = preview_stale_since;
                         let left_result = ui
                             .allocate_new_ui(
                                 egui::UiBuilder::new().max_rect(left_slider_rect),
@@ -559,16 +585,19 @@ impl App {
                                         first[0].image_paths.len(),
                                         accent,
                                         first,
+                                        &mut stale_l,
                                     )
                                 },
                             )
                             .inner;
+                        preview_stale_since = stale_l;
                         results.push((0, left_result));
 
                         let right_slider_rect = egui::Rect::from_min_size(
                             egui::pos2(right_x, slider_y),
                             egui::vec2(right_w, slider_h),
                         );
+                        let mut stale_r = preview_stale_since;
                         let right_result = ui
                             .allocate_new_ui(
                                 egui::UiBuilder::new().max_rect(right_slider_rect),
@@ -579,10 +608,12 @@ impl App {
                                         rest[0].image_paths.len(),
                                         accent,
                                         rest,
+                                        &mut stale_r,
                                     )
                                 },
                             )
                             .inner;
+                        preview_stale_since = stale_r;
                         results.push((1, right_result));
                     }
                 }
@@ -591,6 +622,7 @@ impl App {
             })
             .inner;
 
+        self.preview_stale_since = preview_stale_since;
         for (pane_idx, result) in slider_results {
             self.apply_slider_result_one(pane_idx, result, ctx);
         }
