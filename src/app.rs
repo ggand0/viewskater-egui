@@ -66,7 +66,7 @@ pub(crate) fn paint_nav_slider(
     max_images: usize,
     accent: egui::Color32,
     panes: &mut [Pane],
-    preview_stale_since: &mut Option<Instant>,
+    preview_stale_since: &mut Option<(usize, Instant)>,
 ) -> SliderResult {
     if max_images <= 1 {
         return SliderResult {
@@ -220,7 +220,13 @@ pub(crate) fn paint_nav_slider(
                         if is_exact {
                             *preview_stale_since = None;
                         } else {
-                            let since = preview_stale_since.get_or_insert_with(Instant::now);
+                            let since = match preview_stale_since {
+                                Some((idx, inst)) if *idx == cursor_index => inst,
+                                _ => {
+                                    *preview_stale_since = Some((cursor_index, Instant::now()));
+                                    &mut preview_stale_since.as_mut().unwrap().1
+                                }
+                            };
                             let elapsed = since.elapsed().as_secs_f32();
                             const GRACE: f32 = 0.15;
                             const FADE_DURATION: f32 = 0.3;
@@ -264,7 +270,7 @@ pub struct App {
     initial_size_set: bool,
     file_receiver: Receiver<PathBuf>,
     last_preview_idx: Option<usize>,
-    preview_stale_since: Option<Instant>,
+    preview_stale_since: Option<(usize, Instant)>,
 }
 
 impl App {
