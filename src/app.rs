@@ -12,7 +12,7 @@ use crate::about;
 use crate::menu;
 use crate::pane::Pane;
 use crate::perf;
-use crate::settings::{self, AppSettings};
+use crate::settings::{self, AppSettings, ImageSortOrder};
 use crate::theme::UiTheme;
 
 /// Target window size in physical pixels (matches iced version behavior).
@@ -25,6 +25,9 @@ const FULLSCREEN_BOTTOM_ZONE: f32 = 100.0;
 
 /// Preview UI screen size ratio
 const SCREEN_PREVIEW_UI_RATIO: f32 = 5.0;
+
+/// Scroll options
+const SCROLL_ZOOM_SPEED: f32 = 1.0 / 200.0;
 
 #[cfg(target_os = "windows")]
 const CJK_PATHS: [&str; 2] = [
@@ -261,6 +264,7 @@ pub struct App {
     pub(crate) divider_fraction: f32,
     pub(crate) dual_pane_mode: DualPaneMode,
     pub(crate) settings: AppSettings,
+    pub(crate) current_sort: ImageSortOrder,
     pub(crate) theme: UiTheme,
     pub(crate) show_settings: bool,
     pub(crate) show_about: bool,
@@ -268,6 +272,7 @@ pub struct App {
     pub(crate) menu_open: bool,
     pub(crate) log_buffer: Arc<Mutex<VecDeque<String>>>,
     initial_size_set: bool,
+    title: Option<String>,
     file_receiver: Receiver<PathBuf>,
     last_preview_idx: Option<usize>,
     preview_stale_since: Option<(usize, Instant)>,
@@ -284,10 +289,18 @@ impl App {
         let theme = UiTheme::teal_dark();
         theme.apply_to_visuals(&cc.egui_ctx);
         let mut app = Self {
-            panes: vec![Pane::new(&cc.egui_ctx, settings.cache_count, settings.lru_budget_mb, settings.decode_threads, settings.mouse_wheel_zoom)],
+            panes: vec![Pane::new(
+                &cc.egui_ctx,
+                settings.cache_count,
+                settings.lru_budget_mb,
+                settings.decode_threads,
+                settings.mouse_wheel_zoom,
+                settings.reset_zoom_pan_on_navigation,
+            )],
             perf: perf::ImagePerfTracker::new(),
             divider_fraction: 0.5,
             dual_pane_mode: DualPaneMode::Synced,
+            current_sort: settings.image_sort_order,
             settings,
             theme,
             show_settings: false,
@@ -296,17 +309,33 @@ impl App {
             menu_open: false,
             log_buffer,
             initial_size_set: false,
+            title: None,
             file_receiver,
             last_preview_idx: None,
             preview_stale_since: None,
         };
 
         if !paths.is_empty() {
-            app.panes[0].open_path(&paths[0], &cc.egui_ctx);
+            app.panes[0].open_path(
+                &paths[0],
+                &cc.egui_ctx,
+                app.current_sort,
+            );
         }
         if paths.len() >= 2 {
-            let mut pane1 = Pane::new(&cc.egui_ctx, app.settings.cache_count, app.settings.lru_budget_mb, app.settings.decode_threads, app.settings.mouse_wheel_zoom);
-            pane1.open_path(&paths[1], &cc.egui_ctx);
+            let mut pane1 = Pane::new(
+                &cc.egui_ctx,
+                app.settings.cache_count,
+                app.settings.lru_budget_mb,
+                app.settings.decode_threads,
+                app.settings.mouse_wheel_zoom,
+                app.settings.reset_zoom_pan_on_navigation,
+            );
+            pane1.open_path(
+                &paths[1],
+                &cc.egui_ctx,
+                app.current_sort,
+            );
             app.panes.push(pane1);
         }
 
@@ -337,11 +366,12 @@ impl App {
         } else {
             cc.egui_ctx.set_fonts(fonts);
         }
+        cc.egui_ctx.options_mut(|o| o.scroll_zoom_speed = SCROLL_ZOOM_SPEED);
 
         app
     }
 
-    fn update_title(&self, ctx: &egui::Context) {
+    fn current_title(&self) -> String {
         let name = |pane: &Pane| -> Option<String> {
             pane.image_paths.get(pane.current_index).map(|path| {
                 path.file_name()
@@ -351,7 +381,7 @@ impl App {
             })
         };
 
-        let title = if self.panes.len() >= 2 {
+        if self.panes.len() >= 2 {
             let left = name(&self.panes[0]).unwrap_or_default();
             let right = name(&self.panes[1]).unwrap_or_default();
             if left.is_empty() && right.is_empty() {
@@ -362,8 +392,15 @@ impl App {
         } else {
             self.panes.first().and_then(name)
                 .unwrap_or_else(|| "ViewSkater".to_string())
-        };
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
+    }
+
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let title = self.current_title();
+        if self.title.as_deref() != Some(title.as_str()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = Some(title);
+        }
     }
 
     fn show_slider_panel(&mut self, ctx: &egui::Context) {
@@ -712,18 +749,26 @@ impl eframe::App for App {
                 None
             };
             let settings_snapshot = self.settings.clone();
+            let sort_snapshot = self.current_sort;
+            let mut menu_state = menu::MenuBarState {
+                settings: &mut self.settings,
+                current_sort: &mut self.current_sort,
+                is_fullscreen: self.is_fullscreen,
+            };
             let (action, menu_is_open) = menu::show_menu_bar(
                 ctx,
                 &self.panes,
                 self.dual_pane_mode,
-                &mut self.settings,
+                &mut menu_state,
                 &self.theme,
                 fps_text.as_deref(),
-                self.is_fullscreen,
             );
             self.menu_open = menu_is_open;
             if self.settings != settings_snapshot {
                 self.settings.save();
+            }
+            if self.current_sort != sort_snapshot {
+                self.reload_sorted_panes(ctx);
             }
             self.handle_menu_action(action, ctx);
         } else {
@@ -779,9 +824,9 @@ impl eframe::App for App {
         }
 
         // Settings modal — auto-saves on any change inside the modal.
-        let perf_changed =
+        let settings_changes =
             settings::show_settings_modal(ctx, &mut self.settings, &mut self.show_settings, &self.theme);
-        if perf_changed {
+        if settings_changes.pane_settings {
             self.apply_settings_to_caches();
         }
 

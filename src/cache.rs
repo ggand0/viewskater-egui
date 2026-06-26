@@ -5,6 +5,8 @@ use std::time::Instant;
 
 use eframe::egui;
 
+use crate::file_io::open_image;
+
 const COL_LOADED: egui::Color32 = egui::Color32::from_rgb(76, 175, 80);
 const COL_LOADING: egui::Color32 = egui::Color32::from_rgb(255, 183, 77);
 const COL_EMPTY: egui::Color32 = egui::Color32::from_rgb(60, 60, 60);
@@ -414,10 +416,8 @@ impl SlidingWindowCache {
 
         std::thread::spawn(move || {
             let start = Instant::now();
-            let image = match image::open(&path) {
-                Ok(img) => {
-                    Some(crate::decode::image_to_color_image(img))
-                }
+            let image = match open_image(&path) {
+                Ok(img) => Some(crate::decode::image_to_color_image(img)),
                 Err(e) => {
                     log::warn!("Background decode failed for {}: {}", path.display(), e);
                     None
@@ -547,7 +547,7 @@ impl SlidingWindowCache {
 
     /// Synchronously decode an image and upload as a texture.
     fn decode_sync(path: &Path, ctx: &egui::Context) -> Option<egui::TextureHandle> {
-        match image::open(path) {
+        match open_image(path) {
             Ok(img) => {
                 let color_image = crate::decode::image_to_color_image(img);
                 let name = path

@@ -1,6 +1,6 @@
 [package]
 name = "viewskater-egui"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Fast image viewer built with egui"
 
@@ -35,7 +35,6 @@ serde_yaml = "0.9"
 dirs = "6"
 sysinfo = "0.33"
 libc = "0.2"
-pollster = "0.4"
 wgpu = { version = "24", default-features = false, features = ["counters"] }
 mimalloc = { version = "0.1", default-features = false }
 

@@ -5,7 +5,8 @@ use eframe::egui;
 
 use crate::cache;
 use crate::decode::image_to_color_image;
-use crate::file_io;
+use crate::file_io::{self, open_image};
+use crate::settings::ImageSortOrder;
 
 const MIN_ZOOM: f32 = 0.05;
 const MAX_ZOOM: f32 = 100.0;
@@ -24,10 +25,18 @@ pub(crate) struct Pane {
     pub(crate) decode_threads: usize,
     pub(crate) selected: bool,
     pub(crate) mouse_wheel_zoom: bool,
+    pub(crate) reset_zoom_pan_on_navigation: bool,
 }
 
 impl Pane {
-    pub(crate) fn new(ctx: &egui::Context, cache_count: usize, lru_budget_mb: usize, decode_threads: usize, mouse_wheel_zoom: bool) -> Self {
+    pub(crate) fn new(
+        ctx: &egui::Context,
+        cache_count: usize,
+        lru_budget_mb: usize,
+        decode_threads: usize,
+        mouse_wheel_zoom: bool,
+        reset_zoom_pan_on_navigation: bool,
+    ) -> Self {
         Self {
             image_paths: Vec::new(),
             current_index: 0,
@@ -42,6 +51,7 @@ impl Pane {
             decode_threads,
             selected: true,
             mouse_wheel_zoom,
+            reset_zoom_pan_on_navigation,
         }
     }
 
@@ -56,14 +66,19 @@ impl Pane {
         self.decode_cache.clear();
     }
 
-    pub(crate) fn open_path(&mut self, path: &std::path::Path, ctx: &egui::Context) {
+    pub(crate) fn open_path(
+        &mut self,
+        path: &std::path::Path,
+        ctx: &egui::Context,
+        sort_order: ImageSortOrder,
+    ) {
         if !path.exists() {
             log::error!("Path does not exist: {}", path.display());
             return;
         }
 
         let (dir, target_filename) = file_io::resolve_path(path);
-        self.image_paths = file_io::enumerate_images(&dir);
+        self.image_paths = file_io::enumerate_images(&dir, sort_order);
 
         if self.image_paths.is_empty() {
             log::warn!("No supported images found in {}", dir.display());
@@ -72,12 +87,9 @@ impl Pane {
 
         self.current_index = target_filename
             .and_then(|name| {
-                self.image_paths
-                    .iter()
-                    .position(|p| {
-                        p.file_name().map(|f| f.to_string_lossy().into_owned())
-                            == Some(name.clone())
-                    })
+                self.image_paths.iter().position(|p| {
+                    p.file_name().map(|f| f.to_string_lossy().into_owned()) == Some(name.clone())
+                })
             })
             .unwrap_or(0);
 
@@ -110,7 +122,7 @@ impl Pane {
         }
 
         let t0 = Instant::now();
-        match image::open(&path) {
+        match open_image(&path) {
             Ok(img) => {
                 let decode_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
@@ -145,6 +157,11 @@ impl Pane {
         }
     }
 
+    fn reset_view(&mut self) {
+        self.zoom = 1.0;
+        self.pan = egui::Vec2::ZERO;
+    }
+
     /// Try to navigate by `delta` images. Returns true if the display advanced.
     pub(crate) fn navigate(&mut self, delta: isize) -> bool {
         if self.image_paths.is_empty() {
@@ -167,11 +184,19 @@ impl Pane {
                     cache.navigate_backward(new_index, &self.image_paths);
                 }
 
+                let summary = cache.summary();
+
+                if self.reset_zoom_pan_on_navigation {
+                    self.reset_view();
+                }
+
                 let dir = if delta > 0 { "→" } else { "←" };
                 log::debug!(
                     "nav {} {}/{} cache={} hit",
-                    dir, new_index, self.image_paths.len(),
-                    cache.summary(),
+                    dir,
+                    new_index,
+                    self.image_paths.len(),
+                    summary,
                 );
                 return true;
             }
@@ -187,6 +212,10 @@ impl Pane {
 
         self.current_index = index;
 
+        if self.reset_zoom_pan_on_navigation {
+            self.reset_view();
+        }
+
         if let Some(cache) = &mut self.cache {
             cache.jump_to(index, &self.image_paths);
             self.current_texture = cache.current_texture_for(index);
@@ -197,7 +226,9 @@ impl Pane {
             }
             log::debug!(
                 "jump {}/{} cache={} {}",
-                index, self.image_paths.len(), summary,
+                index,
+                self.image_paths.len(),
+                summary,
                 if hit { "hit" } else { "miss" },
             );
         } else {
@@ -206,8 +237,7 @@ impl Pane {
     }
 
     pub(crate) fn can_navigate_forward(&self) -> bool {
-        !self.image_paths.is_empty()
-            && self.current_index < self.image_paths.len() - 1
+        !self.image_paths.is_empty() && self.current_index < self.image_paths.len() - 1
     }
 
     pub(crate) fn can_navigate_backward(&self) -> bool {
@@ -250,6 +280,10 @@ impl Pane {
         }
         self.current_index = clamped;
 
+        if self.reset_zoom_pan_on_navigation {
+            self.reset_view();
+        }
+
         let found_in_cache = self
             .cache
             .as_ref()
@@ -279,7 +313,9 @@ impl Pane {
             }
             log::debug!(
                 "slider release {}/{} cache={}",
-                self.current_index, self.image_paths.len(), cache.summary(),
+                self.current_index,
+                self.image_paths.len(),
+                cache.summary(),
             );
         }
     }
@@ -338,11 +374,10 @@ impl Pane {
         let old_pan = self.pan;
 
         let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
+        let scale = (available.width() / tex_size.x).min(available.height() / tex_size.y);
 
         // Zoom: scroll wheel (when enabled) or Ctrl/Cmd+scroll, plus pinch-to-zoom
-        if response.hovered()
-            && (self.mouse_wheel_zoom || ui.input(|i| i.modifiers.command))
-        {
+        if response.hovered() && (self.mouse_wheel_zoom || ui.input(|i| i.modifiers.command)) {
             self.zoom_image(ui, &response, &available);
         }
 
@@ -351,14 +386,26 @@ impl Pane {
             self.pan += response.drag_delta();
         }
 
-        // Double-click: reset zoom and pan
+        // Double-click: toggle between fit-to-screen and 1:1.
         if response.double_clicked() {
-            self.zoom = 1.0;
-            self.pan = egui::Vec2::ZERO;
+            let is_fit_to_screen = (self.zoom - 1.0).abs() < f32::EPSILON;
+            let actual_size_zoom = (1.0 / scale).clamp(MIN_ZOOM, MAX_ZOOM);
+
+            if is_fit_to_screen {
+                self.zoom = actual_size_zoom;
+                if self.zoom >= 1.0 {
+                    if let Some(hover_pos) = response.hover_pos() {
+                        self.pan = (hover_pos - available.center()) * (1.0 - self.zoom);
+                    }
+                } else {
+                    self.pan = egui::Vec2::ZERO;
+                }
+            } else {
+                self.reset_view();
+            }
         }
 
         // Compute display rect with updated zoom/pan (zero-frame-delay)
-        let scale = (available.width() / tex_size.x).min(available.height() / tex_size.y);
         let base_size = tex_size * scale;
         let display_size = base_size * self.zoom;
         let center = available.center() + self.pan;
@@ -374,12 +421,9 @@ impl Pane {
 
     // Zoom: scroll wheel + pinch-to-zoom
     fn zoom_image(&mut self, ui: &mut egui::Ui, response: &egui::Response, available: &egui::Rect) {
-        let (scroll, pinch) = ui.input(|i| (i.raw_scroll_delta.y, i.zoom_delta()));
-        let scroll_factor = if scroll != 0.0 {
-            (scroll * 0.003).exp()
-        } else {
-            1.0
-        };
+        let (scroll, pinch) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
+        let scroll_zoom_speed = ui.ctx().options(|o| o.scroll_zoom_speed);
+        let scroll_factor = (scroll * scroll_zoom_speed).exp();
         let zoom_factor = pinch * scroll_factor;
 
         if zoom_factor != 1.0 {
