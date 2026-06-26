@@ -359,19 +359,7 @@ impl SlidingWindowCache {
     }
 
     fn evict_thumbnails(&mut self, current_idx: usize) {
-        while self.thumb_cache_bytes > THUMB_CACHE_BUDGET && self.thumb_cache.len() > 1 {
-            let furthest = *self.thumb_cache.keys()
-                .max_by_key(|&&k| (k as isize - current_idx as isize).unsigned_abs())
-                .unwrap();
-            if let Some(removed) = self.thumb_cache.remove(&furthest) {
-                self.thumb_cache_bytes -= removed.pixels.len() * 4;
-                log::debug!(
-                    "thumb evict [{}]: cache={} entries, {:.1}MB",
-                    furthest, self.thumb_cache.len(),
-                    self.thumb_cache_bytes as f64 / (1024.0 * 1024.0),
-                );
-            }
-        }
+        evict_thumb_cache(&mut self.thumb_cache, &mut self.thumb_cache_bytes, current_idx);
     }
 
     fn upload_thumbnail(&mut self, idx: usize, img: egui::ColorImage) {
@@ -743,4 +731,119 @@ fn legend_swatch(ui: &mut egui::Ui, color: egui::Color32, label: &str) {
             .color(egui::Color32::from_gray(160))
             .size(10.0),
     );
+}
+
+fn evict_thumb_cache(
+    cache: &mut HashMap<usize, egui::ColorImage>,
+    cache_bytes: &mut usize,
+    current_idx: usize,
+) {
+    while *cache_bytes > THUMB_CACHE_BUDGET && cache.len() > 1 {
+        let furthest = *cache.keys()
+            .max_by_key(|&&k| (k as isize - current_idx as isize).unsigned_abs())
+            .unwrap();
+        if let Some(removed) = cache.remove(&furthest) {
+            *cache_bytes -= removed.pixels.len() * 4;
+            log::debug!(
+                "thumb evict [{}]: cache={} entries, {:.1}MB",
+                furthest, cache.len(),
+                *cache_bytes as f64 / (1024.0 * 1024.0),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_thumb(size: usize) -> egui::ColorImage {
+        let pixel_count = size / 4;
+        egui::ColorImage {
+            size: [pixel_count, 1],
+            pixels: vec![egui::Color32::BLACK; pixel_count],
+        }
+    }
+
+    fn insert(cache: &mut HashMap<usize, egui::ColorImage>, bytes: &mut usize, idx: usize, size: usize) {
+        let img = make_thumb(size);
+        *bytes += img.pixels.len() * 4;
+        cache.insert(idx, img);
+    }
+
+    #[test]
+    fn evicts_furthest_entry() {
+        let mut cache = HashMap::new();
+        let mut bytes = 0;
+        let budget_each = THUMB_CACHE_BUDGET / 2 + 1;
+
+        insert(&mut cache, &mut bytes, 0, budget_each);
+        insert(&mut cache, &mut bytes, 50, budget_each);
+        insert(&mut cache, &mut bytes, 45, budget_each);
+
+        evict_thumb_cache(&mut cache, &mut bytes, 45);
+
+        assert!(!cache.contains_key(&0), "furthest entry (0) should be evicted");
+        assert!(cache.contains_key(&45), "current position should remain");
+    }
+
+    #[test]
+    fn evicts_multiple_until_under_budget() {
+        let mut cache = HashMap::new();
+        let mut bytes = 0;
+        let chunk = THUMB_CACHE_BUDGET / 3 + 1;
+
+        insert(&mut cache, &mut bytes, 0, chunk);
+        insert(&mut cache, &mut bytes, 100, chunk);
+        insert(&mut cache, &mut bytes, 50, chunk);
+        insert(&mut cache, &mut bytes, 200, chunk);
+
+        evict_thumb_cache(&mut cache, &mut bytes, 50);
+
+        assert!(bytes <= THUMB_CACHE_BUDGET);
+        assert!(cache.contains_key(&50), "current position should remain");
+        assert!(!cache.contains_key(&200), "furthest entry (200) should be evicted first");
+    }
+
+    #[test]
+    fn no_eviction_under_budget() {
+        let mut cache = HashMap::new();
+        let mut bytes = 0;
+        let small = THUMB_CACHE_BUDGET / 10;
+
+        insert(&mut cache, &mut bytes, 5, small);
+        insert(&mut cache, &mut bytes, 10, small);
+
+        evict_thumb_cache(&mut cache, &mut bytes, 5);
+
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn keeps_at_least_one_entry() {
+        let mut cache = HashMap::new();
+        let mut bytes = 0;
+
+        insert(&mut cache, &mut bytes, 42, THUMB_CACHE_BUDGET + 1000);
+
+        evict_thumb_cache(&mut cache, &mut bytes, 42);
+
+        assert_eq!(cache.len(), 1, "should never evict the last entry");
+    }
+
+    #[test]
+    fn bytes_tracking_stays_consistent() {
+        let mut cache = HashMap::new();
+        let mut bytes = 0;
+        let chunk = THUMB_CACHE_BUDGET / 2 + 1;
+
+        insert(&mut cache, &mut bytes, 0, chunk);
+        insert(&mut cache, &mut bytes, 50, chunk);
+        insert(&mut cache, &mut bytes, 100, chunk);
+
+        evict_thumb_cache(&mut cache, &mut bytes, 50);
+
+        let actual: usize = cache.values().map(|img| img.pixels.len() * 4).sum();
+        assert_eq!(bytes, actual);
+    }
 }
