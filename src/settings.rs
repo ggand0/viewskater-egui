@@ -292,6 +292,7 @@ pub struct AppSettings {
     pub mouse_wheel_zoom: bool,
     pub reset_zoom_pan_on_navigation: bool,
     pub image_sort_order: ImageSortOrder,
+    pub slider_preview: bool,
 }
 
 impl Default for AppSettings {
@@ -308,6 +309,7 @@ impl Default for AppSettings {
             mouse_wheel_zoom: false,
             reset_zoom_pan_on_navigation: true,
             image_sort_order: ImageSortOrder::default(),
+            slider_preview: true,
         }
     }
 }
@@ -593,6 +595,9 @@ fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiT
                 "Reset Zoom/Pan on Navigation",
                 theme,
             );
+        });
+        ui.horizontal(|ui| {
+            toggle_switch(ui, &mut settings.slider_preview, "Slider Preview", theme);
         });
     });
 

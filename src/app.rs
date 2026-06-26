@@ -70,6 +70,7 @@ pub(crate) fn paint_nav_slider(
     accent: egui::Color32,
     panes: &mut [Pane],
     preview_stale_since: &mut Option<(usize, Instant)>,
+    show_preview: bool,
 ) -> SliderResult {
     if max_images <= 1 {
         return SliderResult {
@@ -145,7 +146,7 @@ pub(crate) fn paint_nav_slider(
                 i.key_down(egui::Key::ArrowLeft) || i.key_down(egui::Key::ArrowRight)
                 || i.key_down(egui::Key::A) || i.key_down(egui::Key::D)
             });
-            if cursor_index < pane.image_paths.len() && !response.dragged() && !nav_active {
+            if cursor_index < pane.image_paths.len() && !response.dragged() && !nav_active && show_preview {
                 if let Some(swc) = pane.cache.as_mut() {
                     preview_active = true;
                     preview_cursor_index = Some(cursor_index);
@@ -429,8 +430,9 @@ impl App {
 
         let accent = self.theme.accent;
         let mut stale_since = self.preview_stale_since;
+        let preview = self.settings.slider_preview;
         let result = egui::TopBottomPanel::bottom("nav")
-            .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent, &mut self.panes, &mut stale_since))
+            .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent, &mut self.panes, &mut stale_since, preview))
             .inner;
         self.preview_stale_since = stale_since;
         if result.preview_active {
@@ -451,6 +453,7 @@ impl App {
         let independent =
             self.panes.len() >= 2 && self.dual_pane_mode == DualPaneMode::Independent;
         let accent = self.theme.accent;
+        let preview = self.settings.slider_preview;
         let mut preview_stale_since = self.preview_stale_since;
 
         let slider_results = egui::CentralPanel::default()
@@ -629,6 +632,7 @@ impl App {
                                         accent,
                                         first,
                                         &mut stale_l,
+                                        preview,
                                     )
                                 },
                             )
@@ -652,6 +656,7 @@ impl App {
                                         accent,
                                         rest,
                                         &mut stale_r,
+                                        preview,
                                     )
                                 },
                             )
