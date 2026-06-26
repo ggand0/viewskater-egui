@@ -50,6 +50,7 @@ pub struct SlidingWindowCache {
     thumb_texture_idx: Option<usize>,
     /// Cache of decoded thumbnail images so revisits don't re-decode.
     thumb_cache: HashMap<usize, egui::ColorImage>,
+    thumb_cache_bytes: usize,
     thumb_req_tx: mpsc::Sender<(usize, PathBuf)>,
     thumb_res_rx: mpsc::Receiver<(usize, egui::ColorImage)>,
 }
@@ -57,6 +58,8 @@ pub struct SlidingWindowCache {
 /// Maximum number of GPU uploads issued by `SlidingWindowCache::poll` per
 /// frame.
 const UPLOADS_PER_FRAME: usize = 2;
+
+const THUMB_CACHE_BUDGET: usize = 200 * 1024 * 1024;
 
 
 impl SlidingWindowCache {
@@ -102,6 +105,7 @@ impl SlidingWindowCache {
             thumb_texture: None,
             thumb_texture_idx: None,
             thumb_cache: HashMap::new(),
+            thumb_cache_bytes: 0,
             thumb_req_tx,
             thumb_res_rx,
         }
@@ -138,6 +142,7 @@ impl SlidingWindowCache {
         self.thumb_texture = None;
         self.thumb_texture_idx = None;
         self.thumb_cache.clear();
+        self.thumb_cache_bytes = 0;
 
         // Synchronously decode the center image
         let center_slot = center_index - self.first_file_index;
@@ -212,7 +217,12 @@ impl SlidingWindowCache {
         }
 
         while let Ok((idx, img)) = self.thumb_res_rx.try_recv() {
-            self.thumb_cache.insert(idx, img.clone());
+            let img_bytes = img.pixels.len() * 4;
+            if let Some(old) = self.thumb_cache.insert(idx, img.clone()) {
+                self.thumb_cache_bytes -= old.pixels.len() * 4;
+            }
+            self.thumb_cache_bytes += img_bytes;
+            self.evict_thumbnails(idx);
             self.upload_thumbnail(idx, img);
         }
 
@@ -346,6 +356,22 @@ impl SlidingWindowCache {
         }
         let _ = self.thumb_req_tx.send((thumb_index, path.to_path_buf()));
         (self.thumb_texture.clone(), false)
+    }
+
+    fn evict_thumbnails(&mut self, current_idx: usize) {
+        while self.thumb_cache_bytes > THUMB_CACHE_BUDGET && self.thumb_cache.len() > 1 {
+            let furthest = *self.thumb_cache.keys()
+                .max_by_key(|&&k| (k as isize - current_idx as isize).unsigned_abs())
+                .unwrap();
+            if let Some(removed) = self.thumb_cache.remove(&furthest) {
+                self.thumb_cache_bytes -= removed.pixels.len() * 4;
+                log::debug!(
+                    "thumb evict [{}]: cache={} entries, {:.1}MB",
+                    furthest, self.thumb_cache.len(),
+                    self.thumb_cache_bytes as f64 / (1024.0 * 1024.0),
+                );
+            }
+        }
     }
 
     fn upload_thumbnail(&mut self, idx: usize, img: egui::ColorImage) {
