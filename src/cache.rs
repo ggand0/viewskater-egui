@@ -738,7 +738,16 @@ fn evict_thumb_cache(
     cache_bytes: &mut usize,
     current_idx: usize,
 ) {
-    while *cache_bytes > THUMB_CACHE_BUDGET && cache.len() > 1 {
+    evict_thumb_cache_with_budget(cache, cache_bytes, current_idx, THUMB_CACHE_BUDGET);
+}
+
+fn evict_thumb_cache_with_budget(
+    cache: &mut HashMap<usize, egui::ColorImage>,
+    cache_bytes: &mut usize,
+    current_idx: usize,
+    budget: usize,
+) {
+    while *cache_bytes > budget && cache.len() > 1 {
         let furthest = *cache.keys()
             .max_by_key(|&&k| (k as isize - current_idx as isize).unsigned_abs())
             .unwrap();
@@ -757,6 +766,8 @@ fn evict_thumb_cache(
 mod tests {
     use super::*;
 
+    const TEST_BUDGET: usize = 1024;
+
     fn make_thumb(size: usize) -> egui::ColorImage {
         let pixel_count = size / 4;
         egui::ColorImage {
@@ -771,17 +782,21 @@ mod tests {
         cache.insert(idx, img);
     }
 
+    fn evict(cache: &mut HashMap<usize, egui::ColorImage>, bytes: &mut usize, current_idx: usize) {
+        evict_thumb_cache_with_budget(cache, bytes, current_idx, TEST_BUDGET);
+    }
+
     #[test]
     fn evicts_furthest_entry() {
         let mut cache = HashMap::new();
         let mut bytes = 0;
-        let budget_each = THUMB_CACHE_BUDGET / 2 + 1;
+        let each = TEST_BUDGET / 2 + 1;
 
-        insert(&mut cache, &mut bytes, 0, budget_each);
-        insert(&mut cache, &mut bytes, 50, budget_each);
-        insert(&mut cache, &mut bytes, 45, budget_each);
+        insert(&mut cache, &mut bytes, 0, each);
+        insert(&mut cache, &mut bytes, 50, each);
+        insert(&mut cache, &mut bytes, 45, each);
 
-        evict_thumb_cache(&mut cache, &mut bytes, 45);
+        evict(&mut cache, &mut bytes, 45);
 
         assert!(!cache.contains_key(&0), "furthest entry (0) should be evicted");
         assert!(cache.contains_key(&45), "current position should remain");
@@ -791,16 +806,16 @@ mod tests {
     fn evicts_multiple_until_under_budget() {
         let mut cache = HashMap::new();
         let mut bytes = 0;
-        let chunk = THUMB_CACHE_BUDGET / 3 + 1;
+        let chunk = TEST_BUDGET / 3 + 1;
 
         insert(&mut cache, &mut bytes, 0, chunk);
         insert(&mut cache, &mut bytes, 100, chunk);
         insert(&mut cache, &mut bytes, 50, chunk);
         insert(&mut cache, &mut bytes, 200, chunk);
 
-        evict_thumb_cache(&mut cache, &mut bytes, 50);
+        evict(&mut cache, &mut bytes, 50);
 
-        assert!(bytes <= THUMB_CACHE_BUDGET);
+        assert!(bytes <= TEST_BUDGET);
         assert!(cache.contains_key(&50), "current position should remain");
         assert!(!cache.contains_key(&200), "furthest entry (200) should be evicted first");
     }
@@ -809,12 +824,12 @@ mod tests {
     fn no_eviction_under_budget() {
         let mut cache = HashMap::new();
         let mut bytes = 0;
-        let small = THUMB_CACHE_BUDGET / 10;
+        let small = TEST_BUDGET / 10;
 
         insert(&mut cache, &mut bytes, 5, small);
         insert(&mut cache, &mut bytes, 10, small);
 
-        evict_thumb_cache(&mut cache, &mut bytes, 5);
+        evict(&mut cache, &mut bytes, 5);
 
         assert_eq!(cache.len(), 2);
     }
@@ -824,9 +839,9 @@ mod tests {
         let mut cache = HashMap::new();
         let mut bytes = 0;
 
-        insert(&mut cache, &mut bytes, 42, THUMB_CACHE_BUDGET + 1000);
+        insert(&mut cache, &mut bytes, 42, TEST_BUDGET + 1000);
 
-        evict_thumb_cache(&mut cache, &mut bytes, 42);
+        evict(&mut cache, &mut bytes, 42);
 
         assert_eq!(cache.len(), 1, "should never evict the last entry");
     }
@@ -835,13 +850,13 @@ mod tests {
     fn bytes_tracking_stays_consistent() {
         let mut cache = HashMap::new();
         let mut bytes = 0;
-        let chunk = THUMB_CACHE_BUDGET / 2 + 1;
+        let chunk = TEST_BUDGET / 2 + 1;
 
         insert(&mut cache, &mut bytes, 0, chunk);
         insert(&mut cache, &mut bytes, 50, chunk);
         insert(&mut cache, &mut bytes, 100, chunk);
 
-        evict_thumb_cache(&mut cache, &mut bytes, 50);
+        evict(&mut cache, &mut bytes, 50);
 
         let actual: usize = cache.values().map(|img| img.pixels.len() * 4).sum();
         assert_eq!(bytes, actual);
