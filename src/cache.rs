@@ -11,6 +11,107 @@ const COL_LOADED: egui::Color32 = egui::Color32::from_rgb(76, 175, 80);
 const COL_LOADING: egui::Color32 = egui::Color32::from_rgb(255, 183, 77);
 const COL_EMPTY: egui::Color32 = egui::Color32::from_rgb(60, 60, 60);
 
+const THUMB_CACHE_BUDGET: usize = 200 * 1024 * 1024;
+
+pub struct ThumbnailCache {
+    ctx: egui::Context,
+    texture: Option<egui::TextureHandle>,
+    texture_idx: Option<usize>,
+    cache: HashMap<usize, egui::ColorImage>,
+    cache_bytes: usize,
+    req_tx: mpsc::Sender<(usize, PathBuf)>,
+    res_rx: mpsc::Receiver<(usize, egui::ColorImage)>,
+}
+
+impl ThumbnailCache {
+    pub fn new(ctx: &egui::Context) -> Self {
+        let (req_tx, req_rx) = mpsc::channel::<(usize, PathBuf)>();
+        let (res_tx, res_rx) = mpsc::channel();
+
+        let worker_ctx = ctx.clone();
+        std::thread::spawn(move || {
+            while let Ok((idx, path)) = req_rx.recv() {
+                let mut latest_idx = idx;
+                let mut latest_path = path;
+                while let Ok((newer_idx, newer_path)) = req_rx.try_recv() {
+                    latest_idx = newer_idx;
+                    latest_path = newer_path;
+                }
+                match image::open(&latest_path) {
+                    Ok(img) => {
+                        let thumbnail = crate::decode::image_to_thumbnail(img);
+                        let _ = res_tx.send((latest_idx, thumbnail));
+                        worker_ctx.request_repaint();
+                    }
+                    Err(e) => {
+                        log::error!("Thumbnail decode failed for {}: {e}", latest_path.display());
+                    }
+                }
+            }
+        });
+
+        Self {
+            ctx: ctx.clone(),
+            texture: None,
+            texture_idx: None,
+            cache: HashMap::new(),
+            cache_bytes: 0,
+            req_tx,
+            res_rx,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.texture = None;
+        self.texture_idx = None;
+        self.cache.clear();
+        self.cache_bytes = 0;
+    }
+
+    pub fn poll(&mut self) {
+        while let Ok((idx, img)) = self.res_rx.try_recv() {
+            let img_bytes = img.pixels.len() * 4;
+            if let Some(old) = self.cache.insert(idx, img.clone()) {
+                self.cache_bytes -= old.pixels.len() * 4;
+            }
+            self.cache_bytes += img_bytes;
+            evict_thumb_cache(&mut self.cache, &mut self.cache_bytes, idx);
+            self.upload(idx, img);
+        }
+    }
+
+    pub fn current_thumbnail_for(&mut self, thumb_index: usize, path: &Path) -> (Option<egui::TextureHandle>, bool) {
+        if self.texture_idx == Some(thumb_index) {
+            return (self.texture.clone(), true);
+        }
+        if let Some(img) = self.cache.get(&thumb_index) {
+            self.upload(thumb_index, img.clone());
+            return (self.texture.clone(), true);
+        }
+        if let Some(&nearest_idx) = self.cache.keys()
+            .min_by_key(|&&k| (k as isize - thumb_index as isize).unsigned_abs())
+        {
+            if self.texture_idx != Some(nearest_idx) {
+                let img = self.cache[&nearest_idx].clone();
+                self.upload(nearest_idx, img);
+            }
+        }
+        let _ = self.req_tx.send((thumb_index, path.to_path_buf()));
+        (self.texture.clone(), false)
+    }
+
+    fn upload(&mut self, idx: usize, img: egui::ColorImage) {
+        match &mut self.texture {
+            Some(tex) => tex.set(img, egui::TextureOptions::LINEAR),
+            None => {
+                self.texture = Some(self.ctx.load_texture(
+                    "thumb_preview", img, egui::TextureOptions::LINEAR,
+                ));
+            }
+        }
+        self.texture_idx = Some(idx);
+    }
+}
 
 pub struct DecodeResult {
     pub file_index: usize,
@@ -46,52 +147,18 @@ pub struct SlidingWindowCache {
 
     ctx: egui::Context,
 
-    /// Single reusable GPU texture for the slider preview.
-    thumb_texture: Option<egui::TextureHandle>,
-    /// File index of the thumbnail currently in thumb_texture.
-    thumb_texture_idx: Option<usize>,
-    /// Cache of decoded thumbnail images so revisits don't re-decode.
-    thumb_cache: HashMap<usize, egui::ColorImage>,
-    thumb_cache_bytes: usize,
-    thumb_req_tx: mpsc::Sender<(usize, PathBuf)>,
-    thumb_res_rx: mpsc::Receiver<(usize, egui::ColorImage)>,
+    pub(crate) thumbnails: ThumbnailCache,
 }
 
 /// Maximum number of GPU uploads issued by `SlidingWindowCache::poll` per
 /// frame.
 const UPLOADS_PER_FRAME: usize = 2;
 
-const THUMB_CACHE_BUDGET: usize = 200 * 1024 * 1024;
-
 
 impl SlidingWindowCache {
     pub fn new(ctx: &egui::Context, cache_count: usize, decode_threads: usize) -> Self {
         let cache_size = cache_count * 2 + 1;
         let (tx, rx) = mpsc::channel();
-        let (thumb_req_tx, thumb_req_rx) = mpsc::channel::<(usize, PathBuf)>();
-        let (thumb_res_tx, thumb_res_rx) = mpsc::channel();
-
-        let worker_ctx = ctx.clone();
-        std::thread::spawn(move || {
-            while let Ok((idx, path)) = thumb_req_rx.recv() {
-                let mut latest_idx = idx;
-                let mut latest_path = path;
-                while let Ok((newer_idx, newer_path)) = thumb_req_rx.try_recv() {
-                    latest_idx = newer_idx;
-                    latest_path = newer_path;
-                }
-                match image::open(&latest_path) {
-                    Ok(img) => {
-                        let thumbnail = crate::decode::image_to_thumbnail(img);
-                        let _ = thumb_res_tx.send((latest_idx, thumbnail));
-                        worker_ctx.request_repaint();
-                    }
-                    Err(e) => {
-                        log::error!("Thumbnail decode failed for {}: {e}", latest_path.display());
-                    }
-                }
-            }
-        });
 
         Self {
             slots: VecDeque::from(vec![None; cache_size]),
@@ -104,12 +171,7 @@ impl SlidingWindowCache {
             pending_decodes: VecDeque::new(),
             max_decode_threads: decode_threads,
             ctx: ctx.clone(),
-            thumb_texture: None,
-            thumb_texture_idx: None,
-            thumb_cache: HashMap::new(),
-            thumb_cache_bytes: 0,
-            thumb_req_tx,
-            thumb_res_rx,
+            thumbnails: ThumbnailCache::new(ctx),
         }
     }
 
@@ -141,10 +203,7 @@ impl SlidingWindowCache {
         // Clear all slots
         self.slots.clear();
         self.slots.resize(cache_size, None);
-        self.thumb_texture = None;
-        self.thumb_texture_idx = None;
-        self.thumb_cache.clear();
-        self.thumb_cache_bytes = 0;
+        self.thumbnails.clear();
 
         // Synchronously decode the center image
         let center_slot = center_index - self.first_file_index;
@@ -218,15 +277,7 @@ impl SlidingWindowCache {
             }
         }
 
-        while let Ok((idx, img)) = self.thumb_res_rx.try_recv() {
-            let img_bytes = img.pixels.len() * 4;
-            if let Some(old) = self.thumb_cache.insert(idx, img.clone()) {
-                self.thumb_cache_bytes -= old.pixels.len() * 4;
-            }
-            self.thumb_cache_bytes += img_bytes;
-            self.evict_thumbnails(idx);
-            self.upload_thumbnail(idx, img);
-        }
+        self.thumbnails.poll();
 
         if !self.pending_uploads.is_empty() || !self.pending_decodes.is_empty() {
             self.ctx.request_repaint();
@@ -338,43 +389,6 @@ impl SlidingWindowCache {
         self.slots.get(slot_idx).and_then(|opt| opt.clone())
     }
 
-    /// Get the [`egui::TextureHandle`] for a given thumbnail index,
-    /// return true if cached.
-    pub fn current_thumbnail_for(&mut self, thumb_index: usize, path: &Path) -> (Option<egui::TextureHandle>, bool) {
-        if self.thumb_texture_idx == Some(thumb_index) {
-            return (self.thumb_texture.clone(), true);
-        }
-        if let Some(img) = self.thumb_cache.get(&thumb_index) {
-            self.upload_thumbnail(thumb_index, img.clone());
-            return (self.thumb_texture.clone(), false);
-        }
-        if let Some(&nearest_idx) = self.thumb_cache.keys()
-            .min_by_key(|&&k| (k as isize - thumb_index as isize).unsigned_abs())
-        {
-            if self.thumb_texture_idx != Some(nearest_idx) {
-                let img = self.thumb_cache[&nearest_idx].clone();
-                self.upload_thumbnail(nearest_idx, img);
-            }
-        }
-        let _ = self.thumb_req_tx.send((thumb_index, path.to_path_buf()));
-        (self.thumb_texture.clone(), false)
-    }
-
-    fn evict_thumbnails(&mut self, current_idx: usize) {
-        evict_thumb_cache(&mut self.thumb_cache, &mut self.thumb_cache_bytes, current_idx);
-    }
-
-    fn upload_thumbnail(&mut self, idx: usize, img: egui::ColorImage) {
-        match &mut self.thumb_texture {
-            Some(tex) => tex.set(img, egui::TextureOptions::LINEAR),
-            None => {
-                self.thumb_texture = Some(self.ctx.load_texture(
-                    "thumb_preview", img, egui::TextureOptions::LINEAR,
-                ));
-            }
-        }
-        self.thumb_texture_idx = Some(idx);
-    }
     /// Find which slot (if any) holds the given file index.
     fn slot_index_for(&self, file_index: usize) -> Option<usize> {
         if file_index < self.first_file_index {
