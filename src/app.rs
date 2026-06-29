@@ -61,20 +61,26 @@ pub(crate) struct SliderResult {
     pub preview_active: bool,
     pub preview_cursor_index: Option<usize>,
 }
+struct PreviewLayout {
+    hover_pos: egui::Pos2,
+    slider_rect: egui::Rect,
+    screen_rect: egui::Rect,
+    width: f32,
+    height: f32,
+}
+
 fn paint_preview_popup(
     ui: &egui::Ui,
     tc: &mut crate::cache::ThumbnailCache,
     cursor_index: usize,
     max_images: usize,
     path: &std::path::Path,
-    hover_pos: egui::Pos2,
-    slider_rect: egui::Rect,
-    screen_rect: egui::Rect,
-    ui_width: f32,
-    ui_height: f32,
+    layout: &PreviewLayout,
     stale_since: &mut Option<(usize, Instant)>,
 ) {
     let (tex_opt, is_exact) = tc.current_thumbnail_for(cursor_index, path);
+    let ui_width = layout.width;
+    let ui_height = layout.height;
 
     let tex_size = match &tex_opt {
         Some(tex) => tex.size_vec2(),
@@ -105,10 +111,10 @@ fn paint_preview_popup(
     let frame_w = ml + inner_w + mr;
     let frame_h = mt + inner_h + mb;
 
-    let preview_x = (hover_pos.x - frame_w / 2.0)
-        .clamp(screen_rect.left(), screen_rect.right() - frame_w);
-    let preview_y = (slider_rect.top() - frame_h - 8.0)
-        .clamp(screen_rect.top(), screen_rect.bottom() - frame_h);
+    let preview_x = (layout.hover_pos.x - frame_w / 2.0)
+        .clamp(layout.screen_rect.left(), layout.screen_rect.right() - frame_w);
+    let preview_y = (layout.slider_rect.top() - frame_h - 8.0)
+        .clamp(layout.screen_rect.top(), layout.screen_rect.bottom() - frame_h);
 
     let frame_rect = egui::Rect::from_min_size(
         egui::pos2(preview_x, preview_y),
@@ -248,11 +254,14 @@ pub(crate) fn paint_nav_slider(
                 if let Some(tc) = pane.thumbnail_cache.as_mut() {
                     preview_active = true;
                     preview_cursor_index = Some(cursor_index);
+                    let layout = PreviewLayout {
+                        hover_pos: pos, slider_rect: rect, screen_rect,
+                        width: ui_width, height: ui_height,
+                    };
                     paint_preview_popup(
                         ui, tc, cursor_index, max_images,
                         &pane.image_paths[cursor_index],
-                        pos, rect, screen_rect, ui_width, ui_height,
-                        preview_stale_since,
+                        &layout, preview_stale_since,
                     );
                 }
             }

@@ -61,13 +61,6 @@ impl ThumbnailCache {
         }
     }
 
-    pub fn clear(&mut self) {
-        self.texture = None;
-        self.texture_idx = None;
-        self.cache.clear();
-        self.cache_bytes = 0;
-    }
-
     pub fn poll(&mut self) {
         while let Ok((idx, img)) = self.res_rx.try_recv() {
             let img_bytes = img.pixels.len() * 4;
