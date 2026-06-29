@@ -131,12 +131,8 @@ pub(crate) fn paint_nav_slider(
         egui::Stroke::NONE,
     );
     let screen_rect = ui.ctx().screen_rect();
-    let mut ui_width = screen_rect.width() / SCREEN_PREVIEW_UI_RATIO;
-    let mut ui_height = screen_rect.height() / SCREEN_PREVIEW_UI_RATIO;
-    if ui_width >= screen_rect.width() || ui_height >= screen_rect.height() {
-        ui_width /= 2.0;
-        ui_height /= 2.0;
-    }
+    let ui_width = screen_rect.width() / SCREEN_PREVIEW_UI_RATIO;
+    let ui_height = ui_width * 9.0 / 16.0;
     if let Some(pos) = response.hover_pos() {
         let usable = rect.x_range().shrink(handle_radius);
         let cursor_t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
@@ -190,7 +186,8 @@ pub(crate) fn paint_nav_slider(
                     // Position above slider, centered on cursor, clamped to screen
                     let preview_x = (pos.x - frame_w / 2.0)
                         .clamp(screen_rect.left(), screen_rect.right() - frame_w);
-                    let preview_y = rect.top() - frame_h - 8.0;
+                    let preview_y = (rect.top() - frame_h - 8.0)
+                        .clamp(screen_rect.top(), screen_rect.bottom() - frame_h);
 
                     let frame_rect = egui::Rect::from_min_size(
                         egui::pos2(preview_x, preview_y),
