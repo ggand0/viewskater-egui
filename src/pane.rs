@@ -27,6 +27,7 @@ pub(crate) struct Pane {
     pub(crate) selected: bool,
     pub(crate) mouse_wheel_zoom: bool,
     pub(crate) reset_zoom_pan_on_navigation: bool,
+    pub(crate) preview_budget_mb: usize,
 }
 
 impl Pane {
@@ -37,6 +38,7 @@ impl Pane {
         decode_threads: usize,
         mouse_wheel_zoom: bool,
         reset_zoom_pan_on_navigation: bool,
+        preview_budget_mb: usize,
     ) -> Self {
         Self {
             image_paths: Vec::new(),
@@ -54,6 +56,7 @@ impl Pane {
             selected: true,
             mouse_wheel_zoom,
             reset_zoom_pan_on_navigation,
+            preview_budget_mb,
         }
     }
 
@@ -104,7 +107,7 @@ impl Pane {
         c.initialize(self.current_index, &self.image_paths);
         self.current_texture = c.current_texture_for(self.current_index);
         self.cache = Some(c);
-        self.thumbnail_cache = Some(cache::ThumbnailCache::new(ctx));
+        self.thumbnail_cache = Some(cache::ThumbnailCache::new(ctx, self.preview_budget_mb));
         self.slider_loader = Some(cache::SliderLoader::new(ctx));
     }
 

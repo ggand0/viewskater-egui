@@ -17,6 +17,7 @@ fn accent_slider(
     range: std::ops::RangeInclusive<usize>,
     default: usize,
     theme: &UiTheme,
+    editable: bool,
 ) {
     let lo = *range.start();
     let hi = *range.end();
@@ -76,19 +77,23 @@ fn accent_slider(
         egui::Stroke::NONE,
     );
 
-    // Value text to the right.
-    let text_rect = egui::Rect::from_min_size(
-        egui::pos2(rect.right() + ui.spacing().item_spacing.x, rect.top()),
-        egui::vec2(40.0, rect.height()),
-    );
-    ui.put(
-        text_rect,
-        egui::Label::new(
-            egui::RichText::new(format!("{value}"))
-                .monospace()
-                .color(egui::Color32::from_gray(200)),
-        ),
-    );
+    if editable {
+        ui.add(egui::DragValue::new(value).range(range));
+    } else {
+        // Value text to the right.
+        let text_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.right() + ui.spacing().item_spacing.x, rect.top()),
+            egui::vec2(40.0, rect.height()),
+        );
+        ui.put(
+            text_rect,
+            egui::Label::new(
+                egui::RichText::new(format!("{value}"))
+                    .monospace()
+                    .color(egui::Color32::from_gray(200)),
+            ),
+        );
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -293,6 +298,7 @@ pub struct AppSettings {
     pub reset_zoom_pan_on_navigation: bool,
     pub image_sort_order: ImageSortOrder,
     pub slider_preview: bool,
+    pub preview_budget_mb: usize,
 }
 
 impl Default for AppSettings {
@@ -310,6 +316,7 @@ impl Default for AppSettings {
             reset_zoom_pan_on_navigation: true,
             image_sort_order: ImageSortOrder::default(),
             slider_preview: true,
+            preview_budget_mb: 200,
         }
     }
 }
@@ -326,7 +333,8 @@ impl SettingsChanges {
                 || after.lru_budget_mb != before.lru_budget_mb
                 || after.decode_threads != before.decode_threads
                 || after.mouse_wheel_zoom != before.mouse_wheel_zoom
-                || after.reset_zoom_pan_on_navigation != before.reset_zoom_pan_on_navigation,
+                || after.reset_zoom_pan_on_navigation != before.reset_zoom_pan_on_navigation
+                || after.preview_budget_mb != before.preview_budget_mb,
         }
     }
 }
@@ -651,7 +659,7 @@ fn render_performance_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: 
 
         ui.horizontal(|ui| {
             ui.label("Cache Size");
-            accent_slider(ui, &mut settings.cache_count, 1..=20, defaults.cache_count, theme);
+            accent_slider(ui, &mut settings.cache_count, 1..=20, defaults.cache_count, theme, false);
         });
         ui.label(
             egui::RichText::new("Images prefetched in each direction. Higher = smoother keyboard nav, more GPU memory.")
@@ -662,7 +670,7 @@ fn render_performance_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: 
 
         ui.horizontal(|ui| {
             ui.label("LRU Budget (MB)");
-            accent_slider(ui, &mut settings.lru_budget_mb, 128..=4096, defaults.lru_budget_mb, theme);
+            accent_slider(ui, &mut settings.lru_budget_mb, 128..=4096, defaults.lru_budget_mb, theme, true);
         });
         ui.label(
             egui::RichText::new("GPU memory for caching slider-visited images. Higher = faster revisits, more VRAM.")
@@ -673,13 +681,26 @@ fn render_performance_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: 
 
         ui.horizontal(|ui| {
             ui.label("Decode Threads");
-            accent_slider(ui, &mut settings.decode_threads, 1..=16, defaults.decode_threads, theme);
+            accent_slider(ui, &mut settings.decode_threads, 1..=16, defaults.decode_threads, theme, false);
         });
         ui.label(
             egui::RichText::new("Concurrent image decodes. Higher = faster cache fill, larger memory spikes.")
                 .size(11.0)
                 .color(theme.muted),
         );
+
+        if settings.slider_preview {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Slider Preview Budget (MB)");
+                accent_slider(ui, &mut settings.preview_budget_mb, 0..=1024, defaults.preview_budget_mb, theme, true);
+            });
+            ui.label(
+                egui::RichText::new("Default: 200MB (~420 thumbnails). Set to 0 for no limit.")
+                    .size(11.0)
+                    .color(theme.muted),
+            );
+        }
     });
 
     ui.add_space(10.0);

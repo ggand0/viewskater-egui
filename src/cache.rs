@@ -11,8 +11,6 @@ const COL_LOADED: egui::Color32 = egui::Color32::from_rgb(76, 175, 80);
 const COL_LOADING: egui::Color32 = egui::Color32::from_rgb(255, 183, 77);
 const COL_EMPTY: egui::Color32 = egui::Color32::from_rgb(60, 60, 60);
 
-const THUMB_CACHE_BUDGET: usize = 200 * 1024 * 1024;
-
 pub struct ThumbnailCache {
     ctx: egui::Context,
     texture: Option<egui::TextureHandle>,
@@ -21,10 +19,11 @@ pub struct ThumbnailCache {
     cache_bytes: usize,
     req_tx: mpsc::Sender<(usize, PathBuf)>,
     res_rx: mpsc::Receiver<(usize, egui::ColorImage)>,
+    preview_budget_mb: usize
 }
 
 impl ThumbnailCache {
-    pub fn new(ctx: &egui::Context) -> Self {
+    pub fn new(ctx: &egui::Context, preview_budget_mb: usize) -> Self {
         let (req_tx, req_rx) = mpsc::channel::<(usize, PathBuf)>();
         let (res_tx, res_rx) = mpsc::channel();
 
@@ -58,6 +57,7 @@ impl ThumbnailCache {
             cache_bytes: 0,
             req_tx,
             res_rx,
+            preview_budget_mb,
         }
     }
 
@@ -68,7 +68,9 @@ impl ThumbnailCache {
                 self.cache_bytes -= old.pixels.len() * 4;
             }
             self.cache_bytes += img_bytes;
-            evict_thumb_cache(&mut self.cache, &mut self.cache_bytes, idx);
+            if self.preview_budget_mb > 0 {
+                evict_thumb_cache(&mut self.cache, &mut self.cache_bytes, idx, self.preview_budget_mb);
+            }
             self.upload(idx, img);
         }
     }
@@ -738,8 +740,9 @@ fn evict_thumb_cache(
     cache: &mut HashMap<usize, egui::ColorImage>,
     cache_bytes: &mut usize,
     current_idx: usize,
+    cache_budget: usize,
 ) {
-    evict_thumb_cache_with_budget(cache, cache_bytes, current_idx, THUMB_CACHE_BUDGET);
+    evict_thumb_cache_with_budget(cache, cache_bytes, current_idx, cache_budget);
 }
 
 fn evict_thumb_cache_with_budget(
@@ -748,7 +751,7 @@ fn evict_thumb_cache_with_budget(
     current_idx: usize,
     budget: usize,
 ) {
-    while *cache_bytes > budget && cache.len() > 1 {
+    while *cache_bytes > (budget * 1024 * 1024) && cache.len() > 1 {
         let furthest = *cache.keys()
             .max_by_key(|&&k| (k as isize - current_idx as isize).unsigned_abs())
             .unwrap();

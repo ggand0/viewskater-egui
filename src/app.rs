@@ -309,6 +309,7 @@ impl App {
                 settings.decode_threads,
                 settings.mouse_wheel_zoom,
                 settings.reset_zoom_pan_on_navigation,
+                settings.preview_budget_mb,
             )],
             perf: perf::ImagePerfTracker::new(),
             divider_fraction: 0.5,
@@ -343,6 +344,7 @@ impl App {
                 app.settings.decode_threads,
                 app.settings.mouse_wheel_zoom,
                 app.settings.reset_zoom_pan_on_navigation,
+                app.settings.preview_budget_mb,
             );
             pane1.open_path(
                 &paths[1],
