@@ -430,7 +430,7 @@ impl App {
 
         let accent = self.theme.accent;
         let mut stale_since = self.preview_stale_since;
-        let preview = self.settings.slider_preview;
+        let preview = self.settings.slider_preview && self.panes.len() < 2;
         let result = egui::TopBottomPanel::bottom("nav")
             .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent, &mut self.panes, &mut stale_since, preview))
             .inner;
@@ -453,7 +453,6 @@ impl App {
         let independent =
             self.panes.len() >= 2 && self.dual_pane_mode == DualPaneMode::Independent;
         let accent = self.theme.accent;
-        let preview = self.settings.slider_preview;
         let mut preview_stale_since = self.preview_stale_since;
 
         let slider_results = egui::CentralPanel::default()
@@ -632,7 +631,7 @@ impl App {
                                         accent,
                                         first,
                                         &mut stale_l,
-                                        preview,
+                                        false,
                                     )
                                 },
                             )
@@ -656,7 +655,7 @@ impl App {
                                         accent,
                                         rest,
                                         &mut stale_r,
-                                        preview,
+                                        false,
                                     )
                                 },
                             )
