@@ -742,7 +742,7 @@ fn evict_thumb_cache(
     current_idx: usize,
     cache_budget: usize,
 ) {
-    evict_thumb_cache_with_budget(cache, cache_bytes, current_idx, cache_budget);
+    evict_thumb_cache_with_budget(cache, cache_bytes, current_idx, cache_budget * 1024 * 1024);
 }
 
 fn evict_thumb_cache_with_budget(
@@ -751,7 +751,7 @@ fn evict_thumb_cache_with_budget(
     current_idx: usize,
     budget: usize,
 ) {
-    while *cache_bytes > (budget * 1024 * 1024) && cache.len() > 1 {
+    while *cache_bytes > budget && cache.len() > 1 {
         let furthest = *cache.keys()
             .max_by_key(|&&k| (k as isize - current_idx as isize).unsigned_abs())
             .unwrap();
