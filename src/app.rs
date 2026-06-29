@@ -147,10 +147,10 @@ pub(crate) fn paint_nav_slider(
                 || i.key_down(egui::Key::A) || i.key_down(egui::Key::D)
             });
             if cursor_index < pane.image_paths.len() && !response.dragged() && !nav_active && show_preview {
-                if let Some(swc) = pane.cache.as_mut() {
+                if let Some(tc) = pane.thumbnail_cache.as_mut() {
                     preview_active = true;
                     preview_cursor_index = Some(cursor_index);
-                    let opt = swc.thumbnails.current_thumbnail_for(cursor_index, &pane.image_paths[cursor_index]);
+                    let opt = tc.current_thumbnail_for(cursor_index, &pane.image_paths[cursor_index]);
 
                     let tex_size = match opt.0 {
                         Some(ref tex) => tex.size_vec2(),

@@ -146,8 +146,6 @@ pub struct SlidingWindowCache {
     max_decode_threads: usize,
 
     ctx: egui::Context,
-
-    pub(crate) thumbnails: ThumbnailCache,
 }
 
 /// Maximum number of GPU uploads issued by `SlidingWindowCache::poll` per
@@ -171,7 +169,6 @@ impl SlidingWindowCache {
             pending_decodes: VecDeque::new(),
             max_decode_threads: decode_threads,
             ctx: ctx.clone(),
-            thumbnails: ThumbnailCache::new(ctx),
         }
     }
 
@@ -203,7 +200,6 @@ impl SlidingWindowCache {
         // Clear all slots
         self.slots.clear();
         self.slots.resize(cache_size, None);
-        self.thumbnails.clear();
 
         // Synchronously decode the center image
         let center_slot = center_index - self.first_file_index;
@@ -276,8 +272,6 @@ impl SlidingWindowCache {
                 }
             }
         }
-
-        self.thumbnails.poll();
 
         if !self.pending_uploads.is_empty() || !self.pending_decodes.is_empty() {
             self.ctx.request_repaint();
