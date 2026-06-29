@@ -61,6 +61,108 @@ pub(crate) struct SliderResult {
     pub preview_active: bool,
     pub preview_cursor_index: Option<usize>,
 }
+fn paint_preview_popup(
+    ui: &egui::Ui,
+    tc: &mut crate::cache::ThumbnailCache,
+    cursor_index: usize,
+    max_images: usize,
+    path: &std::path::Path,
+    hover_pos: egui::Pos2,
+    slider_rect: egui::Rect,
+    screen_rect: egui::Rect,
+    ui_width: f32,
+    ui_height: f32,
+    stale_since: &mut Option<(usize, Instant)>,
+) {
+    let (tex_opt, is_exact) = tc.current_thumbnail_for(cursor_index, path);
+
+    let tex_size = match &tex_opt {
+        Some(tex) => tex.size_vec2(),
+        None => egui::Vec2::new(1.0, 1.0),
+    };
+
+    let style = ui.ctx().style();
+    let margin = style.spacing.menu_margin;
+    let corner_radius = style.visuals.menu_corner_radius;
+    let fill = style.visuals.window_fill();
+    let stroke = style.visuals.window_stroke();
+
+    let ratio = (ui_width / tex_size.x).min(ui_height / tex_size.y);
+    let scaled = tex_size * ratio;
+
+    let label_text = format!("{} / {max_images}", cursor_index + 1);
+    let label_font = egui::FontId::proportional(14.0);
+    let label_galley = ui.ctx().fonts(|f| {
+        f.layout_no_wrap(label_text, label_font, style.visuals.text_color())
+    });
+
+    let inner_w = ui_width.max(label_galley.size().x);
+    let inner_h = ui_height + 4.0 + label_galley.size().y;
+    let ml = margin.left as f32;
+    let mr = margin.right as f32;
+    let mt = margin.top as f32;
+    let mb = margin.bottom as f32;
+    let frame_w = ml + inner_w + mr;
+    let frame_h = mt + inner_h + mb;
+
+    let preview_x = (hover_pos.x - frame_w / 2.0)
+        .clamp(screen_rect.left(), screen_rect.right() - frame_w);
+    let preview_y = (slider_rect.top() - frame_h - 8.0)
+        .clamp(screen_rect.top(), screen_rect.bottom() - frame_h);
+
+    let frame_rect = egui::Rect::from_min_size(
+        egui::pos2(preview_x, preview_y),
+        egui::vec2(frame_w, frame_h),
+    );
+
+    // Paint on a tooltip layer to avoid hit-testing interference
+    let layer_id = egui::LayerId::new(
+        egui::Order::Tooltip, egui::Id::new("slider_preview"),
+    );
+    let painter = ui.ctx().layer_painter(layer_id);
+
+    painter.rect(frame_rect, corner_radius, fill, stroke, egui::epaint::StrokeKind::Outside);
+
+    let content_min = frame_rect.min + egui::vec2(ml, mt);
+    let img_center = egui::pos2(
+        content_min.x + ui_width / 2.0,
+        content_min.y + ui_height / 2.0,
+    );
+    let img_rect = egui::Rect::from_center_size(img_center, scaled);
+    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+
+    if let Some(tex) = tex_opt {
+        painter.image(tex.id(), img_rect, uv, egui::Color32::WHITE);
+
+        if is_exact {
+            *stale_since = None;
+        } else {
+            let since = match stale_since {
+                Some((stale_idx, inst)) if *stale_idx == cursor_index => inst,
+                _ => {
+                    *stale_since = Some((cursor_index, Instant::now()));
+                    &mut stale_since.as_mut().unwrap().1
+                }
+            };
+            let elapsed = since.elapsed().as_secs_f32();
+            const GRACE: f32 = 0.15;
+            const FADE_DURATION: f32 = 0.3;
+            const MAX_ALPHA: f32 = 120.0;
+            if elapsed >= GRACE {
+                let t = ((elapsed - GRACE) / FADE_DURATION).min(1.0);
+                let alpha = (MAX_ALPHA * t) as u8;
+                painter.rect_filled(img_rect, 0.0, egui::Color32::from_black_alpha(alpha));
+            }
+            if elapsed < GRACE + FADE_DURATION {
+                ui.ctx().request_repaint();
+            }
+        }
+    }
+
+    let label_pos = egui::pos2(content_min.x, content_min.y + ui_height + 4.0);
+    painter.galley(label_pos, label_galley, style.visuals.text_color());
+}
+
 /// Render a custom navigation slider (accent handle + two-tone rail).
 /// Returns the drag target index and whether the drag was released.
 pub(crate) fn paint_nav_slider(
@@ -146,108 +248,12 @@ pub(crate) fn paint_nav_slider(
                 if let Some(tc) = pane.thumbnail_cache.as_mut() {
                     preview_active = true;
                     preview_cursor_index = Some(cursor_index);
-                    let opt = tc.current_thumbnail_for(cursor_index, &pane.image_paths[cursor_index]);
-
-                    let tex_size = match opt.0 {
-                        Some(ref tex) => tex.size_vec2(),
-                        None => egui::Vec2::new(1.0, 1.0),
-                    };
-                    // We use layer_painter instead of show_tooltip_at / Area
-                    // to avoid registering widgets that interfere with
-                    // hit-testing and cause flickering on macOS.
-
-                    // Match Frame::popup() appearance
-                    let style = ui.ctx().style();
-                    let margin = style.spacing.menu_margin;
-                    let corner_radius = style.visuals.menu_corner_radius;
-                    let fill = style.visuals.window_fill();
-                    let stroke = style.visuals.window_stroke();
-
-                    // Scale thumbnail preserving aspect ratio
-                    let ratio = (ui_width / tex_size.x).min(ui_height / tex_size.y);
-                    let scaled = tex_size * ratio;
-
-                    let label_text = format!("{} / {max_images}", cursor_index + 1);
-                    let label_font = egui::FontId::proportional(14.0);
-                    let label_galley = ui.ctx().fonts(|f| {
-                        f.layout_no_wrap(label_text, label_font, style.visuals.text_color())
-                    });
-
-                    // Compute frame dimensions (content + margins)
-                    let inner_w = ui_width.max(label_galley.size().x);
-                    let inner_h = ui_height + 4.0 + label_galley.size().y;
-                    let ml = margin.left as f32;
-                    let mr = margin.right as f32;
-                    let mt = margin.top as f32;
-                    let mb = margin.bottom as f32;
-                    let frame_w = ml + inner_w + mr;
-                    let frame_h = mt + inner_h + mb;
-
-                    // Position above slider, centered on cursor, clamped to screen
-                    let preview_x = (pos.x - frame_w / 2.0)
-                        .clamp(screen_rect.left(), screen_rect.right() - frame_w);
-                    let preview_y = (rect.top() - frame_h - 8.0)
-                        .clamp(screen_rect.top(), screen_rect.bottom() - frame_h);
-
-                    let frame_rect = egui::Rect::from_min_size(
-                        egui::pos2(preview_x, preview_y),
-                        egui::vec2(frame_w, frame_h),
+                    paint_preview_popup(
+                        ui, tc, cursor_index, max_images,
+                        &pane.image_paths[cursor_index],
+                        pos, rect, screen_rect, ui_width, ui_height,
+                        preview_stale_since,
                     );
-
-                    // Paint directly on a tooltip layer (no widget registration)
-                    let layer_id = egui::LayerId::new(
-                        egui::Order::Tooltip, egui::Id::new("slider_preview"),
-                    );
-                    let painter = ui.ctx().layer_painter(layer_id);
-
-                    // Background frame
-                    painter.rect(frame_rect, corner_radius, fill, stroke, egui::epaint::StrokeKind::Outside);
-
-                    // Thumbnail image
-                    let content_min = frame_rect.min + egui::vec2(ml, mt);
-                    let img_center = egui::pos2(
-                        content_min.x + ui_width / 2.0,
-                        content_min.y + ui_height / 2.0,
-                    );
-                    let img_rect = egui::Rect::from_center_size(img_center, scaled);
-                    let uv = egui::Rect::from_min_max(
-                        egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0),
-                    );
-
-                    if let Some(tex) = opt.0 {
-                        let is_exact = opt.1;
-                        painter.image(tex.id(), img_rect, uv, egui::Color32::WHITE);
-
-                        if is_exact {
-                            *preview_stale_since = None;
-                        } else {
-                            let since = match preview_stale_since {
-                                Some((idx, inst)) if *idx == cursor_index => inst,
-                                _ => {
-                                    *preview_stale_since = Some((cursor_index, Instant::now()));
-                                    &mut preview_stale_since.as_mut().unwrap().1
-                                }
-                            };
-                            let elapsed = since.elapsed().as_secs_f32();
-                            const GRACE: f32 = 0.15;
-                            const FADE_DURATION: f32 = 0.3;
-                            const MAX_ALPHA: f32 = 120.0;
-                            if elapsed >= GRACE {
-                                let t = ((elapsed - GRACE) / FADE_DURATION).min(1.0);
-                                let alpha = (MAX_ALPHA * t) as u8;
-                                painter.rect_filled(img_rect, 0.0, egui::Color32::from_black_alpha(alpha));
-                            }
-                            if elapsed < GRACE + FADE_DURATION {
-                                ui.ctx().request_repaint();
-                            }
-                        }
-                    }
-
-                    // Index label
-                    let label_pos = egui::pos2(
-                        content_min.x, content_min.y + ui_height + 4.0,
-                    );
-                    painter.galley(label_pos, label_galley, style.visuals.text_color());
                 }
             }
         }
