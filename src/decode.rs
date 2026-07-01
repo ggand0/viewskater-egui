@@ -7,10 +7,6 @@ use image::imageops::FilterType;
 /// in either dimension are downscaled to fit before uploading to the GPU.
 const MAX_TEXTURE_SIZE: u32 = 8192;
 
-/// Thumbnail image size
-pub const THUMBNAIL_WIDTH: f32 = 400.0;
-pub const THUMBNAIL_HEIGHT: f32 = 300.0;
-
 /// Convert a DynamicImage directly to egui's ColorImage, bypassing both
 /// image crate v0.25's slow CICP color space conversion and egui's
 /// per-pixel `from_rgba_unmultiplied` conversion. Goes straight from
@@ -79,13 +75,14 @@ fn downscale_if_needed(img: DynamicImage) -> DynamicImage {
 }
 
 /// Convert [`image::DynamicImage`] to [`egui::ColorImage`] and downscale it for the thumbnail
+/// if the height or width > 400
 pub fn image_to_thumbnail(img: DynamicImage) -> ColorImage {
-    let (w, h) = (img.width() as f32, img.height() as f32);
-    if w <= THUMBNAIL_WIDTH && h <= THUMBNAIL_HEIGHT {
+    let max = 400;
+    if img.width() <= max && img.height() <= max {
         convert_image(img)
     } else {
         convert_image(
-            img.resize(THUMBNAIL_WIDTH as u32, THUMBNAIL_HEIGHT as u32, FilterType::Triangle)
+            img.resize(max, max, FilterType::Triangle)
         )
     }
 }
