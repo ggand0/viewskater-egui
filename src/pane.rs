@@ -18,6 +18,7 @@ pub(crate) struct Pane {
     pub(crate) zoom: f32,
     pub(crate) pan: egui::Vec2,
     pub(crate) cache: Option<cache::SlidingWindowCache>,
+    pub(crate) thumbnail_cache: Option<cache::ThumbnailCache>,
     slider_loader: Option<cache::SliderLoader>,
     pub(crate) decode_cache: cache::DecodeLruCache,
     pub(crate) cache_count: usize,
@@ -26,6 +27,7 @@ pub(crate) struct Pane {
     pub(crate) selected: bool,
     pub(crate) mouse_wheel_zoom: bool,
     pub(crate) reset_zoom_pan_on_navigation: bool,
+    pub(crate) preview_budget_mb: usize,
 }
 
 impl Pane {
@@ -36,6 +38,7 @@ impl Pane {
         decode_threads: usize,
         mouse_wheel_zoom: bool,
         reset_zoom_pan_on_navigation: bool,
+        preview_budget_mb: usize,
     ) -> Self {
         Self {
             image_paths: Vec::new(),
@@ -44,6 +47,7 @@ impl Pane {
             zoom: 1.0,
             pan: egui::Vec2::ZERO,
             cache: None,
+            thumbnail_cache: None,
             slider_loader: None,
             decode_cache: cache::DecodeLruCache::new(ctx, lru_budget_mb),
             cache_count,
@@ -52,6 +56,7 @@ impl Pane {
             selected: true,
             mouse_wheel_zoom,
             reset_zoom_pan_on_navigation,
+            preview_budget_mb,
         }
     }
 
@@ -62,6 +67,7 @@ impl Pane {
         self.zoom = 1.0;
         self.pan = egui::Vec2::ZERO;
         self.cache = None;
+        self.thumbnail_cache = None;
         self.slider_loader = None;
         self.decode_cache.clear();
     }
@@ -101,6 +107,7 @@ impl Pane {
         c.initialize(self.current_index, &self.image_paths);
         self.current_texture = c.current_texture_for(self.current_index);
         self.cache = Some(c);
+        self.thumbnail_cache = Some(cache::ThumbnailCache::new(ctx, self.preview_budget_mb));
         self.slider_loader = Some(cache::SliderLoader::new(ctx));
     }
 
@@ -269,6 +276,9 @@ impl Pane {
     pub(crate) fn poll_cache(&mut self) {
         if let Some(cache) = &mut self.cache {
             cache.poll(&self.image_paths);
+        }
+        if let Some(tc) = &mut self.thumbnail_cache {
+            tc.poll();
         }
     }
 

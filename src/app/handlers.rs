@@ -21,6 +21,7 @@ impl App {
                 self.settings.decode_threads,
                 self.settings.mouse_wheel_zoom,
                 self.settings.reset_zoom_pan_on_navigation,
+                self.settings.preview_budget_mb,
             );
             if !self.panes[0].image_paths.is_empty() {
                 if let Some(dir) = self.panes[0].image_paths[0].parent() {

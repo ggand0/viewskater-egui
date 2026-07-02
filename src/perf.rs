@@ -10,6 +10,7 @@ const MEMORY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Also tracks process memory (RSS) and wgpu-reported GPU memory.
 pub(crate) struct ImagePerfTracker {
     image_timestamps: VecDeque<Instant>,
+    frame_timestamps: VecDeque<Instant>,
     sys: System,
     pid: Pid,
     last_memory_check: Instant,
@@ -31,6 +32,7 @@ impl ImagePerfTracker {
         let memory_bytes = sys.process(pid).map_or(0, |p| p.memory());
         Self {
             image_timestamps: VecDeque::new(),
+            frame_timestamps: VecDeque::new(),
             sys,
             pid,
             last_memory_check: Instant::now(),
@@ -43,6 +45,36 @@ impl ImagePerfTracker {
     /// Record that a new image was displayed.
     pub(crate) fn record_image_load(&mut self) {
         self.image_timestamps.push_back(Instant::now());
+    }
+
+    pub(crate) fn record_frame(&mut self) {
+        self.frame_timestamps.push_back(Instant::now());
+    }
+
+    pub(crate) fn clear_frames(&mut self) {
+        self.frame_timestamps.clear();
+    }
+
+    fn frame_fps(&mut self) -> f64 {
+        let now = Instant::now();
+        let cutoff = now - WINDOW_DURATION;
+        while let Some(front) = self.frame_timestamps.front() {
+            if *front < cutoff {
+                self.frame_timestamps.pop_front();
+            } else {
+                break;
+            }
+        }
+        if self.frame_timestamps.len() < 2 {
+            return 0.0;
+        }
+        let oldest = *self.frame_timestamps.front().unwrap();
+        let span = now.duration_since(oldest).as_secs_f64();
+        if span > 0.0 {
+            (self.frame_timestamps.len() as f64 - 1.0) / span
+        } else {
+            0.0
+        }
     }
 
     /// Calculate image rendering FPS from upload timestamps.
@@ -137,10 +169,12 @@ impl ImagePerfTracker {
         self.poll_memory();
         let rss = Self::format_mb(self.memory_bytes);
         let gpu = Self::format_mb(self.gpu_memory_bytes);
+        let frame_fps = self.frame_fps();
         if let Some((lru, sw)) = cache_mb {
             format!(
-                "Img: {:.1} FPS | RSS:{} GPU:{} (L:{:.0} C:{:.0})",
+                "Img: {:.1} FPS | Preview: {:.0} FPS | RSS:{} GPU:{} (L:{:.0} C:{:.0})",
                 self.image_fps(),
+                frame_fps,
                 rss,
                 gpu,
                 lru,
@@ -148,8 +182,9 @@ impl ImagePerfTracker {
             )
         } else {
             format!(
-                "Img: {:.1} FPS | RSS:{} GPU:{}",
+                "Img: {:.1} FPS | Preview: {:.0} FPS | RSS:{} GPU:{}",
                 self.image_fps(),
+                frame_fps,
                 rss,
                 gpu
             )
