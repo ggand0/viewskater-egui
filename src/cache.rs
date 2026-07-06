@@ -18,7 +18,11 @@ pub struct ThumbnailCache {
     cache: HashMap<usize, egui::ColorImage>,
     cache_bytes: usize,
     req_tx: mpsc::Sender<(usize, PathBuf)>,
-    res_rx: mpsc::Receiver<(usize, egui::ColorImage)>,
+    res_rx: mpsc::Receiver<(usize, Option<egui::ColorImage>)>,
+    /// Index of the most recently sent request whose result hasn't arrived
+    /// yet. Prevents re-sending the same request every hovered frame, which
+    /// made the worker decode the same image twice.
+    pending_idx: Option<usize>,
     preview_budget_mb: usize
 }
 
@@ -36,16 +40,17 @@ impl ThumbnailCache {
                     latest_idx = newer_idx;
                     latest_path = newer_path;
                 }
-                match image::open(&latest_path) {
-                    Ok(img) => {
-                        let thumbnail = crate::decode::image_to_thumbnail(img);
-                        let _ = res_tx.send((latest_idx, thumbnail));
-                        worker_ctx.request_repaint();
-                    }
+                // Send a result even on failure so the pending marker clears
+                // and the index can be retried later.
+                let thumbnail = match image::open(&latest_path) {
+                    Ok(img) => Some(crate::decode::image_to_thumbnail(img)),
                     Err(e) => {
                         log::error!("Thumbnail decode failed for {}: {e}", latest_path.display());
+                        None
                     }
-                }
+                };
+                let _ = res_tx.send((latest_idx, thumbnail));
+                worker_ctx.request_repaint();
             }
         });
 
@@ -57,12 +62,19 @@ impl ThumbnailCache {
             cache_bytes: 0,
             req_tx,
             res_rx,
+            pending_idx: None,
             preview_budget_mb,
         }
     }
 
     pub fn poll(&mut self) {
         while let Ok((idx, img)) = self.res_rx.try_recv() {
+            // Only clear when it matches: a newer request may already be
+            // pending for a different index.
+            if self.pending_idx == Some(idx) {
+                self.pending_idx = None;
+            }
+            let Some(img) = img else { continue };
             let img_bytes = img.pixels.len() * 4;
             if let Some(old) = self.cache.insert(idx, img.clone()) {
                 self.cache_bytes -= old.pixels.len() * 4;
@@ -91,7 +103,11 @@ impl ThumbnailCache {
                 self.upload(nearest_idx, img);
             }
         }
-        let _ = self.req_tx.send((thumb_index, path.to_path_buf()));
+        if self.pending_idx != Some(thumb_index)
+            && self.req_tx.send((thumb_index, path.to_path_buf())).is_ok()
+        {
+            self.pending_idx = Some(thumb_index);
+        }
         (self.texture.clone(), false)
     }
 
