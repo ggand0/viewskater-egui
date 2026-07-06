@@ -171,6 +171,10 @@ impl App {
             pane.decode_threads = self.settings.decode_threads;
             pane.mouse_wheel_zoom = self.settings.mouse_wheel_zoom;
             pane.reset_zoom_pan_on_navigation = self.settings.reset_zoom_pan_on_navigation;
+            pane.preview_budget_mb = self.settings.preview_budget_mb;
+            if let Some(tc) = &mut pane.thumbnail_cache {
+                tc.set_budget_mb(self.settings.preview_budget_mb);
+            }
         }
     }
 

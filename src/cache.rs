@@ -106,6 +106,16 @@ impl ThumbnailCache {
         }
         self.texture_idx = Some(idx);
     }
+
+    /// Change the memory budget (0 = unlimited), evicting entries furthest
+    /// from the currently displayed thumbnail if over the new limit.
+    pub fn set_budget_mb(&mut self, budget_mb: usize) {
+        self.preview_budget_mb = budget_mb;
+        if budget_mb > 0 {
+            let center = self.texture_idx.unwrap_or(0);
+            evict_thumb_cache(&mut self.cache, &mut self.cache_bytes, center, budget_mb);
+        }
+    }
 }
 
 pub struct DecodeResult {
@@ -848,6 +858,24 @@ mod tests {
         evict(&mut cache, &mut bytes, 42);
 
         assert_eq!(cache.len(), 1, "should never evict the last entry");
+    }
+
+    #[test]
+    fn set_budget_evicts_existing_entries() {
+        let ctx = egui::Context::default();
+        let mut tc = ThumbnailCache::new(&ctx, 0);
+        let mb = 1024 * 1024;
+
+        insert(&mut tc.cache, &mut tc.cache_bytes, 0, mb);
+        insert(&mut tc.cache, &mut tc.cache_bytes, 10, mb);
+        insert(&mut tc.cache, &mut tc.cache_bytes, 100, mb);
+        tc.texture_idx = Some(10);
+
+        tc.set_budget_mb(2);
+
+        assert!(tc.cache_bytes <= 2 * mb);
+        assert!(tc.cache.contains_key(&10), "displayed entry should remain");
+        assert!(!tc.cache.contains_key(&100), "furthest entry should be evicted");
     }
 
     #[test]
