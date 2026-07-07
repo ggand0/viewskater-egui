@@ -12,6 +12,8 @@ const MIN_ZOOM: f32 = 0.05;
 const MAX_ZOOM: f32 = 100.0;
 
 pub(crate) struct Pane {
+    /// Top level directory from which the pane loaded files
+    pub(crate) dir_path: Option<PathBuf>,
     pub(crate) image_paths: Vec<PathBuf>,
     pub(crate) current_index: usize,
     pub(crate) current_texture: Option<egui::TextureHandle>,
@@ -41,6 +43,7 @@ impl Pane {
         preview_budget_mb: usize,
     ) -> Self {
         Self {
+            dir_path: None,
             image_paths: Vec::new(),
             current_index: 0,
             current_texture: None,
@@ -90,6 +93,7 @@ impl Pane {
             log::warn!("No supported images found in {}", dir.display());
             return;
         }
+        self.dir_path = Some(dir);
 
         self.current_index = target_filename
             .and_then(|name| {

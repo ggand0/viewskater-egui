@@ -412,8 +412,19 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane) {
 
         // Prepare text elements
         let index_text = format!("{} / {}", pane.current_index + 1, pane.image_paths.len());
-        // TODO: only show relative path
-        let filename = path.as_os_str().to_string_lossy().to_string();
+        let filename = path.as_os_str().to_string_lossy();
+        // Only show file names relative to panes' top level dir
+        let filename = match &pane.dir_path {
+            Some(dirpath) => {
+                match dirpath.to_str() {
+                    Some(dirpath) => {
+                        filename.strip_prefix(dirpath).unwrap_or(&filename).to_string()
+                    }
+                    None => filename.to_string()
+                }
+            }
+            None => filename.to_string(),
+        };
         let resolution = pane
             .current_texture
             .as_ref()
