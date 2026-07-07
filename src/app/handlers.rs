@@ -176,7 +176,9 @@ impl App {
 
     pub(super) fn reload_sorted_panes(&mut self, ctx: &egui::Context) {
         for pane in &mut self.panes {
-            let Some(path) = pane.image_paths.get(pane.current_index).cloned() else {
+            // store active image path, so that we can jump back to it after reloading
+            let active_img = pane.image_paths.get(pane.current_index).cloned();
+            let Some(path) = pane.dir_path.clone() else {
                 continue;
             };
             let zoom = pane.zoom;
@@ -188,6 +190,15 @@ impl App {
             );
             pane.zoom = zoom;
             pane.pan = pan;
+            // if an imae was active before AND the image is still in our file list, jump to it
+            // a previously active image might not be in the list anymore if
+            //  a) it doesnt match our file discovery options (recursive, hidden)
+            //  b) or, it doesnt exist on disk anymore
+            if let Some(active_img) = active_img {
+                if let Some(new_idx) = pane.image_paths.iter().position(|item| *item == *active_img) {
+                    pane.jump_to(new_idx, ctx);
+                }
+            }
         }
     }
 

@@ -767,7 +767,6 @@ impl eframe::App for App {
                 None
             };
             let settings_snapshot = self.settings.clone();
-            let discovery_snapshot = self.current_discovery_options;
             let mut menu_state = menu::MenuBarState {
                 settings: &mut self.settings,
                 current_discovery: &mut self.current_discovery_options,
@@ -784,9 +783,6 @@ impl eframe::App for App {
             self.menu_open = menu_is_open;
             if self.settings != settings_snapshot {
                 self.settings.save();
-            }
-            if self.current_discovery_options != discovery_snapshot {
-                self.reload_sorted_panes(ctx);
             }
             self.handle_menu_action(action, ctx);
         } else {
@@ -846,6 +842,9 @@ impl eframe::App for App {
             settings::show_settings_modal(ctx, &mut self.settings, &mut self.show_settings, &self.theme);
         if settings_changes.pane_settings {
             self.apply_settings_to_caches();
+            // also reload panes but ensure image discovery options are updated
+            self.current_discovery_options = self.settings.image_discovery_options;
+            self.reload_sorted_panes(ctx);
         }
 
         // About modal (on top of everything)
