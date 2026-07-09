@@ -7,6 +7,9 @@ use eframe::egui;
 
 use crate::file_io::open_image;
 
+#[cfg(test)]
+mod preview_sim_bench;
+
 const COL_LOADED: egui::Color32 = egui::Color32::from_rgb(76, 175, 80);
 const COL_LOADING: egui::Color32 = egui::Color32::from_rgb(255, 183, 77);
 const COL_EMPTY: egui::Color32 = egui::Color32::from_rgb(60, 60, 60);
@@ -909,4 +912,5 @@ mod tests {
         let actual: usize = cache.values().map(|img| img.pixels.len() * 4).sum();
         assert_eq!(bytes, actual);
     }
+
 }
