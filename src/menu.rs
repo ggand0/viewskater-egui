@@ -418,7 +418,11 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane) {
             Some(dirpath) => {
                 match dirpath.to_str() {
                     Some(dirpath) => {
-                        filename.strip_prefix(dirpath).unwrap_or(&filename).to_string()
+                        filename
+                            .strip_prefix(dirpath).unwrap_or(&filename)
+                            // Also remove potentially left-over leading /
+                            .trim_start_matches('/')
+                            .to_string()
                     }
                     None => filename.to_string()
                 }
