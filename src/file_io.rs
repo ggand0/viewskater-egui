@@ -44,7 +44,7 @@ pub fn enumerate_images(dir: &Path, opts: ImageDiscoveryOptions) -> Vec<PathBuf>
     paths
 }
 
-pub fn enumerate_images_inner(dir: &Path, opts: ImageDiscoveryOptions) -> Vec<DirEntry> {
+fn enumerate_images_inner(dir: &Path, opts: ImageDiscoveryOptions) -> Vec<DirEntry> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         log::warn!("Failed to read directory: {}", dir.display());
         return Vec::new();
