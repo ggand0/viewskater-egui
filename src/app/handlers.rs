@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use crate::menu::MenuAction;
+use crate::{menu::MenuAction, settings::ImageDiscoveryOptions};
 use crate::pane::Pane;
 
 use super::{App, DualPaneMode, SliderResult};
@@ -28,7 +28,7 @@ impl App {
                     pane.open_path(
                         dir,
                         ctx,
-                        self.current_discovery_options,
+                        self.current_discovery_options(),
                     );
                     pane.jump_to(self.panes[0].current_index, ctx);
                 }
@@ -38,18 +38,20 @@ impl App {
     }
 
     pub(super) fn open_folder_dialog(&mut self, pane_idx: usize, ctx: &egui::Context) {
+        let current_discovery_options = self.current_discovery_options();
         if let Some(pane) = self.panes.get_mut(pane_idx) {
             if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                 pane.open_path(
                     &dir,
                     ctx,
-                    self.current_discovery_options,
+                    current_discovery_options,
                 );
             }
         }
     }
 
     pub(super) fn open_file_dialog(&mut self, pane_idx: usize, ctx: &egui::Context) {
+        let current_discovery_options = self.current_discovery_options();
         if let Some(pane) = self.panes.get_mut(pane_idx) {
             if let Some(file) = rfd::FileDialog::new()
                 .add_filter("Images", &["jpg", "jpeg", "png", "bmp", "webp", "gif", "tiff", "tif", "qoi", "tga"])
@@ -58,7 +60,7 @@ impl App {
                 pane.open_path(
                     &file,
                     ctx,
-                    self.current_discovery_options,
+                    current_discovery_options,
                 );
             }
         }
@@ -175,6 +177,7 @@ impl App {
     }
 
     pub(super) fn reload_sorted_panes(&mut self, ctx: &egui::Context) {
+        let current_discovery_options = self.current_discovery_options();
         for pane in &mut self.panes {
             // store active image path, so that we can jump back to it after reloading
             let active_img = pane.image_paths.get(pane.current_index).cloned();
@@ -186,7 +189,7 @@ impl App {
             pane.open_path(
                 &path,
                 ctx,
-                self.current_discovery_options,
+                current_discovery_options,
             );
             pane.zoom = zoom;
             pane.pan = pan;
@@ -380,12 +383,13 @@ impl App {
     /// "Open With"). Each path goes through the same entrypoint as CLI args
     /// and drag-and-drop, so it loads the image and its sibling directory.
     pub(super) fn handle_external_open_requests(&mut self, ctx: &egui::Context) {
+        let current_discovery_options = self.current_discovery_options();
         while let Ok(path) = self.file_receiver.try_recv() {
             log::info!("External open request: {}", path.display());
             self.panes[0].open_path(
                 &path,
                 ctx,
-                self.current_discovery_options,
+                current_discovery_options,
             );
             if self.panes[0].current_texture.is_some() {
                 self.perf.record_image_load();
@@ -398,6 +402,7 @@ impl App {
         let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
         if let Some(file) = dropped.first() {
             if let Some(path) = &file.path {
+                let current_discovery_options = self.current_discovery_options();
                 if self.panes.len() >= 2 {
                     let hover = ctx.input(|i| i.pointer.hover_pos());
                     let latest = ctx.input(|i| i.pointer.latest_pos());
@@ -418,16 +423,22 @@ impl App {
                     self.panes[target].open_path(
                         path,
                         ctx,
-                        self.current_discovery_options,
+                        current_discovery_options,
                     );
                 } else {
                     self.panes[0].open_path(
                         path,
                         ctx,
-                        self.current_discovery_options,
+                        current_discovery_options,
                     );
                 }
             }
         }
+    }
+
+    fn current_discovery_options(&self) -> ImageDiscoveryOptions {
+        let mut opts = self.settings.image_discovery_options;
+        opts.sort_order = self.current_sort;
+        opts
     }
 }

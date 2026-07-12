@@ -12,7 +12,7 @@ use crate::about;
 use crate::menu;
 use crate::pane::Pane;
 use crate::perf;
-use crate::settings::{self, AppSettings, ImageDiscoveryOptions};
+use crate::settings::{self, AppSettings, ImageSortOrder};
 use crate::theme::UiTheme;
 
 /// Target window size in physical pixels (matches iced version behavior).
@@ -276,8 +276,10 @@ pub struct App {
     pub(crate) perf: perf::ImagePerfTracker,
     pub(crate) divider_fraction: f32,
     pub(crate) dual_pane_mode: DualPaneMode,
+    /// persistent settings
     pub(crate) settings: AppSettings,
-    pub(crate) current_discovery_options: ImageDiscoveryOptions,
+    /// Currently applied sort order settings (via View -> Sort By menu)
+    pub(crate) current_sort: ImageSortOrder,
     pub(crate) theme: UiTheme,
     pub(crate) show_settings: bool,
     pub(crate) show_about: bool,
@@ -314,7 +316,7 @@ impl App {
             perf: perf::ImagePerfTracker::new(),
             divider_fraction: 0.5,
             dual_pane_mode: DualPaneMode::Synced,
-            current_discovery_options: settings.image_discovery_options,
+            current_sort: settings.image_discovery_options.sort_order,
             settings,
             theme,
             show_settings: false,
@@ -333,7 +335,7 @@ impl App {
             app.panes[0].open_path(
                 &paths[0],
                 &cc.egui_ctx,
-                app.current_discovery_options,
+                app.settings.image_discovery_options,
             );
         }
         if paths.len() >= 2 {
@@ -349,7 +351,7 @@ impl App {
             pane1.open_path(
                 &paths[1],
                 &cc.egui_ctx,
-                app.current_discovery_options,
+                app.settings.image_discovery_options,
             );
             app.panes.push(pane1);
         }
@@ -767,9 +769,10 @@ impl eframe::App for App {
                 None
             };
             let settings_snapshot = self.settings.clone();
+            let sort_snapshot = self.current_sort;
             let mut menu_state = menu::MenuBarState {
                 settings: &mut self.settings,
-                current_discovery: &mut self.current_discovery_options,
+                current_sort: &mut self.current_sort,
                 is_fullscreen: self.is_fullscreen,
             };
             let (action, menu_is_open) = menu::show_menu_bar(
@@ -783,6 +786,9 @@ impl eframe::App for App {
             self.menu_open = menu_is_open;
             if self.settings != settings_snapshot {
                 self.settings.save();
+            }
+            if self.current_sort != sort_snapshot {
+                self.reload_sorted_panes(ctx);
             }
             self.handle_menu_action(action, ctx);
         } else {
@@ -843,7 +849,7 @@ impl eframe::App for App {
         if settings_changes.pane_settings {
             self.apply_settings_to_caches();
             // also reload panes but ensure image discovery options are updated
-            self.current_discovery_options = self.settings.image_discovery_options;
+            self.current_sort = self.settings.image_discovery_options.sort_order;
             self.reload_sorted_panes(ctx);
         }
 

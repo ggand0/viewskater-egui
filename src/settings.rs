@@ -303,7 +303,6 @@ pub struct AppSettings {
     pub gpu_memory_mode: GpuMemoryMode,
     pub mouse_wheel_zoom: bool,
     pub reset_zoom_pan_on_navigation: bool,
-    pub image_sort_order: ImageSortOrder,
     pub slider_preview: bool,
     pub preview_budget_mb: usize,
     pub image_discovery_options: ImageDiscoveryOptions,
@@ -322,7 +321,6 @@ impl Default for AppSettings {
             gpu_memory_mode: GpuMemoryMode::default(),
             mouse_wheel_zoom: false,
             reset_zoom_pan_on_navigation: true,
-            image_sort_order: ImageSortOrder::default(),
             slider_preview: true,
             preview_budget_mb: 200,
             image_discovery_options: ImageDiscoveryOptions::default(),
@@ -566,11 +564,11 @@ fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiT
         ui.horizontal(|ui| {
             ui.label("Sort By");
             egui::ComboBox::from_id_salt("image_sort_order_key")
-                .selected_text(settings.image_sort_order.key.label())
+                .selected_text(settings.image_discovery_options.sort_order.key.label())
                 .show_ui(ui, |ui| {
                     for sort_key in ImageSortKey::ALL {
                         ui.selectable_value(
-                            &mut settings.image_sort_order.key,
+                            &mut settings.image_discovery_options.sort_order.key,
                             sort_key,
                             sort_key.label(),
                         );
@@ -581,11 +579,11 @@ fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiT
         ui.horizontal(|ui| {
             ui.label("Direction");
             egui::ComboBox::from_id_salt("image_sort_order_direction")
-                .selected_text(settings.image_sort_order.direction.label())
+                .selected_text(settings.image_discovery_options.sort_order.direction.label())
                 .show_ui(ui, |ui| {
                     for direction in SortDirection::ALL {
                         ui.selectable_value(
-                            &mut settings.image_sort_order.direction,
+                            &mut settings.image_discovery_options.sort_order.direction,
                             direction,
                             direction.label(),
                         );

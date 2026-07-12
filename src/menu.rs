@@ -2,7 +2,7 @@ use eframe::egui;
 
 use crate::app::DualPaneMode;
 use crate::pane::Pane;
-use crate::settings::{AppSettings, ImageDiscoveryOptions, ImageSortKey, SortDirection};
+use crate::settings::{AppSettings, ImageSortKey, ImageSortOrder, SortDirection};
 use crate::theme::UiTheme;
 
 /// Toggle switch widget (iOS/Steam style).
@@ -91,7 +91,7 @@ fn hover_row(
 
 pub(crate) struct MenuBarState<'a> {
     pub settings: &'a mut AppSettings,
-    pub current_discovery: &'a mut ImageDiscoveryOptions,
+    pub current_sort: &'a mut ImageSortOrder,
     pub is_fullscreen: bool,
 }
 
@@ -106,7 +106,7 @@ pub(crate) fn show_menu_bar(
     fps_text: Option<&str>,
 ) -> (MenuAction, bool) {
     let settings = &mut *state.settings;
-    let current_discovery = &mut *state.current_discovery;
+    let current_sort = &mut *state.current_sort;
     let is_fullscreen = state.is_fullscreen;
     let mut action = MenuAction::None;
     let mut menu_is_open = false;
@@ -239,24 +239,24 @@ pub(crate) fn show_menu_bar(
                         ui.style_mut().visuals.widgets.active.bg_fill = egui::Color32::TRANSPARENT;
                         for sort_key in ImageSortKey::ALL {
                             hover_row(ui, theme, sl, sw, |ui| {
-                                ui.radio_value(&mut current_discovery.sort_order.key, sort_key, sort_key.label());
+                                ui.radio_value(&mut current_sort.key, sort_key, sort_key.label());
                             });
                         }
                         ui.separator();
                         for direction in SortDirection::ALL {
                             hover_row(ui, theme, sl, sw, |ui| {
                                 ui.radio_value(
-                                    &mut current_discovery.sort_order.direction,
+                                    &mut current_sort.direction,
                                     direction,
                                     direction.label(),
                                 );
                             });
                         }
-                        if *current_discovery != settings.image_discovery_options {
+                        if *current_sort != settings.image_discovery_options.sort_order {
                             ui.separator();
                             hover_row(ui, theme, sl, sw, |ui| {
                                 if ui.button("Reset to Default").clicked() {
-                                    *current_discovery = settings.image_discovery_options;
+                                    *current_sort = settings.image_discovery_options.sort_order;
                                 }
                             });
                         }
