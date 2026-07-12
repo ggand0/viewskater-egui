@@ -605,7 +605,7 @@ fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiT
         .inner_margin(10.0)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                toggle_switch(ui, &mut settings.image_discovery_options.recursive, "Discovery recursively", theme);
+                toggle_switch(ui, &mut settings.image_discovery_options.recursive, "Discover recursively", theme);
             });
             ui.horizontal(|ui| {
                 toggle_switch(ui, &mut settings.image_discovery_options.include_hidden, "Include hidden files (& directories)", theme);
