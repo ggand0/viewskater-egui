@@ -276,7 +276,9 @@ pub struct App {
     pub(crate) perf: perf::ImagePerfTracker,
     pub(crate) divider_fraction: f32,
     pub(crate) dual_pane_mode: DualPaneMode,
+    /// persistent settings
     pub(crate) settings: AppSettings,
+    /// Currently applied sort order settings (via View -> Sort By menu)
     pub(crate) current_sort: ImageSortOrder,
     pub(crate) theme: UiTheme,
     pub(crate) show_settings: bool,
@@ -314,7 +316,7 @@ impl App {
             perf: perf::ImagePerfTracker::new(),
             divider_fraction: 0.5,
             dual_pane_mode: DualPaneMode::Synced,
-            current_sort: settings.image_sort_order,
+            current_sort: settings.image_discovery_options.sort_order,
             settings,
             theme,
             show_settings: false,
@@ -333,7 +335,7 @@ impl App {
             app.panes[0].open_path(
                 &paths[0],
                 &cc.egui_ctx,
-                app.current_sort,
+                app.settings.image_discovery_options,
             );
         }
         if paths.len() >= 2 {
@@ -349,7 +351,7 @@ impl App {
             pane1.open_path(
                 &paths[1],
                 &cc.egui_ctx,
-                app.current_sort,
+                app.settings.image_discovery_options,
             );
             app.panes.push(pane1);
         }
@@ -846,6 +848,9 @@ impl eframe::App for App {
             settings::show_settings_modal(ctx, &mut self.settings, &mut self.show_settings, &self.theme);
         if settings_changes.pane_settings {
             self.apply_settings_to_caches();
+            // also reload panes but ensure image discovery options are updated
+            self.current_sort = self.settings.image_discovery_options.sort_order;
+            self.reload_sorted_panes(ctx);
         }
 
         // About modal (on top of everything)

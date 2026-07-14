@@ -278,6 +278,13 @@ impl SortDirection {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageDiscoveryOptions {
+    pub sort_order: ImageSortOrder,
+    pub include_hidden: bool,
+    pub recursive: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageSortOrder {
     pub key: ImageSortKey,
     pub direction: SortDirection,
@@ -296,9 +303,9 @@ pub struct AppSettings {
     pub gpu_memory_mode: GpuMemoryMode,
     pub mouse_wheel_zoom: bool,
     pub reset_zoom_pan_on_navigation: bool,
-    pub image_sort_order: ImageSortOrder,
     pub slider_preview: bool,
     pub preview_budget_mb: usize,
+    pub image_discovery_options: ImageDiscoveryOptions,
 }
 
 impl Default for AppSettings {
@@ -314,9 +321,9 @@ impl Default for AppSettings {
             gpu_memory_mode: GpuMemoryMode::default(),
             mouse_wheel_zoom: false,
             reset_zoom_pan_on_navigation: true,
-            image_sort_order: ImageSortOrder::default(),
             slider_preview: true,
             preview_budget_mb: 200,
+            image_discovery_options: ImageDiscoveryOptions::default(),
         }
     }
 }
@@ -334,7 +341,8 @@ impl SettingsChanges {
                 || after.decode_threads != before.decode_threads
                 || after.mouse_wheel_zoom != before.mouse_wheel_zoom
                 || after.reset_zoom_pan_on_navigation != before.reset_zoom_pan_on_navigation
-                || after.preview_budget_mb != before.preview_budget_mb,
+                || after.preview_budget_mb != before.preview_budget_mb
+                || after.image_discovery_options != before.image_discovery_options
         }
     }
 }
@@ -476,6 +484,7 @@ pub fn show_settings_modal(
 
                     ctx.data_mut(|d| d.insert_temp(tab_id, active_tab));
 
+                    // "Saved" indicator pinned below the scroll area
                     let saved_at: Option<f64> = ctx.data(|d| d.get_temp(saved_at_id));
                     if let Some(t) = saved_at {
                         let elapsed = now - t;
@@ -550,29 +559,31 @@ fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiT
 
     ui.add_space(12.0);
 
+    // Files section
     section(ui, "Files", Some("Default sorting for newly opened folders"), theme, |ui| {
         ui.horizontal(|ui| {
             ui.label("Sort By");
             egui::ComboBox::from_id_salt("image_sort_order_key")
-                .selected_text(settings.image_sort_order.key.label())
+                .selected_text(settings.image_discovery_options.sort_order.key.label())
                 .show_ui(ui, |ui| {
                     for sort_key in ImageSortKey::ALL {
                         ui.selectable_value(
-                            &mut settings.image_sort_order.key,
+                            &mut settings.image_discovery_options.sort_order.key,
                             sort_key,
                             sort_key.label(),
                         );
                     }
                 });
         });
+
         ui.horizontal(|ui| {
             ui.label("Direction");
             egui::ComboBox::from_id_salt("image_sort_order_direction")
-                .selected_text(settings.image_sort_order.direction.label())
+                .selected_text(settings.image_discovery_options.sort_order.direction.label())
                 .show_ui(ui, |ui| {
                     for direction in SortDirection::ALL {
                         ui.selectable_value(
-                            &mut settings.image_sort_order.direction,
+                            &mut settings.image_discovery_options.sort_order.direction,
                             direction,
                             direction.label(),
                         );
@@ -580,6 +591,26 @@ fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiT
                 });
         });
     });
+
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new("Control which files are loaded")
+            .size(11.0)
+            .color(theme.muted),
+    );
+    ui.add_space(4.0);
+    egui::Frame::default()
+        .fill(theme.section_bg)
+        .corner_radius(6.0)
+        .inner_margin(10.0)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                toggle_switch(ui, &mut settings.image_discovery_options.recursive, "Discover recursively", theme);
+            });
+            ui.horizontal(|ui| {
+                toggle_switch(ui, &mut settings.image_discovery_options.include_hidden, "Include hidden files (& directories)", theme);
+            });
+        });
 
     ui.add_space(12.0);
 

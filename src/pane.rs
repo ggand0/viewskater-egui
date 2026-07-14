@@ -6,12 +6,14 @@ use eframe::egui;
 use crate::cache;
 use crate::decode::image_to_color_image;
 use crate::file_io::{self, open_image};
-use crate::settings::ImageSortOrder;
+use crate::settings::{ImageDiscoveryOptions};
 
 const MIN_ZOOM: f32 = 0.05;
 const MAX_ZOOM: f32 = 100.0;
 
 pub(crate) struct Pane {
+    /// Top level directory from which the pane loaded files
+    pub(crate) dir_path: Option<PathBuf>,
     pub(crate) image_paths: Vec<PathBuf>,
     pub(crate) current_index: usize,
     pub(crate) current_texture: Option<egui::TextureHandle>,
@@ -41,6 +43,7 @@ impl Pane {
         preview_budget_mb: usize,
     ) -> Self {
         Self {
+            dir_path: None,
             image_paths: Vec::new(),
             current_index: 0,
             current_texture: None,
@@ -76,7 +79,7 @@ impl Pane {
         &mut self,
         path: &std::path::Path,
         ctx: &egui::Context,
-        sort_order: ImageSortOrder,
+        discovery_options: ImageDiscoveryOptions,
     ) {
         if !path.exists() {
             log::error!("Path does not exist: {}", path.display());
@@ -84,12 +87,13 @@ impl Pane {
         }
 
         let (dir, target_filename) = file_io::resolve_path(path);
-        self.image_paths = file_io::enumerate_images(&dir, sort_order);
+        self.image_paths = file_io::enumerate_images(&dir, discovery_options);
 
         if self.image_paths.is_empty() {
             log::warn!("No supported images found in {}", dir.display());
             return;
         }
+        self.dir_path = Some(dir);
 
         self.current_index = target_filename
             .and_then(|name| {
