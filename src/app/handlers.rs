@@ -24,7 +24,7 @@ impl App {
                 self.settings.preview_budget_mb,
             );
             if !self.panes[0].image_paths.is_empty() {
-                if let Some(dir) = self.panes[0].image_paths[0].parent() {
+                if let Some(dir) = &self.panes[0].dir_path {
                     pane.open_path(
                         dir,
                         ctx,
