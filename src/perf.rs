@@ -55,7 +55,7 @@ impl ImagePerfTracker {
         self.frame_timestamps.clear();
     }
 
-    fn frame_fps(&mut self) -> f64 {
+    pub(crate) fn frame_fps(&mut self) -> f64 {
         let now = Instant::now();
         let cutoff = now - WINDOW_DURATION;
         while let Some(front) = self.frame_timestamps.front() {

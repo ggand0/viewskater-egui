@@ -60,6 +60,9 @@ pub(crate) struct SliderResult {
     pub released: bool,
     pub preview_active: bool,
     pub preview_cursor_index: Option<usize>,
+    /// Whether the painted preview thumbnail was the exact one for the
+    /// hovered index (false while a nearest-neighbor placeholder shows).
+    pub preview_exact: bool,
 }
 struct PreviewLayout {
     hover_pos: egui::Pos2,
@@ -77,7 +80,7 @@ fn paint_preview_popup(
     path: &std::path::Path,
     layout: &PreviewLayout,
     stale_since: &mut Option<(usize, Instant)>,
-) {
+) -> bool {
     let (tex_opt, is_exact) = tc.current_thumbnail_for(cursor_index, path);
     let ui_width = layout.width;
     let ui_height = layout.height;
@@ -167,10 +170,13 @@ fn paint_preview_popup(
 
     let label_pos = egui::pos2(content_min.x, content_min.y + ui_height + 4.0);
     painter.galley(label_pos, label_galley, style.visuals.text_color());
+
+    is_exact
 }
 
 /// Render a custom navigation slider (accent handle + two-tone rail).
 /// Returns the drag target index and whether the drag was released.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_nav_slider(
     ui: &mut egui::Ui,
     current_idx: usize,
@@ -179,6 +185,7 @@ pub(crate) fn paint_nav_slider(
     panes: &mut [Pane],
     preview_stale_since: &mut Option<(usize, Instant)>,
     show_preview: bool,
+    bench_hover_t: Option<f32>,
 ) -> SliderResult {
     if max_images <= 1 {
         return SliderResult {
@@ -186,10 +193,12 @@ pub(crate) fn paint_nav_slider(
             released: false,
             preview_active: false,
             preview_cursor_index: None,
+            preview_exact: false,
         };
     }
     let mut preview_active = false;
     let mut preview_cursor_index = None;
+    let mut preview_exact = false;
 
     let max = max_images - 1;
     let mut idx = current_idx;
@@ -241,7 +250,15 @@ pub(crate) fn paint_nav_slider(
     let screen_rect = ui.ctx().screen_rect();
     let ui_width = screen_rect.width() / SCREEN_PREVIEW_UI_RATIO;
     let ui_height = screen_rect.height() / SCREEN_PREVIEW_UI_RATIO;
-    if let Some(pos) = response.hover_pos() {
+    // --bench-preview injects a synthetic hover position along the rail so
+    // the whole preview path below runs exactly as with a real cursor.
+    let hover_pos = bench_hover_t
+        .map(|t| {
+            let usable = rect.x_range().shrink(handle_radius);
+            egui::pos2(egui::lerp(usable.min..=usable.max, t), cy)
+        })
+        .or_else(|| response.hover_pos());
+    if let Some(pos) = hover_pos {
         let usable = rect.x_range().shrink(handle_radius);
         let cursor_t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
         let cursor_index = (max as f32 * cursor_t).round() as usize;
@@ -258,7 +275,7 @@ pub(crate) fn paint_nav_slider(
                         hover_pos: pos, slider_rect: rect, screen_rect,
                         width: ui_width, height: ui_height,
                     };
-                    paint_preview_popup(
+                    preview_exact = paint_preview_popup(
                         ui, tc, cursor_index, max_images,
                         &pane.image_paths[cursor_index],
                         &layout, preview_stale_since,
@@ -268,7 +285,7 @@ pub(crate) fn paint_nav_slider(
         }
     }
 
-    SliderResult { target, released, preview_active, preview_cursor_index }
+    SliderResult { target, released, preview_active, preview_cursor_index, preview_exact }
 }
 
 pub struct App {
@@ -291,6 +308,7 @@ pub struct App {
     file_receiver: Receiver<PathBuf>,
     last_preview_idx: Option<usize>,
     preview_stale_since: Option<(usize, Instant)>,
+    preview_bench: Option<crate::bench::preview::PreviewBench>,
 }
 
 impl App {
@@ -300,6 +318,7 @@ impl App {
         log_buffer: Arc<Mutex<VecDeque<String>>>,
         settings: AppSettings,
         file_receiver: Receiver<PathBuf>,
+        bench_preview: bool,
     ) -> Self {
         let theme = UiTheme::teal_dark();
         theme.apply_to_visuals(&cc.egui_ctx);
@@ -329,6 +348,7 @@ impl App {
             file_receiver,
             last_preview_idx: None,
             preview_stale_since: None,
+            preview_bench: None,
         };
 
         if !paths.is_empty() {
@@ -358,6 +378,16 @@ impl App {
 
         if app.panes[0].current_texture.is_some() {
             app.perf.record_image_load();
+        }
+
+        if bench_preview {
+            let n = app.panes[0].image_paths.len();
+            if n > 1 {
+                log::info!("preview bench: starting on {n} images");
+                app.preview_bench = Some(crate::bench::preview::PreviewBench::new(n));
+            } else {
+                log::error!("--bench-preview requires a folder with at least 2 images");
+            }
         }
 
         let mut fonts = egui::FontDefinitions::default();
@@ -446,11 +476,29 @@ impl App {
 
         let accent = self.theme.accent;
         let mut stale_since = self.preview_stale_since;
-        let preview = self.settings.slider_preview && self.panes.len() < 2;
+        let preview = (self.settings.slider_preview || self.preview_bench.is_some())
+            && self.panes.len() < 2;
+        let bench_t = self.preview_bench.as_ref().and_then(|b| b.hover_t());
         let result = egui::TopBottomPanel::bottom("nav")
-            .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent, &mut self.panes, &mut stale_since, preview))
+            .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent, &mut self.panes, &mut stale_since, preview, bench_t))
             .inner;
         self.preview_stale_since = stale_since;
+
+        if let Some(bench) = &mut self.preview_bench {
+            // At each phase end, sample the overlay's Preview FPS counter
+            // and reset its 2s window so the next phase's sample is pure.
+            if let Some(phase) = bench.tick(result.preview_cursor_index, result.preview_exact) {
+                bench.set_overlay_fps(&phase, self.perf.frame_fps());
+                self.perf.clear_frames();
+            }
+            if bench.is_done() {
+                log::info!("{}", bench.report());
+                self.preview_bench = None;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                ctx.request_repaint();
+            }
+        }
         if result.preview_active {
             if result.preview_cursor_index != self.last_preview_idx {
                 self.perf.record_frame();
@@ -648,6 +696,7 @@ impl App {
                                         first,
                                         &mut stale_l,
                                         false,
+                                        None,
                                     )
                                 },
                             )
@@ -672,6 +721,7 @@ impl App {
                                         rest,
                                         &mut stale_r,
                                         false,
+                                        None,
                                     )
                                 },
                             )
