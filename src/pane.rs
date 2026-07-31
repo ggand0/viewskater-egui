@@ -392,9 +392,9 @@ impl Pane {
             return;
         };
         match animation.poll() {
-            AnimationPoll::Frame(texture) => self.current_texture = Some(texture),
+            AnimationPoll::NewTexture(texture) => self.current_texture = Some(texture),
             AnimationPoll::Finished => self.animation = None,
-            AnimationPoll::None => {}
+            AnimationPoll::Unchanged => {}
         }
     }
 
