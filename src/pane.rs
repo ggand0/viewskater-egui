@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use eframe::egui;
 
+use crate::animation::{AnimationPlayer, AnimationPoll};
 use crate::cache;
 use crate::decode::image_to_color_image;
 use crate::file_io::{self, open_image};
@@ -17,6 +18,7 @@ pub(crate) struct Pane {
     pub(crate) image_paths: Vec<PathBuf>,
     pub(crate) current_index: usize,
     pub(crate) current_texture: Option<egui::TextureHandle>,
+    animation: Option<AnimationPlayer>,
     pub(crate) zoom: f32,
     pub(crate) pan: egui::Vec2,
     pub(crate) cache: Option<cache::SlidingWindowCache>,
@@ -47,6 +49,7 @@ impl Pane {
             image_paths: Vec::new(),
             current_index: 0,
             current_texture: None,
+            animation: None,
             zoom: 1.0,
             pan: egui::Vec2::ZERO,
             cache: None,
@@ -67,6 +70,7 @@ impl Pane {
         self.image_paths.clear();
         self.current_index = 0;
         self.current_texture = None;
+        self.animation = None;
         self.zoom = 1.0;
         self.pan = egui::Vec2::ZERO;
         self.cache = None;
@@ -106,10 +110,11 @@ impl Pane {
         self.zoom = 1.0;
         self.pan = egui::Vec2::ZERO;
         self.decode_cache.clear();
+        self.animation = None;
 
         let mut c = cache::SlidingWindowCache::new(ctx, self.cache_count, self.decode_threads);
         c.initialize(self.current_index, &self.image_paths);
-        self.current_texture = c.current_texture_for(self.current_index);
+        self.set_current_texture(c.current_texture_for(self.current_index), ctx);
         self.cache = Some(c);
         self.thumbnail_cache = Some(cache::ThumbnailCache::new(ctx, self.preview_budget_mb));
         self.slider_loader = Some(cache::SliderLoader::new(ctx));
@@ -119,7 +124,7 @@ impl Pane {
     /// Checks the GPU-backed LRU first to skip both decode and re-upload on
     /// revisits. On miss, decodes from disk and uploads a new texture via
     /// `DecodeLruCache::insert`, which also handles budget eviction.
-    fn load_sync(&mut self, _ctx: &egui::Context) {
+    fn load_sync(&mut self, ctx: &egui::Context) {
         let Some(path) = self.image_paths.get(self.current_index).cloned() else {
             return;
         };
@@ -127,7 +132,7 @@ impl Pane {
 
         // LRU hit — texture is already on the GPU, no upload.
         if let Some(cached_handle) = self.decode_cache.get(file_index) {
-            self.current_texture = Some(cached_handle);
+            self.set_current_texture(Some(cached_handle), ctx);
             log::debug!("LRU hit [{}]", file_index);
             return;
         }
@@ -150,7 +155,7 @@ impl Pane {
                 let t2 = Instant::now();
                 let handle = self.decode_cache.insert(file_index, name, color_image);
                 let upload_ms = t2.elapsed().as_secs_f64() * 1000.0;
-                self.current_texture = Some(handle);
+                self.set_current_texture(Some(handle), ctx);
 
                 log::debug!(
                     "load_sync [{}] ({}x{}): decode={:.1}ms convert={:.1}ms upload={:.1}ms total={:.1}ms [LRU: {} / {:.0} MB]",
@@ -163,7 +168,7 @@ impl Pane {
             }
             Err(e) => {
                 log::error!("Failed to load {}: {}", path.display(), e);
-                self.current_texture = None;
+                self.set_current_texture(None, ctx);
             }
         }
     }
@@ -174,7 +179,7 @@ impl Pane {
     }
 
     /// Try to navigate by `delta` images. Returns true if the display advanced.
-    pub(crate) fn navigate(&mut self, delta: isize) -> bool {
+    pub(crate) fn navigate(&mut self, delta: isize, ctx: &egui::Context) -> bool {
         if self.image_paths.is_empty() {
             return false;
         }
@@ -184,11 +189,14 @@ impl Pane {
             return false;
         }
 
-        if let Some(cache) = &mut self.cache {
-            if let Some(t) = cache.current_texture_for(new_index) {
-                self.current_index = new_index;
-                self.current_texture = Some(t);
+        if let Some(t) = self
+            .cache
+            .as_ref()
+            .and_then(|cache| cache.current_texture_for(new_index))
+        {
+            self.current_index = new_index;
 
+            if let Some(cache) = &mut self.cache {
                 if delta > 0 {
                     cache.navigate_forward(new_index, &self.image_paths);
                 } else {
@@ -209,8 +217,9 @@ impl Pane {
                     self.image_paths.len(),
                     summary,
                 );
-                return true;
             }
+            self.set_current_texture(Some(t), ctx);
+            return true;
         }
         false
     }
@@ -229,12 +238,9 @@ impl Pane {
 
         if let Some(cache) = &mut self.cache {
             cache.jump_to(index, &self.image_paths);
-            self.current_texture = cache.current_texture_for(index);
-            let hit = self.current_texture.is_some();
+            let texture = cache.current_texture_for(index);
+            let hit = texture.is_some();
             let summary = cache.summary();
-            if !hit {
-                self.load_sync(ctx);
-            }
             log::debug!(
                 "jump {}/{} cache={} {}",
                 index,
@@ -242,6 +248,11 @@ impl Pane {
                 summary,
                 if hit { "hit" } else { "miss" },
             );
+            if hit {
+                self.set_current_texture(texture, ctx);
+            } else {
+                self.load_sync(ctx);
+            }
         } else {
             self.load_sync(ctx);
         }
@@ -304,7 +315,7 @@ impl Pane {
             .and_then(|c| c.current_texture_for(clamped));
 
         if let Some(tex) = found_in_cache {
-            self.current_texture = Some(tex);
+            self.set_current_texture(Some(tex), ctx);
             true
         } else if let Some(loader) = &mut self.slider_loader {
             if loader.should_load() {
@@ -319,18 +330,22 @@ impl Pane {
     }
 
     /// Finalize after slider drag released: re-center cache.
-    pub(crate) fn apply_slider_release(&mut self) {
-        if let Some(cache) = &mut self.cache {
+    pub(crate) fn apply_slider_release(&mut self, ctx: &egui::Context) {
+        let texture = if let Some(cache) = &mut self.cache {
             cache.jump_to(self.current_index, &self.image_paths);
-            if let Some(t) = cache.current_texture_for(self.current_index) {
-                self.current_texture = Some(t);
-            }
+            let texture = cache.current_texture_for(self.current_index);
             log::debug!(
                 "slider release {}/{} cache={}",
                 self.current_index,
                 self.image_paths.len(),
                 cache.summary(),
             );
+            texture
+        } else {
+            None
+        };
+        if let Some(texture) = texture {
+            self.set_current_texture(Some(texture), ctx);
         }
     }
 
@@ -370,6 +385,31 @@ impl Pane {
             });
         }
         false
+    }
+
+    pub(crate) fn poll_animation(&mut self) {
+        let Some(animation) = &mut self.animation else {
+            return;
+        };
+        match animation.poll() {
+            AnimationPoll::NewTexture(texture) => self.current_texture = Some(texture),
+            AnimationPoll::Finished => self.animation = None,
+            AnimationPoll::Unchanged => {}
+        }
+    }
+
+    fn set_current_texture(&mut self, texture: Option<egui::TextureHandle>, ctx: &egui::Context) {
+        self.current_texture = texture;
+        self.start_animation(ctx);
+    }
+
+    fn start_animation(&mut self, ctx: &egui::Context) {
+        self.animation = self
+            .image_paths
+            .get(self.current_index)
+            .cloned()
+            .filter(|path| self.current_texture.is_some() && file_io::may_have_animation(path))
+            .map(|path| AnimationPlayer::new(path, ctx));
     }
 
     /// Returns true if the user changed zoom or pan this frame.

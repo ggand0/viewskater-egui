@@ -13,6 +13,7 @@ use eframe::{egui, egui_wgpu, wgpu};
 use crate::settings::{AppSettings, GpuMemoryMode};
 
 mod about;
+mod animation;
 mod app;
 mod bench;
 mod build_info;
