@@ -54,7 +54,7 @@ impl App {
         let current_discovery_options = self.current_discovery_options();
         if let Some(pane) = self.panes.get_mut(pane_idx) {
             if let Some(file) = rfd::FileDialog::new()
-                .add_filter("Images", &["jpg", "jpeg", "png", "bmp", "webp", "gif", "tiff", "tif", "qoi", "tga"])
+                .add_filter("Images", &["jpg", "jpeg", "jxl", "png", "bmp", "webp", "gif", "tiff", "tif", "qoi", "tga"])
                 .pick_file()
             {
                 pane.open_path(

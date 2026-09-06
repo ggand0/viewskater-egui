@@ -13,7 +13,7 @@ This is the egui port of the original [iced version](https://github.com/ggand0/v
 - Dual pane view for side-by-side image comparison
 - Scroll-to-zoom centered on cursor, click-drag to pan
 - Fullscreen mode with cursor proximity UI reveal
-- Supports jpg, png, bmp, webp, gif, tiff, qoi, tga
+- Supports jpg, jxl, png, bmp, webp, gif, tiff, qoi, tga
 
 ## Installation
 

@@ -5,4 +5,4 @@ Icon=viewskater-egui
 Type=Application
 Categories=Graphics;Viewer;
 StartupWMClass=viewskater-egui
-MimeType=image/png;image/jpeg;image/webp;image/tiff;image/bmp;
+MimeType=image/png;image/jpeg;image/jxl;image/webp;image/tiff;image/bmp;
