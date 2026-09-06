@@ -7,9 +7,135 @@ use eframe::egui;
 
 use crate::file_io::open_image;
 
+#[cfg(test)]
+mod preview_sim_bench;
+
 const COL_LOADED: egui::Color32 = egui::Color32::from_rgb(76, 175, 80);
 const COL_LOADING: egui::Color32 = egui::Color32::from_rgb(255, 183, 77);
 const COL_EMPTY: egui::Color32 = egui::Color32::from_rgb(60, 60, 60);
+
+pub struct ThumbnailCache {
+    ctx: egui::Context,
+    texture: Option<egui::TextureHandle>,
+    texture_idx: Option<usize>,
+    cache: HashMap<usize, egui::ColorImage>,
+    cache_bytes: usize,
+    req_tx: mpsc::Sender<(usize, PathBuf)>,
+    res_rx: mpsc::Receiver<(usize, Option<egui::ColorImage>)>,
+    /// Index of the most recently sent request whose result hasn't arrived
+    /// yet. Prevents re-sending the same request every hovered frame, which
+    /// made the worker decode the same image twice.
+    pending_idx: Option<usize>,
+    preview_budget_mb: usize
+}
+
+impl ThumbnailCache {
+    pub fn new(ctx: &egui::Context, preview_budget_mb: usize) -> Self {
+        let (req_tx, req_rx) = mpsc::channel::<(usize, PathBuf)>();
+        let (res_tx, res_rx) = mpsc::channel();
+
+        let worker_ctx = ctx.clone();
+        std::thread::spawn(move || {
+            while let Ok((idx, path)) = req_rx.recv() {
+                let mut latest_idx = idx;
+                let mut latest_path = path;
+                while let Ok((newer_idx, newer_path)) = req_rx.try_recv() {
+                    latest_idx = newer_idx;
+                    latest_path = newer_path;
+                }
+                // Send a result even on failure so the pending marker clears
+                // and the index can be retried later.
+                let thumbnail = match image::open(&latest_path) {
+                    Ok(img) => Some(crate::decode::image_to_thumbnail(img)),
+                    Err(e) => {
+                        log::error!("Thumbnail decode failed for {}: {e}", latest_path.display());
+                        None
+                    }
+                };
+                let _ = res_tx.send((latest_idx, thumbnail));
+                worker_ctx.request_repaint();
+            }
+        });
+
+        Self {
+            ctx: ctx.clone(),
+            texture: None,
+            texture_idx: None,
+            cache: HashMap::new(),
+            cache_bytes: 0,
+            req_tx,
+            res_rx,
+            pending_idx: None,
+            preview_budget_mb,
+        }
+    }
+
+    pub fn poll(&mut self) {
+        while let Ok((idx, img)) = self.res_rx.try_recv() {
+            // Only clear when it matches: a newer request may already be
+            // pending for a different index.
+            if self.pending_idx == Some(idx) {
+                self.pending_idx = None;
+            }
+            let Some(img) = img else { continue };
+            let img_bytes = img.pixels.len() * 4;
+            if let Some(old) = self.cache.insert(idx, img.clone()) {
+                self.cache_bytes -= old.pixels.len() * 4;
+            }
+            self.cache_bytes += img_bytes;
+            if self.preview_budget_mb > 0 {
+                evict_thumb_cache(&mut self.cache, &mut self.cache_bytes, idx, self.preview_budget_mb);
+            }
+            self.upload(idx, img);
+        }
+    }
+
+    pub fn current_thumbnail_for(&mut self, thumb_index: usize, path: &Path) -> (Option<egui::TextureHandle>, bool) {
+        if self.texture_idx == Some(thumb_index) {
+            return (self.texture.clone(), true);
+        }
+        if let Some(img) = self.cache.get(&thumb_index) {
+            self.upload(thumb_index, img.clone());
+            return (self.texture.clone(), true);
+        }
+        if let Some(&nearest_idx) = self.cache.keys()
+            .min_by_key(|&&k| (k as isize - thumb_index as isize).unsigned_abs())
+        {
+            if self.texture_idx != Some(nearest_idx) {
+                let img = self.cache[&nearest_idx].clone();
+                self.upload(nearest_idx, img);
+            }
+        }
+        if self.pending_idx != Some(thumb_index)
+            && self.req_tx.send((thumb_index, path.to_path_buf())).is_ok()
+        {
+            self.pending_idx = Some(thumb_index);
+        }
+        (self.texture.clone(), false)
+    }
+
+    fn upload(&mut self, idx: usize, img: egui::ColorImage) {
+        match &mut self.texture {
+            Some(tex) => tex.set(img, egui::TextureOptions::LINEAR),
+            None => {
+                self.texture = Some(self.ctx.load_texture(
+                    "thumb_preview", img, egui::TextureOptions::LINEAR,
+                ));
+            }
+        }
+        self.texture_idx = Some(idx);
+    }
+
+    /// Change the memory budget (0 = unlimited), evicting entries furthest
+    /// from the currently displayed thumbnail if over the new limit.
+    pub fn set_budget_mb(&mut self, budget_mb: usize) {
+        self.preview_budget_mb = budget_mb;
+        if budget_mb > 0 {
+            let center = self.texture_idx.unwrap_or(0);
+            evict_thumb_cache(&mut self.cache, &mut self.cache_bytes, center, budget_mb);
+        }
+    }
+}
 
 pub struct DecodeResult {
     pub file_index: usize,
@@ -162,7 +288,7 @@ impl SlidingWindowCache {
             if let Some(slot_idx) = self.slot_index_for(file_index) {
                 if self.slots[slot_idx].is_none() {
                     let texture = self.ctx.load_texture(
-                        name,
+                        &name,
                         color_image,
                         egui::TextureOptions::LINEAR,
                     );
@@ -460,7 +586,7 @@ impl SlidingWindowCache {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                Some(ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR))
+                Some(ctx.load_texture(&name, color_image, egui::TextureOptions::LINEAR))
             }
             Err(e) => {
                 log::error!("Failed to decode {}: {}", path.display(), e);
@@ -468,6 +594,7 @@ impl SlidingWindowCache {
             }
         }
     }
+
 }
 
 /// Throttled synchronous slider loader.
@@ -636,4 +763,154 @@ fn legend_swatch(ui: &mut egui::Ui, color: egui::Color32, label: &str) {
             .color(egui::Color32::from_gray(160))
             .size(10.0),
     );
+}
+
+fn evict_thumb_cache(
+    cache: &mut HashMap<usize, egui::ColorImage>,
+    cache_bytes: &mut usize,
+    current_idx: usize,
+    cache_budget: usize,
+) {
+    evict_thumb_cache_with_budget(cache, cache_bytes, current_idx, cache_budget * 1024 * 1024);
+}
+
+fn evict_thumb_cache_with_budget(
+    cache: &mut HashMap<usize, egui::ColorImage>,
+    cache_bytes: &mut usize,
+    current_idx: usize,
+    budget: usize,
+) {
+    while *cache_bytes > budget && cache.len() > 1 {
+        let furthest = *cache.keys()
+            .max_by_key(|&&k| (k as isize - current_idx as isize).unsigned_abs())
+            .unwrap();
+        if let Some(removed) = cache.remove(&furthest) {
+            *cache_bytes -= removed.pixels.len() * 4;
+            log::debug!(
+                "thumb evict [{}]: cache={} entries, {:.1}MB",
+                furthest, cache.len(),
+                *cache_bytes as f64 / (1024.0 * 1024.0),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_BUDGET: usize = 1024;
+
+    fn make_thumb(size: usize) -> egui::ColorImage {
+        let pixel_count = size / 4;
+        egui::ColorImage {
+            size: [pixel_count, 1],
+            pixels: vec![egui::Color32::BLACK; pixel_count],
+        }
+    }
+
+    fn insert(cache: &mut HashMap<usize, egui::ColorImage>, bytes: &mut usize, idx: usize, size: usize) {
+        let img = make_thumb(size);
+        *bytes += img.pixels.len() * 4;
+        cache.insert(idx, img);
+    }
+
+    fn evict(cache: &mut HashMap<usize, egui::ColorImage>, bytes: &mut usize, current_idx: usize) {
+        evict_thumb_cache_with_budget(cache, bytes, current_idx, TEST_BUDGET);
+    }
+
+    #[test]
+    fn evicts_furthest_entry() {
+        let mut cache = HashMap::new();
+        let mut bytes = 0;
+        let each = TEST_BUDGET / 2 + 1;
+
+        insert(&mut cache, &mut bytes, 0, each);
+        insert(&mut cache, &mut bytes, 50, each);
+        insert(&mut cache, &mut bytes, 45, each);
+
+        evict(&mut cache, &mut bytes, 45);
+
+        assert!(!cache.contains_key(&0), "furthest entry (0) should be evicted");
+        assert!(cache.contains_key(&45), "current position should remain");
+    }
+
+    #[test]
+    fn evicts_multiple_until_under_budget() {
+        let mut cache = HashMap::new();
+        let mut bytes = 0;
+        let chunk = TEST_BUDGET / 3 + 1;
+
+        insert(&mut cache, &mut bytes, 0, chunk);
+        insert(&mut cache, &mut bytes, 100, chunk);
+        insert(&mut cache, &mut bytes, 50, chunk);
+        insert(&mut cache, &mut bytes, 200, chunk);
+
+        evict(&mut cache, &mut bytes, 50);
+
+        assert!(bytes <= TEST_BUDGET);
+        assert!(cache.contains_key(&50), "current position should remain");
+        assert!(!cache.contains_key(&200), "furthest entry (200) should be evicted first");
+    }
+
+    #[test]
+    fn no_eviction_under_budget() {
+        let mut cache = HashMap::new();
+        let mut bytes = 0;
+        let small = TEST_BUDGET / 10;
+
+        insert(&mut cache, &mut bytes, 5, small);
+        insert(&mut cache, &mut bytes, 10, small);
+
+        evict(&mut cache, &mut bytes, 5);
+
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn keeps_at_least_one_entry() {
+        let mut cache = HashMap::new();
+        let mut bytes = 0;
+
+        insert(&mut cache, &mut bytes, 42, TEST_BUDGET + 1000);
+
+        evict(&mut cache, &mut bytes, 42);
+
+        assert_eq!(cache.len(), 1, "should never evict the last entry");
+    }
+
+    #[test]
+    fn set_budget_evicts_existing_entries() {
+        let ctx = egui::Context::default();
+        let mut tc = ThumbnailCache::new(&ctx, 0);
+        let mb = 1024 * 1024;
+
+        insert(&mut tc.cache, &mut tc.cache_bytes, 0, mb);
+        insert(&mut tc.cache, &mut tc.cache_bytes, 10, mb);
+        insert(&mut tc.cache, &mut tc.cache_bytes, 100, mb);
+        tc.texture_idx = Some(10);
+
+        tc.set_budget_mb(2);
+
+        assert!(tc.cache_bytes <= 2 * mb);
+        assert!(tc.cache.contains_key(&10), "displayed entry should remain");
+        assert!(!tc.cache.contains_key(&100), "furthest entry should be evicted");
+    }
+
+    #[test]
+    fn bytes_tracking_stays_consistent() {
+        let mut cache = HashMap::new();
+        let mut bytes = 0;
+        let chunk = TEST_BUDGET / 2 + 1;
+
+        insert(&mut cache, &mut bytes, 0, chunk);
+        insert(&mut cache, &mut bytes, 50, chunk);
+        insert(&mut cache, &mut bytes, 100, chunk);
+
+        evict(&mut cache, &mut bytes, 50);
+
+        let actual: usize = cache.values().map(|img| img.pixels.len() * 4).sum();
+        assert_eq!(bytes, actual);
+    }
+
 }

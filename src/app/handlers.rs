@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use crate::menu::MenuAction;
+use crate::{menu::MenuAction, settings::ImageDiscoveryOptions};
 use crate::pane::Pane;
 
 use super::{App, DualPaneMode, SliderResult};
@@ -14,10 +14,22 @@ impl App {
 
     pub(super) fn set_dual_pane(&mut self, ctx: &egui::Context) {
         if self.panes.len() < 2 {
-            let mut pane = Pane::new(ctx, self.settings.cache_count, self.settings.lru_budget_mb, self.settings.decode_threads, self.settings.mouse_wheel_zoom);
+            let mut pane = Pane::new(
+                ctx,
+                self.settings.cache_count,
+                self.settings.lru_budget_mb,
+                self.settings.decode_threads,
+                self.settings.mouse_wheel_zoom,
+                self.settings.reset_zoom_pan_on_navigation,
+                self.settings.preview_budget_mb,
+            );
             if !self.panes[0].image_paths.is_empty() {
-                if let Some(dir) = self.panes[0].image_paths[0].parent() {
-                    pane.open_path(dir, ctx);
+                if let Some(dir) = &self.panes[0].dir_path {
+                    pane.open_path(
+                        dir,
+                        ctx,
+                        self.current_discovery_options(),
+                    );
                     pane.jump_to(self.panes[0].current_index, ctx);
                 }
             }
@@ -26,20 +38,30 @@ impl App {
     }
 
     pub(super) fn open_folder_dialog(&mut self, pane_idx: usize, ctx: &egui::Context) {
+        let current_discovery_options = self.current_discovery_options();
         if let Some(pane) = self.panes.get_mut(pane_idx) {
             if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                pane.open_path(&dir, ctx);
+                pane.open_path(
+                    &dir,
+                    ctx,
+                    current_discovery_options,
+                );
             }
         }
     }
 
     pub(super) fn open_file_dialog(&mut self, pane_idx: usize, ctx: &egui::Context) {
+        let current_discovery_options = self.current_discovery_options();
         if let Some(pane) = self.panes.get_mut(pane_idx) {
             if let Some(file) = rfd::FileDialog::new()
                 .add_filter("Images", &["jpg", "jpeg", "jxl", "png", "bmp", "webp", "gif", "tiff", "tif", "qoi", "tga"])
                 .pick_file()
             {
-                pane.open_path(&file, ctx);
+                pane.open_path(
+                    &file,
+                    ctx,
+                    current_discovery_options,
+                );
             }
         }
     }
@@ -150,6 +172,40 @@ impl App {
             pane.lru_budget_mb = self.settings.lru_budget_mb;
             pane.decode_threads = self.settings.decode_threads;
             pane.mouse_wheel_zoom = self.settings.mouse_wheel_zoom;
+            pane.reset_zoom_pan_on_navigation = self.settings.reset_zoom_pan_on_navigation;
+            pane.preview_budget_mb = self.settings.preview_budget_mb;
+            if let Some(tc) = &mut pane.thumbnail_cache {
+                tc.set_budget_mb(self.settings.preview_budget_mb);
+            }
+        }
+    }
+
+    pub(super) fn reload_sorted_panes(&mut self, ctx: &egui::Context) {
+        let current_discovery_options = self.current_discovery_options();
+        for pane in &mut self.panes {
+            // store active image path, so that we can jump back to it after reloading
+            let active_img = pane.image_paths.get(pane.current_index).cloned();
+            let Some(path) = pane.dir_path.clone() else {
+                continue;
+            };
+            let zoom = pane.zoom;
+            let pan = pane.pan;
+            pane.open_path(
+                &path,
+                ctx,
+                current_discovery_options,
+            );
+            pane.zoom = zoom;
+            pane.pan = pan;
+            // if an imae was active before AND the image is still in our file list, jump to it
+            // a previously active image might not be in the list anymore if
+            //  a) it doesnt match our file discovery options (recursive, hidden)
+            //  b) or, it doesnt exist on disk anymore
+            if let Some(active_img) = active_img {
+                if let Some(new_idx) = pane.image_paths.iter().position(|item| *item == *active_img) {
+                    pane.jump_to(new_idx, ctx);
+                }
+            }
         }
     }
 
@@ -257,6 +313,10 @@ impl App {
         let use_selection = self.dual_pane_mode == DualPaneMode::Independent;
         let is_active = |p: &Pane| !use_selection || p.selected;
 
+        if self.show_settings || self.show_about {
+            return;
+        }
+
         if home {
             for pane in &mut self.panes {
                 if is_active(pane) {
@@ -327,9 +387,14 @@ impl App {
     /// "Open With"). Each path goes through the same entrypoint as CLI args
     /// and drag-and-drop, so it loads the image and its sibling directory.
     pub(super) fn handle_external_open_requests(&mut self, ctx: &egui::Context) {
+        let current_discovery_options = self.current_discovery_options();
         while let Ok(path) = self.file_receiver.try_recv() {
             log::info!("External open request: {}", path.display());
-            self.panes[0].open_path(&path, ctx);
+            self.panes[0].open_path(
+                &path,
+                ctx,
+                current_discovery_options,
+            );
             if self.panes[0].current_texture.is_some() {
                 self.perf.record_image_load();
             }
@@ -341,6 +406,7 @@ impl App {
         let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
         if let Some(file) = dropped.first() {
             if let Some(path) = &file.path {
+                let current_discovery_options = self.current_discovery_options();
                 if self.panes.len() >= 2 {
                     let hover = ctx.input(|i| i.pointer.hover_pos());
                     let latest = ctx.input(|i| i.pointer.latest_pos());
@@ -358,11 +424,25 @@ impl App {
                             if pos.x < divider_x { 0 } else { 1 }
                         })
                         .unwrap_or(0);
-                    self.panes[target].open_path(path, ctx);
+                    self.panes[target].open_path(
+                        path,
+                        ctx,
+                        current_discovery_options,
+                    );
                 } else {
-                    self.panes[0].open_path(path, ctx);
+                    self.panes[0].open_path(
+                        path,
+                        ctx,
+                        current_discovery_options,
+                    );
                 }
             }
         }
+    }
+
+    fn current_discovery_options(&self) -> ImageDiscoveryOptions {
+        let mut opts = self.settings.image_discovery_options;
+        opts.sort_order = self.current_sort;
+        opts
     }
 }

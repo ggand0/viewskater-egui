@@ -6,17 +6,21 @@ use eframe::egui;
 use crate::cache;
 use crate::decode::image_to_color_image;
 use crate::file_io::{self, open_image};
+use crate::settings::{ImageDiscoveryOptions};
 
 const MIN_ZOOM: f32 = 0.05;
 const MAX_ZOOM: f32 = 100.0;
 
 pub(crate) struct Pane {
+    /// Top level directory from which the pane loaded files
+    pub(crate) dir_path: Option<PathBuf>,
     pub(crate) image_paths: Vec<PathBuf>,
     pub(crate) current_index: usize,
     pub(crate) current_texture: Option<egui::TextureHandle>,
     pub(crate) zoom: f32,
     pub(crate) pan: egui::Vec2,
     pub(crate) cache: Option<cache::SlidingWindowCache>,
+    pub(crate) thumbnail_cache: Option<cache::ThumbnailCache>,
     slider_loader: Option<cache::SliderLoader>,
     pub(crate) decode_cache: cache::DecodeLruCache,
     pub(crate) cache_count: usize,
@@ -24,6 +28,8 @@ pub(crate) struct Pane {
     pub(crate) decode_threads: usize,
     pub(crate) selected: bool,
     pub(crate) mouse_wheel_zoom: bool,
+    pub(crate) reset_zoom_pan_on_navigation: bool,
+    pub(crate) preview_budget_mb: usize,
 }
 
 impl Pane {
@@ -33,14 +39,18 @@ impl Pane {
         lru_budget_mb: usize,
         decode_threads: usize,
         mouse_wheel_zoom: bool,
+        reset_zoom_pan_on_navigation: bool,
+        preview_budget_mb: usize,
     ) -> Self {
         Self {
+            dir_path: None,
             image_paths: Vec::new(),
             current_index: 0,
             current_texture: None,
             zoom: 1.0,
             pan: egui::Vec2::ZERO,
             cache: None,
+            thumbnail_cache: None,
             slider_loader: None,
             decode_cache: cache::DecodeLruCache::new(ctx, lru_budget_mb),
             cache_count,
@@ -48,6 +58,8 @@ impl Pane {
             decode_threads,
             selected: true,
             mouse_wheel_zoom,
+            reset_zoom_pan_on_navigation,
+            preview_budget_mb,
         }
     }
 
@@ -58,23 +70,30 @@ impl Pane {
         self.zoom = 1.0;
         self.pan = egui::Vec2::ZERO;
         self.cache = None;
+        self.thumbnail_cache = None;
         self.slider_loader = None;
         self.decode_cache.clear();
     }
 
-    pub(crate) fn open_path(&mut self, path: &std::path::Path, ctx: &egui::Context) {
+    pub(crate) fn open_path(
+        &mut self,
+        path: &std::path::Path,
+        ctx: &egui::Context,
+        discovery_options: ImageDiscoveryOptions,
+    ) {
         if !path.exists() {
             log::error!("Path does not exist: {}", path.display());
             return;
         }
 
         let (dir, target_filename) = file_io::resolve_path(path);
-        self.image_paths = file_io::enumerate_images(&dir);
+        self.image_paths = file_io::enumerate_images(&dir, discovery_options);
 
         if self.image_paths.is_empty() {
             log::warn!("No supported images found in {}", dir.display());
             return;
         }
+        self.dir_path = Some(dir);
 
         self.current_index = target_filename
             .and_then(|name| {
@@ -92,6 +111,7 @@ impl Pane {
         c.initialize(self.current_index, &self.image_paths);
         self.current_texture = c.current_texture_for(self.current_index);
         self.cache = Some(c);
+        self.thumbnail_cache = Some(cache::ThumbnailCache::new(ctx, self.preview_budget_mb));
         self.slider_loader = Some(cache::SliderLoader::new(ctx));
     }
 
@@ -148,6 +168,11 @@ impl Pane {
         }
     }
 
+    fn reset_view(&mut self) {
+        self.zoom = 1.0;
+        self.pan = egui::Vec2::ZERO;
+    }
+
     /// Try to navigate by `delta` images. Returns true if the display advanced.
     pub(crate) fn navigate(&mut self, delta: isize) -> bool {
         if self.image_paths.is_empty() {
@@ -170,13 +195,19 @@ impl Pane {
                     cache.navigate_backward(new_index, &self.image_paths);
                 }
 
+                let summary = cache.summary();
+
+                if self.reset_zoom_pan_on_navigation {
+                    self.reset_view();
+                }
+
                 let dir = if delta > 0 { "→" } else { "←" };
                 log::debug!(
                     "nav {} {}/{} cache={} hit",
                     dir,
                     new_index,
                     self.image_paths.len(),
-                    cache.summary(),
+                    summary,
                 );
                 return true;
             }
@@ -191,6 +222,10 @@ impl Pane {
         }
 
         self.current_index = index;
+
+        if self.reset_zoom_pan_on_navigation {
+            self.reset_view();
+        }
 
         if let Some(cache) = &mut self.cache {
             cache.jump_to(index, &self.image_paths);
@@ -246,6 +281,9 @@ impl Pane {
         if let Some(cache) = &mut self.cache {
             cache.poll(&self.image_paths);
         }
+        if let Some(tc) = &mut self.thumbnail_cache {
+            tc.poll();
+        }
     }
 
     /// Drag the slider to `idx`. Returns true if image was loaded.
@@ -255,6 +293,10 @@ impl Pane {
             return false;
         }
         self.current_index = clamped;
+
+        if self.reset_zoom_pan_on_navigation {
+            self.reset_view();
+        }
 
         let found_in_cache = self
             .cache
@@ -373,8 +415,7 @@ impl Pane {
                     self.pan = egui::Vec2::ZERO;
                 }
             } else {
-                self.zoom = 1.0;
-                self.pan = egui::Vec2::ZERO;
+                self.reset_view();
             }
         }
 

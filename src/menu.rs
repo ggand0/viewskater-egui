@@ -2,7 +2,7 @@ use eframe::egui;
 
 use crate::app::DualPaneMode;
 use crate::pane::Pane;
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, ImageSortKey, ImageSortOrder, SortDirection};
 use crate::theme::UiTheme;
 
 /// Toggle switch widget (iOS/Steam style).
@@ -89,17 +89,25 @@ fn hover_row(
     }
 }
 
+pub(crate) struct MenuBarState<'a> {
+    pub settings: &'a mut AppSettings,
+    pub current_sort: &'a mut ImageSortOrder,
+    pub is_fullscreen: bool,
+}
+
 /// Returns (MenuAction, menu_is_open) so fullscreen mode can keep the bar visible
 /// while the user interacts with a dropdown.
 pub(crate) fn show_menu_bar(
     ctx: &egui::Context,
     panes: &[Pane],
     dual_pane_mode: DualPaneMode,
-    settings: &mut AppSettings,
+    state: &mut MenuBarState<'_>,
     theme: &UiTheme,
     fps_text: Option<&str>,
-    is_fullscreen: bool,
 ) -> (MenuAction, bool) {
+    let settings = &mut *state.settings;
+    let current_sort = &mut *state.current_sort;
+    let is_fullscreen = state.is_fullscreen;
     let mut action = MenuAction::None;
     let mut menu_is_open = false;
     let is_dual = panes.len() >= 2;
@@ -223,6 +231,36 @@ pub(crate) fn show_menu_bar(
                         }
                         ui.close_menu();
                     }
+                });
+                ui.separator();
+                hover_row(ui, theme, ml, mw, |ui| {
+                    ui.menu_button("Sort By", |ui| {
+                        let (sl, sw) = setup_menu_hover(ui);
+                        ui.style_mut().visuals.widgets.active.bg_fill = egui::Color32::TRANSPARENT;
+                        for sort_key in ImageSortKey::ALL {
+                            hover_row(ui, theme, sl, sw, |ui| {
+                                ui.radio_value(&mut current_sort.key, sort_key, sort_key.label());
+                            });
+                        }
+                        ui.separator();
+                        for direction in SortDirection::ALL {
+                            hover_row(ui, theme, sl, sw, |ui| {
+                                ui.radio_value(
+                                    &mut current_sort.direction,
+                                    direction,
+                                    direction.label(),
+                                );
+                            });
+                        }
+                        if *current_sort != settings.image_discovery_options.sort_order {
+                            ui.separator();
+                            hover_row(ui, theme, sl, sw, |ui| {
+                                if ui.button("Reset to Default").clicked() {
+                                    *current_sort = settings.image_discovery_options.sort_order;
+                                }
+                            });
+                        }
+                    });
                 });
                 ui.separator();
                 hover_row(ui, theme, ml, mw, |ui| {
@@ -374,7 +412,23 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane) {
 
         // Prepare text elements
         let index_text = format!("{} / {}", pane.current_index + 1, pane.image_paths.len());
-        let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let filename = path.as_os_str().to_string_lossy();
+        // Only show file names relative to panes' top level dir
+        let filename = match &pane.dir_path {
+            Some(dirpath) => {
+                match dirpath.to_str() {
+                    Some(dirpath) => {
+                        filename
+                            .strip_prefix(dirpath).unwrap_or(&filename)
+                            // Also remove potentially left-over leading /
+                            .trim_start_matches('/')
+                            .to_string()
+                    }
+                    None => filename.to_string()
+                }
+            }
+            None => filename.to_string(),
+        };
         let resolution = pane
             .current_texture
             .as_ref()

@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use eframe::egui;
 
@@ -11,7 +12,7 @@ use crate::about;
 use crate::menu;
 use crate::pane::Pane;
 use crate::perf;
-use crate::settings::{self, AppSettings};
+use crate::settings::{self, AppSettings, ImageSortOrder};
 use crate::theme::UiTheme;
 
 /// Target window size in physical pixels (matches iced version behavior).
@@ -22,8 +23,31 @@ const DEFAULT_WINDOW_HEIGHT: f32 = 720.0;
 const FULLSCREEN_TOP_ZONE: f32 = 50.0;
 const FULLSCREEN_BOTTOM_ZONE: f32 = 100.0;
 
+/// Preview UI screen size ratio
+const SCREEN_PREVIEW_UI_RATIO: f32 = 5.0;
+
 /// Scroll options
 const SCROLL_ZOOM_SPEED: f32 = 1.0 / 200.0;
+
+#[cfg(target_os = "windows")]
+const CJK_PATHS: [&str; 2] = [
+    "C:\\Windows\\Fonts\\msyh.ttc",
+    "C:\\Windows\\Fonts\\simsun.ttc",
+];
+
+#[cfg(target_os = "linux")]
+const CJK_PATHS: [&str; 3] = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+];
+
+#[cfg(target_os = "macos")]
+const CJK_PATHS: [&str; 3] = [
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+];
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum DualPaneMode {
@@ -34,22 +58,147 @@ pub(crate) enum DualPaneMode {
 pub(crate) struct SliderResult {
     pub target: Option<usize>,
     pub released: bool,
+    pub preview_active: bool,
+    pub preview_cursor_index: Option<usize>,
+    /// Whether the painted preview thumbnail was the exact one for the
+    /// hovered index (false while a nearest-neighbor placeholder shows).
+    pub preview_exact: bool,
+}
+struct PreviewLayout {
+    hover_pos: egui::Pos2,
+    slider_rect: egui::Rect,
+    screen_rect: egui::Rect,
+    width: f32,
+    height: f32,
+}
+
+fn paint_preview_popup(
+    ui: &egui::Ui,
+    tc: &mut crate::cache::ThumbnailCache,
+    cursor_index: usize,
+    max_images: usize,
+    path: &std::path::Path,
+    layout: &PreviewLayout,
+    stale_since: &mut Option<(usize, Instant)>,
+) -> bool {
+    let (tex_opt, is_exact) = tc.current_thumbnail_for(cursor_index, path);
+    let ui_width = layout.width;
+    let ui_height = layout.height;
+
+    let tex_size = match &tex_opt {
+        Some(tex) => tex.size_vec2(),
+        None => egui::Vec2::new(1.0, 1.0),
+    };
+
+    let style = ui.ctx().style();
+    let margin = style.spacing.menu_margin;
+    let corner_radius = style.visuals.menu_corner_radius;
+    let fill = style.visuals.window_fill();
+    let stroke = style.visuals.window_stroke();
+
+    let ratio = (ui_width / tex_size.x).min(ui_height / tex_size.y);
+    let scaled = tex_size * ratio;
+
+    let label_text = format!("{} / {max_images}", cursor_index + 1);
+    let label_font = egui::FontId::proportional(14.0);
+    let label_galley = ui.ctx().fonts(|f| {
+        f.layout_no_wrap(label_text, label_font, style.visuals.text_color())
+    });
+
+    let inner_w = ui_width.max(label_galley.size().x);
+    let inner_h = ui_height + 4.0 + label_galley.size().y;
+    let ml = margin.left as f32;
+    let mr = margin.right as f32;
+    let mt = margin.top as f32;
+    let mb = margin.bottom as f32;
+    let frame_w = ml + inner_w + mr;
+    let frame_h = mt + inner_h + mb;
+
+    let preview_x = (layout.hover_pos.x - frame_w / 2.0)
+        .clamp(layout.screen_rect.left(), layout.screen_rect.right() - frame_w);
+    let preview_y = (layout.slider_rect.top() - frame_h - 8.0)
+        .clamp(layout.screen_rect.top(), layout.screen_rect.bottom() - frame_h);
+
+    let frame_rect = egui::Rect::from_min_size(
+        egui::pos2(preview_x, preview_y),
+        egui::vec2(frame_w, frame_h),
+    );
+
+    // Paint on a tooltip layer to avoid hit-testing interference
+    let layer_id = egui::LayerId::new(
+        egui::Order::Tooltip, egui::Id::new("slider_preview"),
+    );
+    let painter = ui.ctx().layer_painter(layer_id);
+
+    painter.rect(frame_rect, corner_radius, fill, stroke, egui::epaint::StrokeKind::Outside);
+
+    let content_min = frame_rect.min + egui::vec2(ml, mt);
+    let img_center = egui::pos2(
+        content_min.x + ui_width / 2.0,
+        content_min.y + ui_height / 2.0,
+    );
+    let img_rect = egui::Rect::from_center_size(img_center, scaled);
+    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+
+    if let Some(tex) = tex_opt {
+        painter.image(tex.id(), img_rect, uv, egui::Color32::WHITE);
+
+        if is_exact {
+            *stale_since = None;
+        } else {
+            let since = match stale_since {
+                Some((stale_idx, inst)) if *stale_idx == cursor_index => inst,
+                _ => {
+                    *stale_since = Some((cursor_index, Instant::now()));
+                    &mut stale_since.as_mut().unwrap().1
+                }
+            };
+            let elapsed = since.elapsed().as_secs_f32();
+            const GRACE: f32 = 0.15;
+            const FADE_DURATION: f32 = 0.3;
+            const MAX_ALPHA: f32 = 120.0;
+            if elapsed >= GRACE {
+                let t = ((elapsed - GRACE) / FADE_DURATION).min(1.0);
+                let alpha = (MAX_ALPHA * t) as u8;
+                painter.rect_filled(img_rect, 0.0, egui::Color32::from_black_alpha(alpha));
+            }
+            if elapsed < GRACE + FADE_DURATION {
+                ui.ctx().request_repaint();
+            }
+        }
+    }
+
+    let label_pos = egui::pos2(content_min.x, content_min.y + ui_height + 4.0);
+    painter.galley(label_pos, label_galley, style.visuals.text_color());
+
+    is_exact
 }
 
 /// Render a custom navigation slider (accent handle + two-tone rail).
 /// Returns the drag target index and whether the drag was released.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_nav_slider(
     ui: &mut egui::Ui,
     current_idx: usize,
     max_images: usize,
     accent: egui::Color32,
+    panes: &mut [Pane],
+    preview_stale_since: &mut Option<(usize, Instant)>,
+    show_preview: bool,
+    bench_hover_t: Option<f32>,
 ) -> SliderResult {
     if max_images <= 1 {
         return SliderResult {
             target: None,
             released: false,
+            preview_active: false,
+            preview_cursor_index: None,
+            preview_exact: false,
         };
     }
+    let mut preview_active = false;
+    let mut preview_cursor_index = None;
+    let mut preview_exact = false;
 
     let max = max_images - 1;
     let mut idx = current_idx;
@@ -98,8 +247,45 @@ pub(crate) fn paint_nav_slider(
         accent,
         egui::Stroke::NONE,
     );
+    let screen_rect = ui.ctx().screen_rect();
+    let ui_width = screen_rect.width() / SCREEN_PREVIEW_UI_RATIO;
+    let ui_height = screen_rect.height() / SCREEN_PREVIEW_UI_RATIO;
+    // --bench-preview injects a synthetic hover position along the rail so
+    // the whole preview path below runs exactly as with a real cursor.
+    let hover_pos = bench_hover_t
+        .map(|t| {
+            let usable = rect.x_range().shrink(handle_radius);
+            egui::pos2(egui::lerp(usable.min..=usable.max, t), cy)
+        })
+        .or_else(|| response.hover_pos());
+    if let Some(pos) = hover_pos {
+        let usable = rect.x_range().shrink(handle_radius);
+        let cursor_t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
+        let cursor_index = (max as f32 * cursor_t).round() as usize;
+        if let Some(pane) = panes.get_mut(0) {
+            let nav_active = ui.ctx().input(|i| {
+                i.key_down(egui::Key::ArrowLeft) || i.key_down(egui::Key::ArrowRight)
+                || i.key_down(egui::Key::A) || i.key_down(egui::Key::D)
+            });
+            if cursor_index < pane.image_paths.len() && !response.dragged() && !nav_active && show_preview {
+                if let Some(tc) = pane.thumbnail_cache.as_mut() {
+                    preview_active = true;
+                    preview_cursor_index = Some(cursor_index);
+                    let layout = PreviewLayout {
+                        hover_pos: pos, slider_rect: rect, screen_rect,
+                        width: ui_width, height: ui_height,
+                    };
+                    preview_exact = paint_preview_popup(
+                        ui, tc, cursor_index, max_images,
+                        &pane.image_paths[cursor_index],
+                        &layout, preview_stale_since,
+                    );
+                }
+            }
+        }
+    }
 
-    SliderResult { target, released }
+    SliderResult { target, released, preview_active, preview_cursor_index, preview_exact }
 }
 
 pub struct App {
@@ -107,7 +293,10 @@ pub struct App {
     pub(crate) perf: perf::ImagePerfTracker,
     pub(crate) divider_fraction: f32,
     pub(crate) dual_pane_mode: DualPaneMode,
+    /// persistent settings
     pub(crate) settings: AppSettings,
+    /// Currently applied sort order settings (via View -> Sort By menu)
+    pub(crate) current_sort: ImageSortOrder,
     pub(crate) theme: UiTheme,
     pub(crate) show_settings: bool,
     pub(crate) show_about: bool,
@@ -115,7 +304,11 @@ pub struct App {
     pub(crate) menu_open: bool,
     pub(crate) log_buffer: Arc<Mutex<VecDeque<String>>>,
     initial_size_set: bool,
+    title: Option<String>,
     file_receiver: Receiver<PathBuf>,
+    last_preview_idx: Option<usize>,
+    preview_stale_since: Option<(usize, Instant)>,
+    preview_bench: Option<crate::bench::preview::PreviewBench>,
 }
 
 impl App {
@@ -125,14 +318,24 @@ impl App {
         log_buffer: Arc<Mutex<VecDeque<String>>>,
         settings: AppSettings,
         file_receiver: Receiver<PathBuf>,
+        bench_preview: bool,
     ) -> Self {
         let theme = UiTheme::teal_dark();
         theme.apply_to_visuals(&cc.egui_ctx);
         let mut app = Self {
-            panes: vec![Pane::new(&cc.egui_ctx, settings.cache_count, settings.lru_budget_mb, settings.decode_threads, settings.mouse_wheel_zoom)],
+            panes: vec![Pane::new(
+                &cc.egui_ctx,
+                settings.cache_count,
+                settings.lru_budget_mb,
+                settings.decode_threads,
+                settings.mouse_wheel_zoom,
+                settings.reset_zoom_pan_on_navigation,
+                settings.preview_budget_mb,
+            )],
             perf: perf::ImagePerfTracker::new(),
             divider_fraction: 0.5,
             dual_pane_mode: DualPaneMode::Synced,
+            current_sort: settings.image_discovery_options.sort_order,
             settings,
             theme,
             show_settings: false,
@@ -141,15 +344,35 @@ impl App {
             menu_open: false,
             log_buffer,
             initial_size_set: false,
+            title: None,
             file_receiver,
+            last_preview_idx: None,
+            preview_stale_since: None,
+            preview_bench: None,
         };
 
         if !paths.is_empty() {
-            app.panes[0].open_path(&paths[0], &cc.egui_ctx);
+            app.panes[0].open_path(
+                &paths[0],
+                &cc.egui_ctx,
+                app.settings.image_discovery_options,
+            );
         }
         if paths.len() >= 2 {
-            let mut pane1 = Pane::new(&cc.egui_ctx, app.settings.cache_count, app.settings.lru_budget_mb, app.settings.decode_threads, app.settings.mouse_wheel_zoom);
-            pane1.open_path(&paths[1], &cc.egui_ctx);
+            let mut pane1 = Pane::new(
+                &cc.egui_ctx,
+                app.settings.cache_count,
+                app.settings.lru_budget_mb,
+                app.settings.decode_threads,
+                app.settings.mouse_wheel_zoom,
+                app.settings.reset_zoom_pan_on_navigation,
+                app.settings.preview_budget_mb,
+            );
+            pane1.open_path(
+                &paths[1],
+                &cc.egui_ctx,
+                app.settings.image_discovery_options,
+            );
             app.panes.push(pane1);
         }
 
@@ -157,12 +380,45 @@ impl App {
             app.perf.record_image_load();
         }
 
+        if bench_preview {
+            let n = app.panes[0].image_paths.len();
+            if n > 1 {
+                log::info!("preview bench: starting on {n} images");
+                app.preview_bench = Some(crate::bench::preview::PreviewBench::new(n));
+            } else {
+                log::error!("--bench-preview requires a folder with at least 2 images");
+            }
+        }
+
+        let mut fonts = egui::FontDefinitions::default();
+        let mut cjk_loaded = false;
+        for path in &CJK_PATHS {
+            if let Ok(data) = std::fs::read(path) {
+                fonts.font_data.insert(
+                    "cjk_fallback".to_string(),
+                    egui::FontData::from_owned(data).into(),
+                );
+                fonts.families.entry(egui::FontFamily::Monospace)
+                    .or_default()
+                    .push("cjk_fallback".to_string());
+                fonts.families.entry(egui::FontFamily::Proportional)
+                    .or_default()
+                    .push("cjk_fallback".to_string());
+                cjk_loaded = true;
+                break;
+            }
+        }
+        if !cjk_loaded {
+            log::info!("No CJK font found — CJK characters will render as missing glyphs");
+        } else {
+            cc.egui_ctx.set_fonts(fonts);
+        }
         cc.egui_ctx.options_mut(|o| o.scroll_zoom_speed = SCROLL_ZOOM_SPEED);
 
         app
     }
 
-    fn update_title(&self, ctx: &egui::Context) {
+    fn current_title(&self) -> String {
         let name = |pane: &Pane| -> Option<String> {
             pane.image_paths.get(pane.current_index).map(|path| {
                 path.file_name()
@@ -172,7 +428,7 @@ impl App {
             })
         };
 
-        let title = if self.panes.len() >= 2 {
+        if self.panes.len() >= 2 {
             let left = name(&self.panes[0]).unwrap_or_default();
             let right = name(&self.panes[1]).unwrap_or_default();
             if left.is_empty() && right.is_empty() {
@@ -183,8 +439,15 @@ impl App {
         } else {
             self.panes.first().and_then(name)
                 .unwrap_or_else(|| "ViewSkater".to_string())
-        };
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
+    }
+
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let title = self.current_title();
+        if self.title.as_deref() != Some(title.as_str()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = Some(title);
+        }
     }
 
     fn show_slider_panel(&mut self, ctx: &egui::Context) {
@@ -212,9 +475,40 @@ impl App {
             .unwrap_or(0);
 
         let accent = self.theme.accent;
+        let mut stale_since = self.preview_stale_since;
+        let preview = (self.settings.slider_preview || self.preview_bench.is_some())
+            && self.panes.len() < 2;
+        let bench_t = self.preview_bench.as_ref().and_then(|b| b.hover_t());
         let result = egui::TopBottomPanel::bottom("nav")
-            .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent))
+            .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent, &mut self.panes, &mut stale_since, preview, bench_t))
             .inner;
+        self.preview_stale_since = stale_since;
+
+        if let Some(bench) = &mut self.preview_bench {
+            // At each phase end, sample the overlay's Preview FPS counter
+            // and reset its 2s window so the next phase's sample is pure.
+            if let Some(phase) = bench.tick(result.preview_cursor_index, result.preview_exact) {
+                bench.set_overlay_fps(&phase, self.perf.frame_fps());
+                self.perf.clear_frames();
+            }
+            if bench.is_done() {
+                log::info!("{}", bench.report());
+                self.preview_bench = None;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                ctx.request_repaint();
+            }
+        }
+        if result.preview_active {
+            if result.preview_cursor_index != self.last_preview_idx {
+                self.perf.record_frame();
+                self.last_preview_idx = result.preview_cursor_index;
+            }
+        } else {
+            self.perf.clear_frames();
+            self.last_preview_idx = None;
+            self.preview_stale_since = None;
+        }
 
         self.apply_slider_result_all(result, ctx);
     }
@@ -223,6 +517,7 @@ impl App {
         let independent =
             self.panes.len() >= 2 && self.dual_pane_mode == DualPaneMode::Independent;
         let accent = self.theme.accent;
+        let mut preview_stale_since = self.preview_stale_since;
 
         let slider_results = egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(egui::Color32::from_gray(20)))
@@ -388,6 +683,7 @@ impl App {
                             egui::pos2(available.min.x, slider_y),
                             egui::vec2(left_w, slider_h),
                         );
+                        let mut stale_l = preview_stale_since;
                         let left_result = ui
                             .allocate_new_ui(
                                 egui::UiBuilder::new().max_rect(left_slider_rect),
@@ -397,16 +693,22 @@ impl App {
                                         first[0].current_index,
                                         first[0].image_paths.len(),
                                         accent,
+                                        first,
+                                        &mut stale_l,
+                                        false,
+                                        None,
                                     )
                                 },
                             )
                             .inner;
+                        preview_stale_since = stale_l;
                         results.push((0, left_result));
 
                         let right_slider_rect = egui::Rect::from_min_size(
                             egui::pos2(right_x, slider_y),
                             egui::vec2(right_w, slider_h),
                         );
+                        let mut stale_r = preview_stale_since;
                         let right_result = ui
                             .allocate_new_ui(
                                 egui::UiBuilder::new().max_rect(right_slider_rect),
@@ -416,10 +718,15 @@ impl App {
                                         rest[0].current_index,
                                         rest[0].image_paths.len(),
                                         accent,
+                                        rest,
+                                        &mut stale_r,
+                                        false,
+                                        None,
                                     )
                                 },
                             )
                             .inner;
+                        preview_stale_since = stale_r;
                         results.push((1, right_result));
                     }
                 }
@@ -428,6 +735,7 @@ impl App {
             })
             .inner;
 
+        self.preview_stale_since = preview_stale_since;
         for (pane_idx, result) in slider_results {
             self.apply_slider_result_one(pane_idx, result, ctx);
         }
@@ -511,18 +819,26 @@ impl eframe::App for App {
                 None
             };
             let settings_snapshot = self.settings.clone();
+            let sort_snapshot = self.current_sort;
+            let mut menu_state = menu::MenuBarState {
+                settings: &mut self.settings,
+                current_sort: &mut self.current_sort,
+                is_fullscreen: self.is_fullscreen,
+            };
             let (action, menu_is_open) = menu::show_menu_bar(
                 ctx,
                 &self.panes,
                 self.dual_pane_mode,
-                &mut self.settings,
+                &mut menu_state,
                 &self.theme,
                 fps_text.as_deref(),
-                self.is_fullscreen,
             );
             self.menu_open = menu_is_open;
             if self.settings != settings_snapshot {
                 self.settings.save();
+            }
+            if self.current_sort != sort_snapshot {
+                self.reload_sorted_panes(ctx);
             }
             self.handle_menu_action(action, ctx);
         } else {
@@ -578,10 +894,13 @@ impl eframe::App for App {
         }
 
         // Settings modal — auto-saves on any change inside the modal.
-        let perf_changed =
+        let settings_changes =
             settings::show_settings_modal(ctx, &mut self.settings, &mut self.show_settings, &self.theme);
-        if perf_changed {
+        if settings_changes.pane_settings {
             self.apply_settings_to_caches();
+            // also reload panes but ensure image discovery options are updated
+            self.current_sort = self.settings.image_discovery_options.sort_order;
+            self.reload_sorted_panes(ctx);
         }
 
         // About modal (on top of everything)
