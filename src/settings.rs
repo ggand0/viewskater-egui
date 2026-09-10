@@ -238,11 +238,13 @@ pub enum AccentPreset {
     Amber,
     /// Soft violet.
     Violet,
+    /// A color picked in the settings, stored in `AppSettings::custom_accent`.
+    Custom,
 }
 
 #[cfg(feature = "official")]
 impl AccentPreset {
-    pub(crate) const ALL: [Self; 4] = [Self::Teal, Self::Cyan, Self::Amber, Self::Violet];
+    pub(crate) const ALL: [Self; 5] = [Self::Teal, Self::Cyan, Self::Amber, Self::Violet, Self::Custom];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -250,16 +252,20 @@ impl AccentPreset {
             Self::Cyan => "Cyan",
             Self::Amber => "Amber",
             Self::Violet => "Violet",
+            Self::Custom => "Custom",
         }
     }
 
-    pub(crate) fn color(self) -> egui::Color32 {
-        match self {
-            Self::Teal => egui::Color32::from_rgb(26, 189, 208),
-            Self::Cyan => egui::Color32::from_rgb(46, 230, 255),
-            Self::Amber => egui::Color32::from_rgb(240, 160, 60),
-            Self::Violet => egui::Color32::from_rgb(160, 130, 235),
-        }
+    /// Fixed color of a preset. `Custom` has none; see [`AppSettings::accent_color`].
+    pub(crate) fn fixed_color(self) -> Option<egui::Color32> {
+        let rgb = match self {
+            Self::Teal => [26, 189, 208],
+            Self::Cyan => [46, 230, 255],
+            Self::Amber => [240, 160, 60],
+            Self::Violet => [160, 130, 235],
+            Self::Custom => return None,
+        };
+        Some(egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]))
     }
 }
 
@@ -357,6 +363,8 @@ pub struct AppSettings {
     pub preview_budget_mb: usize,
     pub image_discovery_options: ImageDiscoveryOptions,
     pub accent_preset: AccentPreset,
+    /// Accent used when `accent_preset` is `Custom`, as sRGB bytes.
+    pub custom_accent: [u8; 3],
 }
 
 impl Default for AppSettings {
@@ -376,7 +384,20 @@ impl Default for AppSettings {
             preview_budget_mb: 200,
             image_discovery_options: ImageDiscoveryOptions::default(),
             accent_preset: AccentPreset::default(),
+            custom_accent: [26, 189, 208],
         }
+    }
+}
+
+#[cfg(feature = "official")]
+impl AppSettings {
+    /// The accent color the UI should use for the current preset.
+    pub(crate) fn accent_color(&self) -> egui::Color32 {
+        self.accent_preset.fixed_color().unwrap_or(egui::Color32::from_rgb(
+            self.custom_accent[0],
+            self.custom_accent[1],
+            self.custom_accent[2],
+        ))
     }
 }
 
@@ -703,15 +724,28 @@ fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiT
             );
             ui.add_space(4.0);
             for preset in AccentPreset::ALL {
+                let swatch = preset.fixed_color().unwrap_or(egui::Color32::from_rgb(
+                    settings.custom_accent[0],
+                    settings.custom_accent[1],
+                    settings.custom_accent[2],
+                ));
                 radio_row(
                     ui,
                     &mut settings.accent_preset,
                     preset,
                     preset.label(),
                     "",
-                    Some(preset.color()),
+                    Some(swatch),
                     theme,
                 );
+            }
+            if settings.accent_preset == AccentPreset::Custom {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(26.0);
+                    ui.label(egui::RichText::new("Pick a color").size(12.0).color(theme.muted));
+                    ui.color_edit_button_srgb(&mut settings.custom_accent);
+                });
             }
         });
     }

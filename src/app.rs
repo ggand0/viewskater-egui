@@ -759,7 +759,7 @@ impl eframe::App for App {
         // build keeps the default teal whatever the settings file says.
         #[cfg(feature = "official")]
         {
-            let accent = self.settings.accent_preset.color();
+            let accent = self.settings.accent_color();
             if self.theme.accent != accent {
                 self.theme.accent = accent;
             }
