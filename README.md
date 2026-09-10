@@ -17,7 +17,7 @@ This is the egui port of the original [iced version](https://github.com/ggand0/v
 
 ## Download
 
-Builds for Windows, macOS and Linux are on [GitHub Releases](https://github.com/ggand0/viewskater-egui/releases). The official build on [viewskater.com](https://viewskater.com/buy) is the same app with a few extra features.
+Builds for Windows, macOS and Linux are on [GitHub Releases](https://github.com/ggand0/viewskater-egui/releases). The official build on [viewskater.com](https://viewskater.com) is the same app with a few extra features.
 
 Or build from source:
 
