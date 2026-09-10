@@ -256,16 +256,16 @@ impl AccentPreset {
         }
     }
 
-    /// Fixed color of a preset. `Custom` has none; see [`AppSettings::accent_color`].
-    pub(crate) fn fixed_color(self) -> Option<egui::Color32> {
+    /// Fixed color of a preset. `Custom` has none; see [`AppSettings::color_of`].
+    fn fixed_color(self) -> Option<egui::Color32> {
         let rgb = match self {
-            Self::Teal => [26, 189, 208],
+            Self::Teal => crate::theme::DEFAULT_ACCENT,
             Self::Cyan => [46, 230, 255],
             Self::Amber => [240, 160, 60],
             Self::Violet => [160, 130, 235],
             Self::Custom => return None,
         };
-        Some(egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]))
+        Some(crate::theme::rgb(rgb))
     }
 }
 
@@ -384,20 +384,23 @@ impl Default for AppSettings {
             preview_budget_mb: 200,
             image_discovery_options: ImageDiscoveryOptions::default(),
             accent_preset: AccentPreset::default(),
-            custom_accent: [26, 189, 208],
+            custom_accent: crate::theme::DEFAULT_ACCENT,
         }
     }
 }
 
 #[cfg(feature = "official")]
 impl AppSettings {
+    /// The color a preset resolves to, using `custom_accent` for `Custom`.
+    pub(crate) fn color_of(&self, preset: AccentPreset) -> egui::Color32 {
+        preset
+            .fixed_color()
+            .unwrap_or_else(|| crate::theme::rgb(self.custom_accent))
+    }
+
     /// The accent color the UI should use for the current preset.
     pub(crate) fn accent_color(&self) -> egui::Color32 {
-        self.accent_preset.fixed_color().unwrap_or(egui::Color32::from_rgb(
-            self.custom_accent[0],
-            self.custom_accent[1],
-            self.custom_accent[2],
-        ))
+        self.color_of(self.accent_preset)
     }
 }
 
@@ -724,11 +727,7 @@ fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiT
             );
             ui.add_space(4.0);
             for preset in AccentPreset::ALL {
-                let swatch = preset.fixed_color().unwrap_or(egui::Color32::from_rgb(
-                    settings.custom_accent[0],
-                    settings.custom_accent[1],
-                    settings.custom_accent[2],
-                ));
+                let swatch = settings.color_of(preset);
                 radio_row(
                     ui,
                     &mut settings.accent_preset,
