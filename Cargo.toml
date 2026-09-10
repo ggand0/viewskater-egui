@@ -5,6 +5,11 @@ edition = "2021"
 description = "Fast image viewer built with egui"
 license = "MIT OR Apache-2.0"
 
+[features]
+# Cosmetics for the store build. A normal `cargo build` never enables it
+# and shows the plain UI.
+official = []
+
 [dependencies]
 eframe = { version = "0.31", default-features = false, features = [
     "accesskit",

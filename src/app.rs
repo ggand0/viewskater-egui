@@ -755,6 +755,16 @@ impl eframe::App for App {
             self.perf.sample_gpu_memory(&render_state.device);
         }
 
+        // Official build: follow the accent preset from settings. The free
+        // build keeps the default teal whatever the settings file says.
+        #[cfg(feature = "official")]
+        {
+            let accent = self.settings.accent_preset.color();
+            if self.theme.accent != accent {
+                self.theme.accent = accent;
+            }
+        }
+
         // Force dark theme every frame (egui_winit can reapply system theme on macOS)
         self.theme.apply_to_visuals(ctx);
 

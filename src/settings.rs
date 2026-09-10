@@ -164,14 +164,16 @@ fn tab_bar(ui: &mut egui::Ui, active: &mut SettingsTab, theme: &UiTheme) {
     ui.add_space(2.0);
 }
 
-/// Custom radio row for GPU memory mode: an accent-colored circle indicator,
-/// a primary label, and a muted description on the next line.
-fn gpu_memory_radio(
+/// Custom radio row: an accent-colored circle indicator, a primary label with
+/// an optional color swatch after it, and a muted description on the next
+/// line. Used for the GPU memory mode and the accent presets.
+fn radio_row<T: PartialEq + Copy>(
     ui: &mut egui::Ui,
-    current: &mut GpuMemoryMode,
-    value: GpuMemoryMode,
+    current: &mut T,
+    value: T,
     label: &str,
     description: &str,
+    swatch: Option<egui::Color32>,
     theme: &UiTheme,
 ) {
     let selected = *current == value;
@@ -196,21 +198,69 @@ fn gpu_memory_radio(
         }
 
         ui.vertical(|ui| {
-            let label_response = ui.add(
-                egui::Label::new(egui::RichText::new(label).size(13.0))
-                    .sense(egui::Sense::click()),
-            );
-            if label_response.clicked() {
-                *current = value;
+            ui.horizontal(|ui| {
+                let label_response = ui.add(
+                    egui::Label::new(egui::RichText::new(label).size(13.0))
+                        .sense(egui::Sense::click()),
+                );
+                if label_response.clicked() {
+                    *current = value;
+                }
+                if let Some(color) = swatch {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect.shrink(1.0), 3.0, color);
+                }
+            });
+            if !description.is_empty() {
+                ui.label(
+                    egui::RichText::new(description)
+                        .size(11.0)
+                        .color(theme.muted),
+                );
             }
-            ui.label(
-                egui::RichText::new(description)
-                    .size(11.0)
-                    .color(theme.muted),
-            );
         });
     });
     ui.add_space(4.0);
+}
+
+/// Accent color preset. Only the official build shows the picker; the free
+/// build keeps the default teal and ignores the stored value, so a settings
+/// file written by either build loads in the other.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccentPreset {
+    /// The teal from the iced version and the free build.
+    #[default]
+    Teal,
+    /// Bright cyan from the icon's foreground trails.
+    Cyan,
+    /// Warm amber, for contrast against photo-heavy screens.
+    Amber,
+    /// Soft violet.
+    Violet,
+}
+
+#[cfg(feature = "official")]
+impl AccentPreset {
+    pub(crate) const ALL: [Self; 4] = [Self::Teal, Self::Cyan, Self::Amber, Self::Violet];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Teal => "Teal",
+            Self::Cyan => "Cyan",
+            Self::Amber => "Amber",
+            Self::Violet => "Violet",
+        }
+    }
+
+    pub(crate) fn color(self) -> egui::Color32 {
+        match self {
+            Self::Teal => egui::Color32::from_rgb(26, 189, 208),
+            Self::Cyan => egui::Color32::from_rgb(46, 230, 255),
+            Self::Amber => egui::Color32::from_rgb(240, 160, 60),
+            Self::Violet => egui::Color32::from_rgb(160, 130, 235),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -306,6 +356,7 @@ pub struct AppSettings {
     pub slider_preview: bool,
     pub preview_budget_mb: usize,
     pub image_discovery_options: ImageDiscoveryOptions,
+    pub accent_preset: AccentPreset,
 }
 
 impl Default for AppSettings {
@@ -324,6 +375,7 @@ impl Default for AppSettings {
             slider_preview: true,
             preview_budget_mb: 200,
             image_discovery_options: ImageDiscoveryOptions::default(),
+            accent_preset: AccentPreset::default(),
         }
     }
 }
@@ -640,6 +692,30 @@ fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiT
         });
     });
 
+    #[cfg(feature = "official")]
+    {
+        ui.add_space(12.0);
+        section(ui, "Theme", None, theme, |ui| {
+            ui.label(
+                egui::RichText::new("Accent Color")
+                    .size(12.0)
+                    .color(theme.muted),
+            );
+            ui.add_space(4.0);
+            for preset in AccentPreset::ALL {
+                radio_row(
+                    ui,
+                    &mut settings.accent_preset,
+                    preset,
+                    preset.label(),
+                    "",
+                    Some(preset.color()),
+                    theme,
+                );
+            }
+        });
+    }
+
     ui.add_space(10.0);
 }
 
@@ -651,28 +727,31 @@ fn render_performance_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: 
                 .color(theme.muted),
         );
         ui.add_space(4.0);
-        gpu_memory_radio(
+        radio_row(
             ui,
             &mut settings.gpu_memory_mode,
             GpuMemoryMode::Performance,
             "Performance",
             "Highest nav speed, largest GPU memory",
+            None,
             theme,
         );
-        gpu_memory_radio(
+        radio_row(
             ui,
             &mut settings.gpu_memory_mode,
             GpuMemoryMode::Balanced,
             "Balanced",
             "Recommended for most users",
+            None,
             theme,
         );
-        gpu_memory_radio(
+        radio_row(
             ui,
             &mut settings.gpu_memory_mode,
             GpuMemoryMode::LowMemory,
             "Low Memory",
             "Lowest GPU memory, slower navigation",
+            None,
             theme,
         );
         ui.add_space(6.0);
