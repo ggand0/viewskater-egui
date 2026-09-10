@@ -1,5 +1,10 @@
 use eframe::egui;
 
+/// Build an opaque color from sRGB bytes.
+pub fn rgb(c: [u8; 3]) -> egui::Color32 {
+    egui::Color32::from_rgb(c[0], c[1], c[2])
+}
+
 /// Centralized color theme for all custom UI elements.
 ///
 /// Built-in egui widgets (sliders, radio buttons, etc.) are themed via
@@ -27,11 +32,14 @@ pub struct UiTheme {
     pub menu_hover: egui::Color32,
 }
 
+/// Default accent, the teal from the iced ViewSkater version, as sRGB bytes.
+pub const DEFAULT_ACCENT: [u8; 3] = [26, 189, 208];
+
 impl UiTheme {
     /// Teal dark theme matching the iced ViewSkater version.
     pub fn teal_dark() -> Self {
         Self {
-            accent: egui::Color32::from_rgb(26, 189, 208),
+            accent: rgb(DEFAULT_ACCENT),
             backdrop: egui::Color32::from_black_alpha(140),
             card_bg: egui::Color32::from_gray(40),
             card_stroke: egui::Color32::from_gray(80),
