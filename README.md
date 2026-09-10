@@ -15,12 +15,14 @@ This is the egui port of the original [iced version](https://github.com/ggand0/v
 - Fullscreen mode with cursor proximity UI reveal
 - Supports jpg, jxl, png, bmp, webp, gif, tiff, qoi, tga
 
-## Installation
+## Download
 
-Download the pre-built binaries from the [releases page](https://github.com/ggand0/viewskater-egui/releases), or build locally:
+Builds for Windows, macOS and Linux are on [GitHub Releases](https://github.com/ggand0/viewskater-egui/releases). The official build on [viewskater.com](https://viewskater.com/buy) is the same app with a few extra features.
+
+Or build from source:
 
 ```bash
-cargo run --release
+cargo run --release --features official
 ```
 
 To see debug logs:
@@ -82,6 +84,10 @@ ViewSkater caches decoded images in RAM for smooth rendering. Both caches are ad
 | LRU decode | Stores visited images for smooth slider scrubbing | 1024 MB budget | LRU Budget (MB) |
 
 Decoded pixels are much larger than compressed files on disk (e.g. a 10 MB PNG at 3840×2160 becomes ~32 MB as raw RGBA), so higher-resolution images use more cache per entry. Current memory usage is shown in the FPS overlay.
+
+## Contributing
+
+Contributions are accepted under MIT or Apache 2.0 and ship in every build, including the official one.
 
 ## License
 
