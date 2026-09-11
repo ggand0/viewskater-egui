@@ -87,7 +87,7 @@ Decoded pixels are much larger than compressed files on disk (e.g. a 10 MB PNG a
 
 ## Contributing
 
-Contributions are accepted under MIT or Apache 2.0 and ship in every build, including the official one.
+Contributions are accepted under MIT or Apache 2.0 and ship in every build. A few features are behind the `official` cargo feature. If your PR improves one of them, that change ships only in the official build, though official features may move to the GitHub Releases builds over time. The source is in this repo, so you can build it yourself. Anyone whose PR is merged gets the official build (email viewskater@ggando.me).
 
 ## License
 
