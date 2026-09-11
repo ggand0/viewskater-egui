@@ -1,3 +1,4 @@
+mod culling;
 mod handlers;
 
 use std::collections::VecDeque;
@@ -309,6 +310,11 @@ pub struct App {
     last_preview_idx: Option<usize>,
     preview_stale_since: Option<(usize, Instant)>,
     preview_bench: Option<crate::bench::preview::PreviewBench>,
+    /// Outcome of the last trash move, painted briefly over the image.
+    toast: Option<culling::Toast>,
+    /// Files waiting for the user to confirm a permanent delete (Windows
+    /// locations without a Recycle Bin).
+    pending_permanent_delete: Option<Vec<PathBuf>>,
 }
 
 impl App {
@@ -349,6 +355,8 @@ impl App {
             last_preview_idx: None,
             preview_stale_since: None,
             preview_bench: None,
+            toast: None,
+            pending_permanent_delete: None,
         };
 
         if !paths.is_empty() {
@@ -916,5 +924,8 @@ impl eframe::App for App {
 
         // About modal (on top of everything)
         about::show_about_modal(ctx, &mut self.show_about, &self.theme);
+
+        self.paint_toast(ctx);
+        self.show_permanent_delete_modal(ctx);
     }
 }

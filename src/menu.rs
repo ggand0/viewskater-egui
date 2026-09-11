@@ -188,6 +188,21 @@ pub(crate) fn show_menu_bar(
             if show_edit {
                 ui.menu_button("Edit", |ui| {
                     let (ml, mw) = setup_menu_hover(ui);
+                    let trash_label = if cfg!(target_os = "macos") {
+                        "Move to Trash  Del / Cmd+Backspace"
+                    } else {
+                        "Move to Trash  Del"
+                    };
+                    hover_row(ui, theme, ml, mw, |ui| {
+                        if ui
+                            .add_enabled(has_images, egui::Button::new(trash_label))
+                            .clicked()
+                        {
+                            action = MenuAction::MoveToTrash;
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
                     hover_row(ui, theme, ml, mw, |ui| {
                         if ui.button("Preferences").clicked() {
                             action = MenuAction::ShowSettings;
@@ -531,4 +546,5 @@ pub(crate) enum MenuAction {
     ShowSettings,
     ShowLogs,
     ExportDebugLogs,
+    MoveToTrash,
 }

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
@@ -21,7 +21,7 @@ pub struct ThumbnailCache {
     cache: HashMap<usize, egui::ColorImage>,
     cache_bytes: usize,
     req_tx: mpsc::Sender<(usize, PathBuf)>,
-    res_rx: mpsc::Receiver<(usize, Option<egui::ColorImage>)>,
+    res_rx: mpsc::Receiver<(usize, PathBuf, Option<egui::ColorImage>)>,
     /// Index of the most recently sent request whose result hasn't arrived
     /// yet. Prevents re-sending the same request every hovered frame, which
     /// made the worker decode the same image twice.
@@ -52,7 +52,7 @@ impl ThumbnailCache {
                         None
                     }
                 };
-                let _ = res_tx.send((latest_idx, thumbnail));
+                let _ = res_tx.send((latest_idx, latest_path, thumbnail));
                 worker_ctx.request_repaint();
             }
         });
@@ -70,12 +70,20 @@ impl ThumbnailCache {
         }
     }
 
-    pub fn poll(&mut self) {
-        while let Ok((idx, img)) = self.res_rx.try_recv() {
+    /// Drain finished thumbnails. `image_paths` is the pane's current list;
+    /// a result whose path no longer sits at its index (the list changed
+    /// under the worker, e.g. a file was moved to the trash) is dropped and
+    /// re-requested on the next hover.
+    pub fn poll(&mut self, image_paths: &[PathBuf]) {
+        while let Ok((idx, path, img)) = self.res_rx.try_recv() {
             // Only clear when it matches: a newer request may already be
             // pending for a different index.
             if self.pending_idx == Some(idx) {
                 self.pending_idx = None;
+            }
+            if image_paths.get(idx) != Some(&path) {
+                log::debug!("thumb drop stale [{}] {}", idx, path.display());
+                continue;
             }
             let Some(img) = img else { continue };
             let img_bytes = img.pixels.len() * 4;
@@ -135,10 +143,42 @@ impl ThumbnailCache {
             evict_thumb_cache(&mut self.cache, &mut self.cache_bytes, center, budget_mb);
         }
     }
+
+    /// The file at `removed` left the list: drop its thumbnail and shift
+    /// every higher index down by one so cached entries keep pointing at
+    /// the same files. A request in flight for the old numbering is
+    /// dropped by `poll` when its path no longer matches.
+    pub fn remove_index(&mut self, removed: usize) {
+        let mut shifted = HashMap::with_capacity(self.cache.len());
+        for (idx, img) in self.cache.drain() {
+            match shift_index(idx, removed) {
+                Some(new_idx) => {
+                    shifted.insert(new_idx, img);
+                }
+                None => self.cache_bytes -= img.pixels.len() * 4,
+            }
+        }
+        self.cache = shifted;
+        self.texture_idx = self.texture_idx.and_then(|i| shift_index(i, removed));
+        self.pending_idx = None;
+    }
+}
+
+/// Index of a file after the file at `removed` left the list. `None` for
+/// the removed file itself.
+fn shift_index(idx: usize, removed: usize) -> Option<usize> {
+    use std::cmp::Ordering;
+    match idx.cmp(&removed) {
+        Ordering::Less => Some(idx),
+        Ordering::Equal => None,
+        Ordering::Greater => Some(idx - 1),
+    }
 }
 
 pub struct DecodeResult {
-    pub file_index: usize,
+    /// Path the thread decoded. The file index is looked up from it on
+    /// arrival, because the list may have changed while decoding.
+    pub path: PathBuf,
     pub image: Option<egui::ColorImage>,
     pub decode_ms: f64,
 }
@@ -156,7 +196,11 @@ pub struct SlidingWindowCache {
 
     tx: mpsc::Sender<DecodeResult>,
     rx: mpsc::Receiver<DecodeResult>,
-    in_flight: HashSet<usize>,
+    /// Decodes running on a thread, keyed by path with the file index the
+    /// result belongs to. The index is updated by `remove_index`, so a
+    /// result that arrives after the list changed still lands in the
+    /// right slot, and a result for a path no longer tracked is dropped.
+    in_flight: HashMap<PathBuf, usize>,
 
     /// Completed decodes waiting for GPU upload. `poll()` drains `rx` into
     /// this queue and uploads up to `UPLOADS_PER_FRAME` per frame.
@@ -188,7 +232,7 @@ impl SlidingWindowCache {
             cache_count,
             tx,
             rx,
-            in_flight: HashSet::new(),
+            in_flight: HashMap::new(),
             pending_uploads: VecDeque::new(),
             pending_decodes: VecDeque::new(),
             max_decode_threads: decode_threads,
@@ -251,20 +295,23 @@ impl SlidingWindowCache {
     pub fn poll(&mut self, image_paths: &[PathBuf]) {
         // Phase 1: drain decode results into the upload queue.
         while let Ok(result) = self.rx.try_recv() {
-            self.in_flight.remove(&result.file_index);
+            let Some(file_index) = self.in_flight.remove(&result.path) else {
+                log::debug!("bg decode drop stale {}", result.path.display());
+                continue;
+            };
             if let Some(color_image) = result.image {
                 log::debug!(
                     "bg decode [{}]: {:.1}ms",
-                    result.file_index,
+                    file_index,
                     result.decode_ms,
                 );
                 let name = image_paths
-                    .get(result.file_index)
+                    .get(file_index)
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 self.pending_uploads
-                    .push_back((result.file_index, color_image, name));
+                    .push_back((file_index, color_image, name));
             }
 
             // A decode slot freed up — spawn the next queued decode if any.
@@ -355,6 +402,70 @@ impl SlidingWindowCache {
         self.initialize(new_index, image_paths);
     }
 
+    /// The file at `removed` left the list. `image_paths` is the list after
+    /// removal. Every file above `removed` now has an index one lower, so
+    /// the window and all bookkeeping shift with it; nothing is re-decoded
+    /// except the one file that enters the window to fill the gap.
+    ///
+    /// Three cases for the window `[first, first + size)`:
+    /// - `removed < first`: the window's files are unchanged, only their
+    ///   numbering moved. Decrement `first`.
+    /// - inside the window: drop that slot. Fill from the right if the
+    ///   list still has a file there, else from the left if the window
+    ///   can move back, else leave an empty slot (list shorter than the
+    ///   window).
+    /// - `removed` past the window: nothing changes.
+    pub fn remove_index(&mut self, removed: usize, image_paths: &[PathBuf]) {
+        let num_files = image_paths.len();
+        let size = self.slots.len();
+        let first = self.first_file_index;
+
+        // Renumber everything that still refers to file indices before
+        // any new load is queued, so the fill load below keeps its index.
+        // Entries for the removed file are dropped; a thread still
+        // decoding it reports a path no longer in `in_flight` and `poll`
+        // ignores it.
+        self.in_flight.retain(|_, idx| match shift_index(*idx, removed) {
+            Some(new_idx) => {
+                *idx = new_idx;
+                true
+            }
+            None => false,
+        });
+        self.pending_decodes.retain_mut(|(idx, _)| match shift_index(*idx, removed) {
+            Some(new_idx) => {
+                *idx = new_idx;
+                true
+            }
+            None => false,
+        });
+        self.pending_uploads.retain_mut(|(idx, _, _)| match shift_index(*idx, removed) {
+            Some(new_idx) => {
+                *idx = new_idx;
+                true
+            }
+            None => false,
+        });
+
+        if removed < first {
+            self.first_file_index = first - 1;
+        } else if removed < first + size {
+            self.slots.remove(removed - first);
+            let right = first + size - 1;
+            if right < num_files {
+                self.slots.push_back(None);
+                self.spawn_load(right, &image_paths[right]);
+            } else if first > 0 {
+                self.first_file_index = first - 1;
+                self.slots.push_front(None);
+                let left = self.first_file_index;
+                self.spawn_load(left, &image_paths[left]);
+            } else {
+                self.slots.push_back(None);
+            }
+        }
+    }
+
     /// Change the sliding window half-size and reinitialize around current position.
     pub fn set_cache_count(
         &mut self,
@@ -401,6 +512,11 @@ impl SlidingWindowCache {
         self.total_bytes() as f64 / (1024.0 * 1024.0)
     }
 
+    #[cfg(test)]
+    pub(crate) fn first_file_index_for_test(&self) -> usize {
+        self.first_file_index
+    }
+
     /// Get the TextureHandle for a given file index, if cached.
     pub fn current_texture_for(&self, file_index: usize) -> Option<egui::TextureHandle> {
         let slot_idx = file_index.checked_sub(self.first_file_index)?;
@@ -424,7 +540,7 @@ impl SlidingWindowCache {
     /// threads are running, spawns immediately; otherwise queues until a
     /// slot opens in `poll`.
     fn spawn_load(&mut self, file_index: usize, path: &Path) {
-        if self.in_flight.contains(&file_index) {
+        if self.in_flight.contains_key(path) {
             return;
         }
         if self.pending_decodes.iter().any(|(idx, _)| *idx == file_index) {
@@ -440,7 +556,7 @@ impl SlidingWindowCache {
 
     /// Actually spawn the decode thread.
     fn spawn_thread(&mut self, file_index: usize, path: &Path) {
-        self.in_flight.insert(file_index);
+        self.in_flight.insert(path.to_path_buf(), file_index);
 
         let path = path.to_path_buf();
         let tx = self.tx.clone();
@@ -457,7 +573,7 @@ impl SlidingWindowCache {
             };
             let decode_ms = start.elapsed().as_secs_f64() * 1000.0;
             let _ = tx.send(DecodeResult {
-                file_index,
+                path,
                 image,
                 decode_ms,
             });
@@ -518,7 +634,7 @@ impl SlidingWindowCache {
                     let file_index = self.first_file_index + i;
                     let is_current = file_index == current_index;
                     let is_loaded = self.slots.get(i).is_some_and(|s| s.is_some());
-                    let is_in_flight = self.in_flight.contains(&file_index);
+                    let is_in_flight = self.in_flight.values().any(|&i| i == file_index);
                     let is_valid = file_index < num_files;
 
                     let x = area.min.x + i as f32 * (cell_w + gap);
@@ -734,6 +850,26 @@ impl DecodeLruCache {
         self.total_bytes as f64 / (1024.0 * 1024.0)
     }
 
+    /// The file at `removed` left the list: drop its texture and shift
+    /// every higher key down by one. LRU order is preserved.
+    pub fn remove_index(&mut self, removed: usize) {
+        if let Some(handle) = self.entries.remove(&removed) {
+            self.total_bytes -= Self::handle_bytes(&handle);
+        }
+        let mut shifted = HashMap::with_capacity(self.entries.len());
+        for (idx, handle) in self.entries.drain() {
+            if let Some(new_idx) = shift_index(idx, removed) {
+                shifted.insert(new_idx, handle);
+            }
+        }
+        self.entries = shifted;
+        self.order = self
+            .order
+            .iter()
+            .filter_map(|&idx| shift_index(idx, removed))
+            .collect();
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
@@ -913,4 +1049,338 @@ mod tests {
         assert_eq!(bytes, actual);
     }
 
+    // ---- index removal -------------------------------------------------
+    //
+    // A file leaves the list (moved to the trash). Every structure keyed by
+    // file index must keep pointing at the same files afterwards.
+
+    #[test]
+    fn shift_index_maps_around_the_removed_file() {
+        assert_eq!(shift_index(0, 3), Some(0));
+        assert_eq!(shift_index(2, 3), Some(2));
+        assert_eq!(shift_index(3, 3), None);
+        assert_eq!(shift_index(4, 3), Some(3));
+        assert_eq!(shift_index(100, 3), Some(99));
+        assert_eq!(shift_index(0, 0), None);
+        assert_eq!(shift_index(1, 0), Some(0));
+    }
+
+    fn one_pixel() -> egui::ColorImage {
+        egui::ColorImage::new([1, 1], egui::Color32::WHITE)
+    }
+
+    fn fake_paths(n: usize) -> Vec<PathBuf> {
+        (0..n).map(|i| PathBuf::from(format!("/nonexistent/f{i}.png"))).collect()
+    }
+
+    /// Texture named after the original file index, so the mapping can be
+    /// checked by name after a removal.
+    fn tex(ctx: &egui::Context, original_index: usize) -> egui::TextureHandle {
+        ctx.load_texture(format!("f{original_index}"), one_pixel(), egui::TextureOptions::LINEAR)
+    }
+
+    /// Window over files [first, first + 2 * cache_count + 1), every slot
+    /// loaded with a texture named after its original file index.
+    fn window(ctx: &egui::Context, cache_count: usize, first: usize) -> SlidingWindowCache {
+        let mut c = SlidingWindowCache::new(ctx, cache_count, 1);
+        c.first_file_index = first;
+        for (k, slot) in c.slots.iter_mut().enumerate() {
+            *slot = Some(tex(ctx, first + k));
+        }
+        c
+    }
+
+    /// Every loaded slot must hold the texture of the file that now has
+    /// that index: original index `i` for `i < removed`, `i + 1` above.
+    fn assert_slots_consistent(c: &SlidingWindowCache, removed: usize) {
+        for (k, slot) in c.slots.iter().enumerate() {
+            let new_index = c.first_file_index + k;
+            let original = if new_index >= removed { new_index + 1 } else { new_index };
+            if let Some(t) = slot {
+                assert_eq!(
+                    t.name(),
+                    format!("f{original}"),
+                    "slot {k} (file {new_index}) holds the wrong texture"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn remove_before_window_shifts_first_only() {
+        let ctx = egui::Context::default();
+        let paths = fake_paths(20);
+        let mut c = window(&ctx, 2, 10); // files 10..14
+        let before: Vec<_> = c.slots.iter().map(|s| s.as_ref().unwrap().name()).collect();
+
+        let mut after = paths.clone();
+        after.remove(3);
+        c.remove_index(3, &after);
+
+        assert_eq!(c.first_file_index, 9);
+        let now: Vec<_> = c.slots.iter().map(|s| s.as_ref().unwrap().name()).collect();
+        assert_eq!(now, before, "slot contents must not change");
+        assert_slots_consistent(&c, 3);
+        assert!(c.in_flight.is_empty(), "nothing to load when the window is untouched");
+    }
+
+    #[test]
+    fn remove_after_window_changes_nothing() {
+        let ctx = egui::Context::default();
+        let paths = fake_paths(20);
+        let mut c = window(&ctx, 2, 3); // files 3..7
+        let before: Vec<_> = c.slots.iter().map(|s| s.as_ref().unwrap().name()).collect();
+
+        let mut after = paths.clone();
+        after.remove(15);
+        c.remove_index(15, &after);
+
+        assert_eq!(c.first_file_index, 3);
+        let now: Vec<_> = c.slots.iter().map(|s| s.as_ref().unwrap().name()).collect();
+        assert_eq!(now, before);
+        assert!(c.in_flight.is_empty());
+    }
+
+    #[test]
+    fn remove_center_fills_from_the_right() {
+        let ctx = egui::Context::default();
+        let paths = fake_paths(20);
+        let mut c = window(&ctx, 2, 5); // files 5..9, center 7
+
+        let mut after = paths.clone();
+        after.remove(7);
+        c.remove_index(7, &after);
+
+        assert_eq!(c.first_file_index, 5);
+        assert_eq!(c.slots.len(), 5);
+        assert_slots_consistent(&c, 7);
+        // Slot 4 is now file 9 (originally f10) and is being loaded.
+        assert!(c.slots[4].is_none());
+        assert_eq!(c.in_flight.get(&after[9]), Some(&9));
+        // The first four slots kept their textures: f5 f6 f8 f9.
+        let names: Vec<_> = c.slots.iter().take(4).map(|s| s.as_ref().unwrap().name()).collect();
+        assert_eq!(names, ["f5", "f6", "f8", "f9"]);
+    }
+
+    #[test]
+    fn remove_first_slot_fills_from_the_right() {
+        let ctx = egui::Context::default();
+        let paths = fake_paths(20);
+        let mut c = window(&ctx, 2, 5);
+
+        let mut after = paths.clone();
+        after.remove(5);
+        c.remove_index(5, &after);
+
+        assert_eq!(c.first_file_index, 5);
+        assert_slots_consistent(&c, 5);
+        let names: Vec<_> = c.slots.iter().take(4).map(|s| s.as_ref().unwrap().name()).collect();
+        assert_eq!(names, ["f6", "f7", "f8", "f9"]);
+        assert!(c.slots[4].is_none());
+    }
+
+    #[test]
+    fn remove_at_end_of_list_fills_from_the_left() {
+        let ctx = egui::Context::default();
+        let paths = fake_paths(10);
+        let mut c = window(&ctx, 2, 5); // files 5..9, the last five files
+
+        let mut after = paths.clone();
+        after.remove(9); // last file
+        c.remove_index(9, &after);
+
+        // No file 9 exists any more, so the window slides back to 4..8.
+        assert_eq!(c.first_file_index, 4);
+        assert_eq!(c.slots.len(), 5);
+        assert!(c.slots[0].is_none(), "new leftmost slot is loading");
+        assert_eq!(c.in_flight.get(&after[4]), Some(&4));
+        let names: Vec<_> = c.slots.iter().skip(1).map(|s| s.as_ref().unwrap().name()).collect();
+        assert_eq!(names, ["f5", "f6", "f7", "f8"]);
+        assert_slots_consistent(&c, 9);
+    }
+
+    #[test]
+    fn remove_when_list_is_shorter_than_window_leaves_empty_slot() {
+        let ctx = egui::Context::default();
+        let paths = fake_paths(3);
+        let mut c = SlidingWindowCache::new(&ctx, 2, 1); // 5 slots, 3 files
+        for k in 0..3 {
+            c.slots[k] = Some(tex(&ctx, k));
+        }
+
+        let mut after = paths.clone();
+        after.remove(1);
+        c.remove_index(1, &after);
+
+        assert_eq!(c.first_file_index, 0);
+        assert_eq!(c.slots.len(), 5);
+        let names: Vec<_> = c.slots.iter().map(|s| s.as_ref().map(|t| t.name())).collect();
+        assert_eq!(names, [Some("f0".into()), Some("f2".into()), None, None, None]);
+        assert!(c.in_flight.is_empty(), "nothing exists to load");
+    }
+
+    #[test]
+    fn remove_only_file_leaves_no_bookkeeping() {
+        let ctx = egui::Context::default();
+        let mut c = SlidingWindowCache::new(&ctx, 2, 1);
+        c.slots[0] = Some(tex(&ctx, 0));
+
+        c.remove_index(0, &[]);
+
+        assert_eq!(c.first_file_index, 0);
+        assert!(c.slots.iter().all(|s| s.is_none()));
+        assert!(c.in_flight.is_empty());
+        assert!(c.pending_decodes.is_empty());
+        assert!(c.pending_uploads.is_empty());
+    }
+
+    #[test]
+    fn remove_renumbers_in_flight_and_queues() {
+        let ctx = egui::Context::default();
+        let paths = fake_paths(20);
+        let mut c = window(&ctx, 2, 5); // files 5..9
+        c.max_decode_threads = 4;
+        c.slots[3] = None; // file 8 loading
+        c.slots[4] = None; // file 9 queued
+        c.in_flight.insert(paths[8].clone(), 8);
+        c.pending_decodes.push_back((9, paths[9].clone()));
+        c.pending_uploads.push_back((6, one_pixel(), "f6".into()));
+        c.pending_uploads.push_back((7, one_pixel(), "f7".into()));
+
+        let mut after = paths.clone();
+        after.remove(7);
+        c.remove_index(7, &after);
+
+        // in_flight: file 8 is now 7; plus the new rightmost (9, was f10).
+        assert_eq!(c.in_flight.get(&paths[8]), Some(&7));
+        assert_eq!(c.in_flight.get(&paths[10]), Some(&9));
+        assert_eq!(c.in_flight.len(), 2);
+        // queued decode for file 9 is now 8
+        assert_eq!(c.pending_decodes.len(), 1);
+        assert_eq!(c.pending_decodes[0].0, 8);
+        // upload for the removed file is dropped, the one for 6 stays
+        let uploads: Vec<_> = c.pending_uploads.iter().map(|(i, _, _)| *i).collect();
+        assert_eq!(uploads, [6]);
+    }
+
+    #[test]
+    fn stale_decode_result_is_dropped_by_poll() {
+        let ctx = egui::Context::default();
+        let paths = fake_paths(20);
+        let mut c = window(&ctx, 2, 5);
+        c.slots[3] = None;
+        c.in_flight.insert(paths[8].clone(), 8);
+
+        let mut after = paths.clone();
+        after.remove(8); // the file being decoded is the one removed
+        c.remove_index(8, &after);
+        assert!(c.in_flight.get(&paths[8]).is_none());
+
+        // The thread finishes and reports the old path.
+        c.tx.send(DecodeResult { path: paths[8].clone(), image: Some(one_pixel()), decode_ms: 0.0 })
+            .unwrap();
+        c.poll(&after);
+
+        assert!(c.pending_uploads.is_empty(), "stale result must not be uploaded");
+        // Slot 3 is now file 8 (originally f9), which had a texture.
+        assert_eq!(c.slots[3].as_ref().unwrap().name(), "f9");
+    }
+
+    #[test]
+    fn renumbered_decode_result_lands_in_the_right_slot() {
+        let ctx = egui::Context::default();
+        let paths = fake_paths(20);
+        let mut c = window(&ctx, 2, 5);
+        c.slots[4] = None; // file 9 loading
+        c.in_flight.insert(paths[9].clone(), 9);
+
+        let mut after = paths.clone();
+        after.remove(6);
+        c.remove_index(6, &after); // file 9 is now file 8, slot 3
+
+        c.tx.send(DecodeResult { path: paths[9].clone(), image: Some(one_pixel()), decode_ms: 0.0 })
+            .unwrap();
+        c.poll(&after);
+
+        assert_eq!(c.pending_uploads.len(), 0, "uploaded within the frame");
+        assert!(c.slots[3].is_some(), "result went to the renumbered slot");
+        assert_eq!(c.current_texture_for(8).unwrap().name(), "f9.png");
+    }
+
+    #[test]
+    fn lru_remove_index_shifts_keys_and_keeps_order() {
+        let ctx = egui::Context::default();
+        let mut lru = DecodeLruCache::new(&ctx, 1024);
+        for i in [2usize, 5, 7, 9] {
+            let _ = lru.insert(i, format!("f{i}"), one_pixel());
+        }
+        let bytes_before = lru.total_bytes;
+
+        lru.remove_index(5);
+
+        assert_eq!(lru.len(), 3);
+        assert_eq!(lru.total_bytes, bytes_before - 4);
+        assert_eq!(lru.entries[&2].name(), "f2");
+        assert_eq!(lru.entries[&6].name(), "f7");
+        assert_eq!(lru.entries[&8].name(), "f9");
+        assert!(!lru.entries.contains_key(&5));
+        assert_eq!(lru.order, [2, 6, 8]);
+
+        // A removal outside the cached keys still renumbers those above.
+        lru.remove_index(0);
+        assert_eq!(lru.order, [1, 5, 7]);
+        assert_eq!(lru.entries[&7].name(), "f9");
+        assert_eq!(lru.total_bytes, bytes_before - 4);
+    }
+
+    #[test]
+    fn thumbnail_remove_index_shifts_keys_and_displayed_index() {
+        let ctx = egui::Context::default();
+        let mut tc = ThumbnailCache::new(&ctx, 0);
+        insert(&mut tc.cache, &mut tc.cache_bytes, 3, 64);
+        insert(&mut tc.cache, &mut tc.cache_bytes, 4, 64);
+        insert(&mut tc.cache, &mut tc.cache_bytes, 9, 64);
+        tc.texture_idx = Some(9);
+        tc.pending_idx = Some(6);
+
+        tc.remove_index(4);
+
+        let mut keys: Vec<_> = tc.cache.keys().copied().collect();
+        keys.sort();
+        assert_eq!(keys, [3, 8]);
+        assert_eq!(tc.cache_bytes, 128);
+        assert_eq!(tc.texture_idx, Some(8));
+        assert_eq!(tc.pending_idx, None);
+
+        // Removing the displayed thumbnail clears the displayed index.
+        tc.remove_index(8);
+        assert_eq!(tc.texture_idx, None);
+        let keys: Vec<_> = tc.cache.keys().copied().collect();
+        assert_eq!(keys, [3]);
+    }
+
+    #[test]
+    fn thumbnail_poll_drops_result_whose_path_moved() {
+        let ctx = egui::Context::default();
+        let mut tc = ThumbnailCache::new(&ctx, 0);
+        let paths = fake_paths(5);
+        let (res_tx, res_rx) = mpsc::channel();
+        tc.res_rx = res_rx;
+        tc.pending_idx = Some(3);
+
+        // The worker finished index 3 for the old list; file 1 was removed
+        // meanwhile so that path now sits at index 2.
+        let mut after = paths.clone();
+        after.remove(1);
+        res_tx.send((3, paths[3].clone(), Some(one_pixel()))).unwrap();
+        tc.poll(&after);
+
+        assert!(tc.cache.is_empty(), "stale thumbnail must not be cached");
+        assert_eq!(tc.pending_idx, None, "the pending marker still clears");
+
+        // A result that still matches its index is accepted.
+        res_tx.send((2, after[2].clone(), Some(one_pixel()))).unwrap();
+        tc.poll(&after);
+        assert!(tc.cache.contains_key(&2));
+    }
 }

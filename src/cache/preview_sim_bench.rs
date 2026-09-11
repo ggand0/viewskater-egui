@@ -85,23 +85,24 @@ fn attach_decode_counter(tc: &mut ThumbnailCache) -> Arc<AtomicUsize> {
 
 /// One simulated UI frame: poll results, query the hovered thumbnail,
 /// wait one frame interval.
-fn sim_frame(tc: &mut ThumbnailCache, idx: usize, path: &Path, legacy: bool) {
+fn sim_frame(tc: &mut ThumbnailCache, paths: &[PathBuf], idx: usize, legacy: bool) {
+    let path = &paths[idx];
     if legacy {
         tc.pending_idx = None; // defeat dedup → pre-fix per-frame resend
     }
-    tc.poll();
+    tc.poll(paths);
     let _ = tc.current_thumbnail_for(idx, path);
     std::thread::sleep(FRAME);
 }
 
 /// Keep polling until the worker has been idle ~0.5 s, so trailing
 /// (possibly redundant) decodes are counted.
-fn settle(tc: &mut ThumbnailCache, counter: &AtomicUsize) {
+fn settle(tc: &mut ThumbnailCache, paths: &[PathBuf], counter: &AtomicUsize) {
     let mut last = counter.load(AtomicOrdering::Relaxed);
     let mut idle_frames = 0;
     while idle_frames < 30 {
         std::thread::sleep(FRAME);
-        tc.poll();
+        tc.poll(paths);
         let now = counter.load(AtomicOrdering::Relaxed);
         if now == last {
             idle_frames += 1;
@@ -124,17 +125,17 @@ fn simulate_hover(paths: &[PathBuf], targets: &[usize], legacy: bool) -> SimStat
     for &idx in targets {
         let mut frames = 0u32;
         while !tc.cache.contains_key(&idx) {
-            sim_frame(&mut tc, idx, &paths[idx], legacy);
+            sim_frame(&mut tc, paths, idx, legacy);
             frames += 1;
             assert!(frames < 600, "thumbnail [{idx}] never became ready");
         }
         frames_to_ready.push(frames);
         for _ in 0..5 {
-            sim_frame(&mut tc, idx, &paths[idx], legacy);
+            sim_frame(&mut tc, paths, idx, legacy);
         }
     }
     let elapsed = start.elapsed();
-    settle(&mut tc, &counter);
+    settle(&mut tc, paths, &counter);
 
     SimStats {
         decodes: counter.load(AtomicOrdering::Relaxed),
@@ -151,10 +152,10 @@ fn simulate_sweep(paths: &[PathBuf], passes: usize, legacy: bool) -> (usize, usi
 
     for _ in 0..passes {
         for idx in 0..paths.len() {
-            sim_frame(&mut tc, idx, &paths[idx], legacy);
+            sim_frame(&mut tc, paths, idx, legacy);
         }
     }
-    settle(&mut tc, &counter);
+    settle(&mut tc, paths, &counter);
     (counter.load(AtomicOrdering::Relaxed), tc.cache.len())
 }
 

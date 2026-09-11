@@ -111,7 +111,31 @@ impl App {
             MenuAction::ExportDebugLogs => {
                 crate::file_io::export_and_open_debug_logs(&self.log_buffer);
             }
+            MenuAction::MoveToTrash => self.trash_current_images(ctx),
         }
+    }
+
+    /// Delete (any platform) or Cmd+Backspace (macOS, the Finder shortcut)
+    /// was pressed this frame. Key repeats are ignored on purpose: holding
+    /// the key must not trash a run of files.
+    fn trash_key_pressed(ctx: &egui::Context) -> bool {
+        ctx.input(|i| {
+            i.events.iter().any(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } => {
+                    *key == egui::Key::Delete
+                        || (cfg!(target_os = "macos")
+                            && *key == egui::Key::Backspace
+                            && modifiers.command)
+                }
+                _ => false,
+            })
+        })
     }
 
     /// Apply slider result to all panes (synced mode).
@@ -313,7 +337,12 @@ impl App {
         let use_selection = self.dual_pane_mode == DualPaneMode::Independent;
         let is_active = |p: &Pane| !use_selection || p.selected;
 
-        if self.show_settings || self.show_about {
+        if self.show_settings || self.show_about || self.pending_permanent_delete.is_some() {
+            return;
+        }
+
+        if Self::trash_key_pressed(ctx) {
+            self.trash_current_images(ctx);
             return;
         }
 
