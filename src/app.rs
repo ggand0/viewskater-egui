@@ -14,6 +14,7 @@ use crate::pane::Pane;
 use crate::perf;
 use crate::settings::{self, AppSettings, ImageSortOrder};
 use crate::theme::UiTheme;
+use crate::window_state::{self, NormalWindowGeometry};
 
 /// Target window size in physical pixels (matches iced version behavior).
 const DEFAULT_WINDOW_WIDTH: f32 = 1280.0;
@@ -300,15 +301,17 @@ pub struct App {
     pub(crate) theme: UiTheme,
     pub(crate) show_settings: bool,
     pub(crate) show_about: bool,
-    pub(crate) is_fullscreen: bool,
     pub(crate) menu_open: bool,
     pub(crate) log_buffer: Arc<Mutex<VecDeque<String>>>,
-    initial_size_set: bool,
+    needs_dpi_resize: bool,
     title: Option<String>,
     file_receiver: Receiver<PathBuf>,
     last_preview_idx: Option<usize>,
     preview_stale_since: Option<(usize, Instant)>,
     preview_bench: Option<crate::bench::preview::PreviewBench>,
+    /// Last geometry seen while the window was in its normal state; what
+    /// gets persisted for the next launch.
+    window_geometry: Option<NormalWindowGeometry>,
 }
 
 impl App {
@@ -318,6 +321,7 @@ impl App {
         log_buffer: Arc<Mutex<VecDeque<String>>>,
         settings: AppSettings,
         file_receiver: Receiver<PathBuf>,
+        needs_dpi_resize: bool,
         bench_preview: bool,
     ) -> Self {
         let theme = UiTheme::teal_dark();
@@ -340,15 +344,15 @@ impl App {
             theme,
             show_settings: false,
             show_about: false,
-            is_fullscreen: false,
             menu_open: false,
             log_buffer,
-            initial_size_set: false,
+            needs_dpi_resize,
             title: None,
             file_receiver,
             last_preview_idx: None,
             preview_stale_since: None,
             preview_bench: None,
+            window_geometry: None,
         };
 
         if !paths.is_empty() {
@@ -768,11 +772,11 @@ impl eframe::App for App {
         // Force dark theme every frame (egui_winit can reapply system theme on macOS)
         self.theme.apply_to_visuals(ctx);
 
-        // On first frame, resize to achieve the target physical pixel size.
-        // egui's with_inner_size uses logical points, so on scaled displays
-        // (e.g. 1.25x) 1280x720 logical becomes 1600x900 physical. The iced
-        // version uses PhysicalSize directly, so it doesn't have this issue.
-        if !self.initial_size_set {
+        // On first launch (no persisted state), resize to achieve the target
+        // physical pixel size. egui's with_inner_size uses logical points, so
+        // on scaled displays (e.g. 1.25x) 1280x720 logical becomes 1600x900
+        // physical. Skip when eframe persistence restored a previous size.
+        if self.needs_dpi_resize {
             if let Some(ppp) = ctx.input(|i| i.viewport().native_pixels_per_point) {
                 if (ppp - 1.0).abs() > 0.01 {
                     let logical = egui::vec2(
@@ -782,7 +786,13 @@ impl eframe::App for App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(logical));
                 }
             }
-            self.initial_size_set = true;
+            self.needs_dpi_resize = false;
+        }
+
+        // Track the normal-state geometry so save() persists the size and
+        // position from before any maximize or fullscreen, not at quit.
+        if let Some(geometry) = NormalWindowGeometry::capture(ctx, frame) {
+            self.window_geometry = Some(geometry);
         }
 
         for pane in &mut self.panes {
@@ -795,8 +805,9 @@ impl eframe::App for App {
         self.handle_keyboard(ctx);
         self.update_title(ctx);
 
+        let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
         // Detect cursor proximity to screen edges for fullscreen UI reveal
-        let (cursor_near_top, cursor_near_bottom) = if self.is_fullscreen {
+        let (cursor_near_top, cursor_near_bottom) = if is_fullscreen {
             let screen = ctx.screen_rect();
             ctx.input(|i| {
                 if let Some(pos) = i.pointer.hover_pos() {
@@ -822,9 +833,9 @@ impl eframe::App for App {
 
         // Menu bar (top) — in fullscreen, revealed when cursor near top edge
         // or when a menu dropdown is open (so user can interact with items)
-        let show_menu = !self.is_fullscreen || cursor_near_top || self.menu_open;
+        let show_menu = !is_fullscreen || cursor_near_top || self.menu_open;
         if show_menu {
-            let fps_text = if self.settings.show_fps && !self.is_fullscreen {
+            let fps_text = if self.settings.show_fps && !is_fullscreen {
                 Some(self.perf.fps_text(cache_mb))
             } else {
                 None
@@ -834,7 +845,7 @@ impl eframe::App for App {
             let mut menu_state = menu::MenuBarState {
                 settings: &mut self.settings,
                 current_sort: &mut self.current_sort,
-                is_fullscreen: self.is_fullscreen,
+                is_fullscreen,
             };
             let (action, menu_is_open) = menu::show_menu_bar(
                 ctx,
@@ -857,12 +868,12 @@ impl eframe::App for App {
         }
 
         // Footer — in fullscreen, revealed when cursor near bottom edge
-        if self.settings.show_footer && (!self.is_fullscreen || cursor_near_bottom) {
+        if self.settings.show_footer && (!is_fullscreen || cursor_near_bottom) {
             menu::show_footer(ctx, &self.panes, self.divider_fraction);
         }
 
         // Slider panel — in fullscreen, revealed when cursor near bottom edge
-        if !self.is_fullscreen || cursor_near_bottom {
+        if !is_fullscreen || cursor_near_bottom {
             self.show_slider_panel(ctx);
         }
 
@@ -870,7 +881,7 @@ impl eframe::App for App {
         self.show_central_panel(ctx);
 
         // FPS overlay in fullscreen (painted over central panel, top-right corner)
-        if self.is_fullscreen && self.settings.show_fps {
+        if is_fullscreen && self.settings.show_fps {
             let fps = self.perf.fps_text(cache_mb);
             let screen = ctx.screen_rect();
             let font = egui::FontId::monospace(14.0);
@@ -916,5 +927,17 @@ impl eframe::App for App {
 
         // About modal (on top of everything)
         about::show_about_modal(ctx, &mut self.show_about, &self.theme);
+    }
+
+    /// Called by eframe on exit and at its autosave interval, after it has
+    /// written its own entries and before the storage is flushed.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if let Some(geometry) = self.window_geometry {
+            eframe::set_value(
+                storage,
+                window_state::EFRAME_WINDOW_KEY,
+                &geometry.to_window_settings(),
+            );
+        }
     }
 }

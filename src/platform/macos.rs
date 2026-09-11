@@ -24,10 +24,11 @@ use objc2::declare::ClassBuilder;
 use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::{AnyClass, AnyObject, NSObject, Sel};
 use objc2::{msg_send, msg_send_id, sel, ClassType};
-use objc2_app_kit::NSApplication;
+use objc2_app_kit::{NSApplication, NSView, NSWindow};
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSDictionary, NSNotificationCenter, NSString, NSUserDefaults,
 };
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 static FILE_CHANNEL: OnceLock<Sender<PathBuf>> = OnceLock::new();
 static LAUNCH_OBSERVER: OnceLock<usize> = OnceLock::new();
@@ -202,4 +203,28 @@ unsafe fn build_observer_class() -> &'static AnyClass {
 /// through whichever swizzle ran first; both install the same method.
 pub fn register_file_handler() {
     swizzle_delegate();
+}
+
+/// The NSWindow behind an eframe frame.
+fn ns_window(frame: &eframe::Frame) -> Option<Retained<NSWindow>> {
+    let handle = frame.window_handle().ok()?;
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return None;
+    };
+    let ns_view: &NSView = unsafe { &*(appkit.ns_view.as_ptr() as *const NSView) };
+    ns_view.window()
+}
+
+/// Whether the window is zoomed or a resize is in flight.
+///
+/// Used by window-state persistence to tell a normal frame from one that
+/// should not be recorded. `isZoomed` only becomes true once the zoom
+/// animation has landed; AppKit runs that animation (and the un-zoom one)
+/// as a live resize, so `inLiveResize` covers every frame in between, the
+/// same way it covers a user dragging an edge.
+pub fn window_zoomed_or_resizing(frame: &eframe::Frame) -> bool {
+    let Some(window) = ns_window(frame) else {
+        return false;
+    };
+    window.isZoomed() || unsafe { window.inLiveResize() }
 }

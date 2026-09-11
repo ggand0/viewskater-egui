@@ -17,8 +17,10 @@ eframe = { version = "0.31", default-features = false, features = [
     "wgpu",
     "wayland",
     "x11",
+    "persistence",
 ] }
 egui = "0.31"
+egui-winit = { version = "0.31", default-features = false }
 image = { version = "0.25", default-features = false, features = [
     "jpeg",
     "png",
@@ -57,7 +59,10 @@ objc2-foundation = { version = "0.2", features = [
 objc2-app-kit = { version = "0.2", features = [
     "NSApplication",
     "NSResponder",
+    "NSView",
+    "NSWindow",
 ] }
+raw-window-handle = "0.6"
 
 [build-dependencies]
 chrono = "0.4"
