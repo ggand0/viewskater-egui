@@ -190,7 +190,7 @@ fn remove_before_window_shifts_first_only() {
     let now: Vec<_> = c.slots.iter().map(|s| s.as_ref().unwrap().name()).collect();
     assert_eq!(now, before, "slot contents must not change");
     assert_slots_consistent(&c, 3);
-    assert!(c.in_flight.is_empty(), "nothing to load when the window is untouched");
+    assert!(c.running_decodes.is_empty(), "nothing to load when the window is untouched");
 }
 
 /// Dual-pane case, other side: the other pane trashed a file past this
@@ -209,7 +209,7 @@ fn remove_after_window_changes_nothing() {
     assert_eq!(c.first_file_index, 3);
     let now: Vec<_> = c.slots.iter().map(|s| s.as_ref().unwrap().name()).collect();
     assert_eq!(now, before);
-    assert!(c.in_flight.is_empty());
+    assert!(c.running_decodes.is_empty());
 }
 
 /// The typical culling case. Window over files 5..9 (all loaded), file 7
@@ -232,7 +232,7 @@ fn remove_center_fills_from_the_right() {
     assert_slots_consistent(&c, 7);
     // Slot 4 is now file 9 (originally f10) and is being loaded.
     assert!(c.slots[4].is_none());
-    assert_eq!(c.in_flight.get(&after[9]), Some(&9));
+    assert_eq!(c.running_decodes.get(&after[9]), Some(&9));
     // The first four slots kept their textures: f5 f6 f8 f9.
     let names: Vec<_> = c.slots.iter().take(4).map(|s| s.as_ref().unwrap().name()).collect();
     assert_eq!(names, ["f5", "f6", "f8", "f9"]);
@@ -269,7 +269,7 @@ fn remove_at_end_of_list_fills_from_the_left() {
     assert_eq!(c.first_file_index, 4);
     assert_eq!(c.slots.len(), 5);
     assert!(c.slots[0].is_none(), "new leftmost slot is loading");
-    assert_eq!(c.in_flight.get(&after[4]), Some(&4));
+    assert_eq!(c.running_decodes.get(&after[4]), Some(&4));
     let names: Vec<_> = c.slots.iter().skip(1).map(|s| s.as_ref().unwrap().name()).collect();
     assert_eq!(names, ["f5", "f6", "f7", "f8"]);
     assert_slots_consistent(&c, 9);
@@ -292,7 +292,7 @@ fn remove_when_list_is_shorter_than_window_leaves_empty_slot() {
     assert_eq!(c.slots.len(), 5);
     let names: Vec<_> = c.slots.iter().map(|s| s.as_ref().map(|t| t.name())).collect();
     assert_eq!(names, [Some("f0".into()), Some("f2".into()), None, None, None]);
-    assert!(c.in_flight.is_empty(), "nothing exists to load");
+    assert!(c.running_decodes.is_empty(), "nothing exists to load");
 }
 
 #[test]
@@ -305,20 +305,20 @@ fn remove_only_file_leaves_no_bookkeeping() {
 
     assert_eq!(c.first_file_index, 0);
     assert!(c.slots.iter().all(|s| s.is_none()));
-    assert!(c.in_flight.is_empty());
+    assert!(c.running_decodes.is_empty());
     assert!(c.pending_decodes.is_empty());
     assert!(c.pending_uploads.is_empty());
 }
 
 #[test]
-fn remove_reindexes_in_flight_and_queues() {
+fn remove_reindexes_running_decodes_and_queues() {
     let ctx = egui::Context::default();
     let paths = fake_paths(20);
     let mut c = window(&ctx, 2, 5); // files 5..9
     c.max_decode_threads = 4;
     c.slots[3] = None; // file 8 loading
     c.slots[4] = None; // file 9 queued
-    c.in_flight.insert(paths[8].clone(), 8);
+    c.running_decodes.insert(paths[8].clone(), 8);
     c.pending_decodes.push_back((9, paths[9].clone()));
     c.pending_uploads.push_back((6, one_pixel(), "f6".into()));
     c.pending_uploads.push_back((7, one_pixel(), "f7".into()));
@@ -327,10 +327,10 @@ fn remove_reindexes_in_flight_and_queues() {
     after.remove(7);
     c.remove_index(7, &after);
 
-    // in_flight: file 8 is now 7; plus the new rightmost (9, was f10).
-    assert_eq!(c.in_flight.get(&paths[8]), Some(&7));
-    assert_eq!(c.in_flight.get(&paths[10]), Some(&9));
-    assert_eq!(c.in_flight.len(), 2);
+    // running_decodes: file 8 is now 7; plus the new rightmost (9, was f10).
+    assert_eq!(c.running_decodes.get(&paths[8]), Some(&7));
+    assert_eq!(c.running_decodes.get(&paths[10]), Some(&9));
+    assert_eq!(c.running_decodes.len(), 2);
     // queued decode for file 9 is now 8
     assert_eq!(c.pending_decodes.len(), 1);
     assert_eq!(c.pending_decodes[0].0, 8);
@@ -345,8 +345,8 @@ fn remove_reindexes_in_flight_and_queues() {
 /// land in slot 8.
 ///
 /// This works because threads report the path they decoded, not the
-/// number, and `poll` looks the number up in `in_flight`. The removal
-/// took the trashed path out of `in_flight`, so the late result finds no
+/// number, and `poll` looks the number up in `running_decodes`. The removal
+/// took the trashed path out of `running_decodes`, so the late result finds no
 /// entry and is dropped. `reindexed_decode_result_lands_in_the_right_slot`
 /// below is the other half: a thread decoding a file that survived the
 /// removal lands in that file's new slot.
@@ -356,12 +356,12 @@ fn stale_decode_result_is_dropped_by_poll() {
     let paths = fake_paths(20);
     let mut c = window(&ctx, 2, 5);
     c.slots[3] = None;
-    c.in_flight.insert(paths[8].clone(), 8);
+    c.running_decodes.insert(paths[8].clone(), 8);
 
     let mut after = paths.clone();
     after.remove(8); // the file being decoded is the one removed
     c.remove_index(8, &after);
-    assert!(c.in_flight.get(&paths[8]).is_none());
+    assert!(c.running_decodes.get(&paths[8]).is_none());
 
     // The thread finishes and reports the old path.
     c.tx.send(DecodeResult { path: paths[8].clone(), image: Some(one_pixel()), decode_ms: 0.0 })
@@ -379,7 +379,7 @@ fn reindexed_decode_result_lands_in_the_right_slot() {
     let paths = fake_paths(20);
     let mut c = window(&ctx, 2, 5);
     c.slots[4] = None; // file 9 loading
-    c.in_flight.insert(paths[9].clone(), 9);
+    c.running_decodes.insert(paths[9].clone(), 9);
 
     let mut after = paths.clone();
     after.remove(6);

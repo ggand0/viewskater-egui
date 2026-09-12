@@ -182,7 +182,7 @@ pub struct DecodeResult {
     /// started for file 8 and file 8 is then moved to the trash, a
     /// different file is number 8 by the time the result arrives. An
     /// index would put the deleted photo into that file's slot. A path
-    /// cannot be confused: `poll` looks it up in `in_flight`, which
+    /// cannot be confused: `poll` looks it up in `running_decodes`, which
     /// `remove_index` keeps current, and drops it if it is gone.
     pub path: PathBuf,
     pub image: Option<egui::ColorImage>,
@@ -206,7 +206,7 @@ pub struct SlidingWindowCache {
     /// result belongs to. The index is updated by `remove_index`, so a
     /// result that arrives after the list changed still lands in the
     /// right slot, and a result for a path no longer tracked is dropped.
-    in_flight: HashMap<PathBuf, usize>,
+    running_decodes: HashMap<PathBuf, usize>,
 
     /// Completed decodes waiting for GPU upload. `poll()` drains `rx` into
     /// this queue and uploads up to `UPLOADS_PER_FRAME` per frame.
@@ -238,7 +238,7 @@ impl SlidingWindowCache {
             cache_count,
             tx,
             rx,
-            in_flight: HashMap::new(),
+            running_decodes: HashMap::new(),
             pending_uploads: VecDeque::new(),
             pending_decodes: VecDeque::new(),
             max_decode_threads: decode_threads,
@@ -260,7 +260,7 @@ impl SlidingWindowCache {
 
         // Drain any pending results from previous window
         while self.rx.try_recv().is_ok() {}
-        self.in_flight.clear();
+        self.running_decodes.clear();
         self.pending_uploads.clear();
         self.pending_decodes.clear();
 
@@ -301,7 +301,7 @@ impl SlidingWindowCache {
     pub fn poll(&mut self, image_paths: &[PathBuf]) {
         // Phase 1: drain decode results into the upload queue.
         while let Ok(result) = self.rx.try_recv() {
-            let Some(file_index) = self.in_flight.remove(&result.path) else {
+            let Some(file_index) = self.running_decodes.remove(&result.path) else {
                 log::debug!("bg decode drop stale {}", result.path.display());
                 continue;
             };
@@ -321,7 +321,7 @@ impl SlidingWindowCache {
             }
 
             // A decode slot freed up — spawn the next queued decode if any.
-            while self.in_flight.len() < self.max_decode_threads {
+            while self.running_decodes.len() < self.max_decode_threads {
                 if let Some((idx, path)) = self.pending_decodes.pop_front() {
                     if self.slot_index_for(idx).is_some() {
                         self.spawn_thread(idx, &path);
@@ -441,7 +441,7 @@ impl SlidingWindowCache {
         // for upload. Records for the removed file are dropped. This
         // happens before the fill load below is queued, because that load
         // registers itself with its new index and must not be shifted.
-        self.in_flight.retain(|_, idx| match shift_index(*idx, removed) {
+        self.running_decodes.retain(|_, idx| match shift_index(*idx, removed) {
             Some(new_idx) => {
                 *idx = new_idx;
                 true
@@ -501,17 +501,17 @@ impl SlidingWindowCache {
     }
 
     /// Returns a compact summary of the cache window for debug logging.
-    /// Format: `[first..last] loaded/total inflight=N`
+    /// Format: `[first..last] loaded/total running=N`
     pub fn summary(&self) -> String {
         let last = self.first_file_index + self.slots.len().saturating_sub(1);
         let loaded = self.slots.iter().filter(|s| s.is_some()).count();
         let total = self.slots.len();
-        if self.in_flight.is_empty() {
+        if self.running_decodes.is_empty() {
             format!("[{}..{}] {}/{}", self.first_file_index, last, loaded, total)
         } else {
             format!(
-                "[{}..{}] {}/{} inflight={}",
-                self.first_file_index, last, loaded, total, self.in_flight.len()
+                "[{}..{}] {}/{} running={}",
+                self.first_file_index, last, loaded, total, self.running_decodes.len()
             )
         }
     }
@@ -556,14 +556,14 @@ impl SlidingWindowCache {
     /// threads are running, spawns immediately; otherwise queues until a
     /// slot opens in `poll`.
     fn request_decode(&mut self, file_index: usize, path: &Path) {
-        if self.in_flight.contains_key(path) {
+        if self.running_decodes.contains_key(path) {
             return;
         }
         if self.pending_decodes.iter().any(|(idx, _)| *idx == file_index) {
             return;
         }
 
-        if self.in_flight.len() < self.max_decode_threads {
+        if self.running_decodes.len() < self.max_decode_threads {
             self.spawn_thread(file_index, path);
         } else {
             self.pending_decodes.push_back((file_index, path.to_path_buf()));
@@ -572,7 +572,7 @@ impl SlidingWindowCache {
 
     /// Actually spawn the decode thread.
     fn spawn_thread(&mut self, file_index: usize, path: &Path) {
-        self.in_flight.insert(path.to_path_buf(), file_index);
+        self.running_decodes.insert(path.to_path_buf(), file_index);
 
         let path = path.to_path_buf();
         let tx = self.tx.clone();
@@ -650,7 +650,7 @@ impl SlidingWindowCache {
                     let file_index = self.first_file_index + i;
                     let is_current = file_index == current_index;
                     let is_loaded = self.slots.get(i).is_some_and(|s| s.is_some());
-                    let is_in_flight = self.in_flight.values().any(|&i| i == file_index);
+                    let is_running_decodes = self.running_decodes.values().any(|&i| i == file_index);
                     let is_valid = file_index < num_files;
 
                     let x = area.min.x + i as f32 * (cell_w + gap);
@@ -663,7 +663,7 @@ impl SlidingWindowCache {
                         egui::Color32::from_gray(25)
                     } else if is_loaded {
                         COL_LOADED
-                    } else if is_in_flight {
+                    } else if is_running_decodes {
                         COL_LOADING
                     } else {
                         COL_EMPTY
