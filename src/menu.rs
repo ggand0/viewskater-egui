@@ -378,6 +378,7 @@ pub(crate) fn show_footer(
     panes: &[Pane],
     divider_fraction: f32,
     show_buttons: bool,
+    theme: &UiTheme,
 ) -> Option<usize> {
     let mut trash_clicked = None;
     egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
@@ -399,12 +400,12 @@ pub(crate) fn show_footer(
             );
 
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(left_rect), |ui| {
-                if paint_pane_footer(ui, &panes[0], show_buttons) {
+                if paint_pane_footer(ui, &panes[0], show_buttons, theme) {
                     trash_clicked = Some(0);
                 }
             });
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(right_rect), |ui| {
-                if paint_pane_footer(ui, &panes[1], show_buttons) {
+                if paint_pane_footer(ui, &panes[1], show_buttons, theme) {
                     trash_clicked = Some(1);
                 }
             });
@@ -419,7 +420,7 @@ pub(crate) fn show_footer(
         } else {
             ui.horizontal(|ui| {
                 if let Some(pane) = panes.first() {
-                    if paint_pane_footer(ui, pane, show_buttons) {
+                    if paint_pane_footer(ui, pane, show_buttons, theme) {
                         trash_clicked = Some(0);
                     }
                 }
@@ -434,7 +435,7 @@ const FOOTER_BUTTON_W: f32 = 26.0;
 
 /// Paint one pane's footer. Returns true if its Move to Trash button was
 /// clicked.
-fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool) -> bool {
+fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool, theme: &UiTheme) -> bool {
     let mut trash_clicked = false;
     ui.horizontal(|ui| {
         let Some(path) = pane.image_paths.get(pane.current_index) else {
@@ -549,7 +550,7 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool) -> bool
                     };
                     if show_buttons && space - counter_w >= FOOTER_BUTTON_W {
                         ui.add_space(4.0);
-                        if trash_button(ui).clicked() {
+                        if trash_button(ui, theme).clicked() {
                             trash_clicked = true;
                         }
                     }
@@ -561,12 +562,13 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool) -> bool
 }
 
 /// The footer's Move to Trash button: a wastebasket glyph from egui's
-/// bundled emoji font, dim at rest and red on hover.
-fn trash_button(ui: &mut egui::Ui) -> egui::Response {
+/// bundled emoji font, dim at rest and accent on hover like every other
+/// control.
+fn trash_button(ui: &mut egui::Ui, theme: &UiTheme) -> egui::Response {
     let size = egui::vec2(20.0, 18.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let color = if response.hovered() {
-        egui::Color32::from_rgb(230, 90, 90)
+        theme.accent
     } else {
         egui::Color32::from_gray(160)
     };

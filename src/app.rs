@@ -871,6 +871,7 @@ impl eframe::App for App {
                 &self.panes,
                 self.divider_fraction,
                 self.settings.show_footer_buttons,
+                &self.theme,
             );
             if let Some(pane_idx) = clicked {
                 self.trash_pane_image(pane_idx, ctx);
