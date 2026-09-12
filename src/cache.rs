@@ -176,8 +176,14 @@ fn shift_index(idx: usize, removed: usize) -> Option<usize> {
 }
 
 pub struct DecodeResult {
-    /// Path the thread decoded. The file index is looked up from it on
-    /// arrival, because the list may have changed while decoding.
+    /// Path the thread decoded, instead of the file index it was given.
+    ///
+    /// Why: the list can change while the thread runs. If the thread was
+    /// started for file 8 and file 8 is then moved to the trash, a
+    /// different file is number 8 by the time the result arrives. An
+    /// index would put the deleted photo into that file's slot. A path
+    /// cannot be confused: `poll` looks it up in `in_flight`, which
+    /// `remove_index` keeps current, and drops it if it is gone.
     pub path: PathBuf,
     pub image: Option<egui::ColorImage>,
     pub decode_ms: f64,
@@ -402,29 +408,39 @@ impl SlidingWindowCache {
         self.initialize(new_index, image_paths);
     }
 
-    /// The file at `removed` left the list. `image_paths` is the list after
-    /// removal. Every file above `removed` now has an index one lower, so
-    /// the window and all bookkeeping shift with it; nothing is re-decoded
-    /// except the one file that enters the window to fill the gap.
+    /// The file at `removed` was moved to the trash. `image_paths` is the
+    /// list after removal, so every file that came after it now has an
+    /// index one lower. This keeps the loaded images in memory and only
+    /// decodes the one file that enters the window to fill the gap.
     ///
-    /// Three cases for the window `[first, first + size)`:
-    /// - `removed < first`: the window's files are unchanged, only their
-    ///   numbering moved. Decrement `first`.
-    /// - inside the window: drop that slot. Fill from the right if the
-    ///   list still has a file there, else from the left if the window
-    ///   can move back, else leave an empty slot (list shorter than the
-    ///   window).
-    /// - `removed` past the window: nothing changes.
+    /// The window is the `2 * cache_count + 1` files starting at
+    /// `first_file_index`: the current image plus `cache_count` on each
+    /// side. Three cases:
+    ///
+    /// - `removed` is inside the window. This is the single-pane case,
+    ///   because the file on screen is always inside its own window. Its
+    ///   slot is dropped, the other loaded images are kept, and the empty
+    ///   slot is filled by loading the next file past the window. At the
+    ///   end of the list there is no such file, so the window moves back
+    ///   one and loads the file before it instead. A folder smaller than
+    ///   the window just keeps an empty slot.
+    /// - `removed` is before the window. Only possible in dual pane: the
+    ///   other pane, showing the same folder, trashed a file this pane is
+    ///   not near. The loaded images are the same photos with indices one
+    ///   lower, so `first_file_index` moves back one and nothing is
+    ///   decoded.
+    /// - `removed` is after the window. Same dual-pane situation on the
+    ///   other side. Nothing changes.
     pub fn remove_index(&mut self, removed: usize, image_paths: &[PathBuf]) {
         let num_files = image_paths.len();
         let size = self.slots.len();
         let first = self.first_file_index;
 
-        // Renumber everything that still refers to file indices before
-        // any new load is queued, so the fill load below keeps its index.
-        // Entries for the removed file are dropped; a thread still
-        // decoding it reports a path no longer in `in_flight` and `poll`
-        // ignores it.
+        // Reindex every record that holds a file index: decodes running
+        // on a thread, decodes waiting for a thread, and images waiting
+        // for upload. Records for the removed file are dropped. This
+        // happens before the fill load below is queued, because that load
+        // registers itself with its new index and must not be shifted.
         self.in_flight.retain(|_, idx| match shift_index(*idx, removed) {
             Some(new_idx) => {
                 *idx = new_idx;

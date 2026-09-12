@@ -171,6 +171,10 @@ fn assert_slots_consistent(c: &SlidingWindowCache, removed: usize) {
     }
 }
 
+/// Dual-pane case: the other pane, on the same folder, trashed a file
+/// this pane does not have loaded. The loaded images are the same photos
+/// with indices one lower, so only `first_file_index` moves and nothing
+/// is decoded.
 #[test]
 fn remove_before_window_shifts_first_only() {
     let ctx = egui::Context::default();
@@ -189,6 +193,8 @@ fn remove_before_window_shifts_first_only() {
     assert!(c.in_flight.is_empty(), "nothing to load when the window is untouched");
 }
 
+/// Dual-pane case, other side: the other pane trashed a file past this
+/// pane's loaded images. Nothing about this pane changes.
 #[test]
 fn remove_after_window_changes_nothing() {
     let ctx = egui::Context::default();
@@ -305,7 +311,7 @@ fn remove_only_file_leaves_no_bookkeeping() {
 }
 
 #[test]
-fn remove_renumbers_in_flight_and_queues() {
+fn remove_reindexes_in_flight_and_queues() {
     let ctx = egui::Context::default();
     let paths = fake_paths(20);
     let mut c = window(&ctx, 2, 5); // files 5..9
@@ -341,7 +347,7 @@ fn remove_renumbers_in_flight_and_queues() {
 /// This works because threads report the path they decoded, not the
 /// number, and `poll` looks the number up in `in_flight`. The removal
 /// took the trashed path out of `in_flight`, so the late result finds no
-/// entry and is dropped. `renumbered_decode_result_lands_in_the_right_slot`
+/// entry and is dropped. `reindexed_decode_result_lands_in_the_right_slot`
 /// below is the other half: a thread decoding a file that survived the
 /// removal lands in that file's new slot.
 #[test]
@@ -368,7 +374,7 @@ fn stale_decode_result_is_dropped_by_poll() {
 }
 
 #[test]
-fn renumbered_decode_result_lands_in_the_right_slot() {
+fn reindexed_decode_result_lands_in_the_right_slot() {
     let ctx = egui::Context::default();
     let paths = fake_paths(20);
     let mut c = window(&ctx, 2, 5);
@@ -384,7 +390,7 @@ fn renumbered_decode_result_lands_in_the_right_slot() {
     c.poll(&after);
 
     assert_eq!(c.pending_uploads.len(), 0, "uploaded within the frame");
-    assert!(c.slots[3].is_some(), "result went to the renumbered slot");
+    assert!(c.slots[3].is_some(), "result went to the reindexed slot");
     assert_eq!(c.current_texture_for(8).unwrap().name(), "f9.png");
 }
 
@@ -407,7 +413,7 @@ fn lru_remove_index_shifts_keys_and_keeps_order() {
     assert!(!lru.entries.contains_key(&5));
     assert_eq!(lru.order, [2, 6, 8]);
 
-    // A removal outside the cached keys still renumbers those above.
+    // A removal outside the cached keys still reindexes those above.
     lru.remove_index(0);
     assert_eq!(lru.order, [1, 5, 7]);
     assert_eq!(lru.entries[&7].name(), "f9");
