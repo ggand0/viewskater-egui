@@ -13,6 +13,16 @@ use std::path::Path;
 /// Move `path` to the platform trash. Returns a message for the user on
 /// failure. The file is untouched when this returns `Err`.
 pub(crate) fn move_to_trash(path: &Path) -> Result<(), String> {
+    // Refuse before the crate gets involved when the folder cannot be
+    // written. Moving a file out of a folder needs write permission on
+    // the folder, and the freedesktop implementation in trash 5.2.8
+    // creates a zero-byte placeholder in the trash before it tries the
+    // move and does not remove it when the move fails, so every failed
+    // attempt would leave a ghost entry in the user's trash.
+    if !parent_is_writable(path) {
+        return Err("the folder is read-only".to_string());
+    }
+
     #[cfg(target_os = "macos")]
     {
         // NSFileManager: no Finder Automation permission prompt, no Finder
@@ -21,11 +31,51 @@ pub(crate) fn move_to_trash(path: &Path) -> Result<(), String> {
         use trash::macos::{DeleteMethod, TrashContextExtMacos};
         let mut ctx = trash::TrashContext::default();
         ctx.set_delete_method(DeleteMethod::NsFileManager);
-        ctx.delete(path).map_err(|e| e.to_string())
+        ctx.delete(path).map_err(describe)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        trash::delete(path).map_err(|e| e.to_string())
+        trash::delete(path).map_err(describe)
+    }
+}
+
+/// A short message for the toast instead of the crate's Debug dump.
+fn describe(err: trash::Error) -> String {
+    match err {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        trash::Error::FileSystem { source, .. } => match source.kind() {
+            std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
+            std::io::ErrorKind::NotFound => "file not found".to_string(),
+            _ => source.to_string(),
+        },
+        trash::Error::Os { description, .. } | trash::Error::Unknown { description } => description,
+        trash::Error::CouldNotAccess { target } => format!("could not access {target}"),
+        trash::Error::TargetedRoot => "cannot trash the root directory".to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Whether the directory holding `path` allows removing entries. Unix
+/// only; Windows permissions are checked by the shell operation itself.
+fn parent_is_writable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let Some(parent) = path.parent() else {
+            return true;
+        };
+        let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
+        let Ok(c) = CString::new(parent.as_os_str().as_bytes()) else {
+            return true;
+        };
+        // SAFETY: `c` is a valid null-terminated string for the call.
+        unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        true
     }
 }
 
@@ -129,6 +179,33 @@ mod tests {
                 out.push(path);
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_folder_is_refused_before_the_crate_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("locked.txt");
+        std::fs::write(&file, b"keep me").unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = super::move_to_trash(&file);
+
+        // Unlock before asserting so the tempdir can clean itself up.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(result, Err("the folder is read-only".to_string()));
+        assert!(file.exists(), "file must stay where it is");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writable_folder_passes_the_precheck() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("free.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(super::parent_is_writable(&file));
+        assert!(super::parent_is_writable(Path::new("relative.txt")));
     }
 
     /// Round trip through the real trash. Ignored because it touches the
