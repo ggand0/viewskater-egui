@@ -634,8 +634,8 @@ impl App {
                     if independent {
                         let muted = egui::Color32::from_gray(50);
                         for (i, (pane, x, w)) in [
-                            (&first[0], available.min.x, left_w),
-                            (&rest[0], right_x, right_w),
+                            (&mut first[0], available.min.x, left_w),
+                            (&mut rest[0], right_x, right_w),
                         ]
                         .into_iter()
                         .enumerate()
@@ -644,6 +644,19 @@ impl App {
                                 egui::pos2(x, available.min.y),
                                 egui::vec2(w, strip_h),
                             );
+                            // A real widget, so egui routes the click by layer: a
+                            // menu popup lying over the strip keeps its click (the
+                            // Edit menu's first row overlaps the strip). The strip
+                            // is added after the divider handle, so it takes the
+                            // top 18 px of the handle's grab area.
+                            let response = ui.interact(
+                                strip_rect,
+                                ui.id().with(("pane_strip", i)),
+                                egui::Sense::click(),
+                            );
+                            if response.clicked() {
+                                pane.selected = !pane.selected;
+                            }
                             let color = if pane.selected { accent } else { muted };
                             ui.painter().rect_filled(strip_rect, 0.0, color);
 
@@ -660,26 +673,6 @@ impl App {
                                 egui::FontId::monospace(11.0),
                                 text_color,
                             );
-                        }
-
-                        // Handle clicks on strips (use raw pointer to avoid
-                        // conflicting with divider/pane interactions)
-                        if ui.input(|i| i.pointer.any_click()) {
-                            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                                let strip_area = egui::Rect::from_min_size(
-                                    available.min,
-                                    egui::vec2(available.width(), strip_h),
-                                );
-                                if strip_area.contains(pos) {
-                                    let divider_center =
-                                        available.min.x + left_w + divider_w / 2.0;
-                                    if pos.x < divider_center {
-                                        first[0].selected = !first[0].selected;
-                                    } else {
-                                        rest[0].selected = !rest[0].selected;
-                                    }
-                                }
-                            }
                         }
                     }
 
