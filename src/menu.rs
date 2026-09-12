@@ -371,7 +371,15 @@ pub(crate) fn show_menu_bar(
     (action, menu_is_open)
 }
 
-pub(crate) fn show_footer(ctx: &egui::Context, panes: &[Pane], divider_fraction: f32) {
+/// Paint the footer. Returns the index of the pane whose Move to Trash
+/// button was clicked this frame, if any.
+pub(crate) fn show_footer(
+    ctx: &egui::Context,
+    panes: &[Pane],
+    divider_fraction: f32,
+    show_buttons: bool,
+) -> Option<usize> {
+    let mut trash_clicked = None;
     egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
         if panes.len() >= 2 {
             let available = ui.available_rect_before_wrap();
@@ -391,10 +399,14 @@ pub(crate) fn show_footer(ctx: &egui::Context, panes: &[Pane], divider_fraction:
             );
 
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(left_rect), |ui| {
-                paint_pane_footer(ui, &panes[0]);
+                if paint_pane_footer(ui, &panes[0], show_buttons) {
+                    trash_clicked = Some(0);
+                }
             });
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(right_rect), |ui| {
-                paint_pane_footer(ui, &panes[1]);
+                if paint_pane_footer(ui, &panes[1], show_buttons) {
+                    trash_clicked = Some(1);
+                }
             });
 
             // Divider line matching the central panel
@@ -407,14 +419,23 @@ pub(crate) fn show_footer(ctx: &egui::Context, panes: &[Pane], divider_fraction:
         } else {
             ui.horizontal(|ui| {
                 if let Some(pane) = panes.first() {
-                    paint_pane_footer(ui, pane);
+                    if paint_pane_footer(ui, pane, show_buttons) {
+                        trash_clicked = Some(0);
+                    }
                 }
             });
         }
     });
+    trash_clicked
 }
 
-fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane) {
+/// Width reserved for the trash button and the gap before the counter.
+const FOOTER_BUTTON_W: f32 = 26.0;
+
+/// Paint one pane's footer. Returns true if its Move to Trash button was
+/// clicked.
+fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool) -> bool {
+    let mut trash_clicked = false;
     ui.horizontal(|ui| {
         let Some(path) = pane.image_paths.get(pane.current_index) else {
             return;
@@ -463,8 +484,9 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane) {
         let filename_w = measure(ui, &filename);
         let res_w = resolution.as_ref().map_or(0.0, |r| measure(ui, r) + sep_w);
         let size_w = file_size.as_ref().map_or(0.0, |s| measure(ui, s) + sep_w);
+        let button_w = if show_buttons { FOOTER_BUTTON_W } else { 0.0 };
 
-        let remaining = total - index_w - margin;
+        let remaining = total - index_w - button_w - margin;
         let show_filename = remaining >= filename_w;
         let show_res = show_filename && remaining >= filename_w + res_w;
         let show_size = show_res && remaining >= filename_w + res_w + size_w;
@@ -492,32 +514,56 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane) {
             );
         }
 
-        // Index (right-aligned), progressively shortened
+        // Right end: trash button, then the index, progressively shortened
         if !pane.image_paths.is_empty() {
             let used = ui.min_rect().width();
             let space = total - used - margin;
 
-            if space >= index_w {
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    let mut space = space;
+                    if show_buttons && space >= FOOTER_BUTTON_W {
+                        if trash_button(ui).clicked() {
+                            trash_clicked = true;
+                        }
+                        space -= FOOTER_BUTTON_W;
+                    }
+                    if space >= index_w {
                         ui.label(
                             egui::RichText::new(&index_text).monospace().color(bright).size(13.0),
                         );
-                    },
-                );
-            } else if space >= short_index_w {
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
+                    } else if space >= short_index_w {
                         ui.label(
                             egui::RichText::new(&short_index).monospace().color(bright).size(13.0),
                         );
-                    },
-                );
-            }
+                    }
+                },
+            );
         }
     });
+    trash_clicked
+}
+
+/// The footer's Move to Trash button: a wastebasket glyph from egui's
+/// bundled emoji font, dim at rest and red on hover.
+fn trash_button(ui: &mut egui::Ui) -> egui::Response {
+    let size = egui::vec2(20.0, 18.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let color = if response.hovered() {
+        egui::Color32::from_rgb(230, 90, 90)
+    } else {
+        egui::Color32::from_gray(160)
+    };
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "🗑",
+        egui::FontId::proportional(15.0),
+        color,
+    );
+    let shortcut = if cfg!(target_os = "macos") { "Del / Cmd+Backspace" } else { "Del" };
+    response.on_hover_text(format!("Move to Trash ({shortcut})"))
 }
 
 fn format_file_size(bytes: u64) -> String {

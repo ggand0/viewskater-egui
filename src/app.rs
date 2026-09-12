@@ -866,7 +866,15 @@ impl eframe::App for App {
 
         // Footer — in fullscreen, revealed when cursor near bottom edge
         if self.settings.show_footer && (!self.is_fullscreen || cursor_near_bottom) {
-            menu::show_footer(ctx, &self.panes, self.divider_fraction);
+            let clicked = menu::show_footer(
+                ctx,
+                &self.panes,
+                self.divider_fraction,
+                self.settings.show_footer_buttons,
+            );
+            if let Some(pane_idx) = clicked {
+                self.trash_pane_image(pane_idx, ctx);
+            }
         }
 
         // Slider panel — in fullscreen, revealed when cursor near bottom edge

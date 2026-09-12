@@ -41,10 +41,26 @@ impl App {
                 }
             }
         }
+        self.trash_or_confirm(paths, ctx);
+    }
+
+    /// The footer button of one pane: move that pane's current image to
+    /// the trash, whatever the pane selection is.
+    pub(super) fn trash_pane_image(&mut self, pane_idx: usize, ctx: &egui::Context) {
+        let Some(path) = self
+            .panes
+            .get(pane_idx)
+            .and_then(|p| p.image_paths.get(p.current_index).cloned())
+        else {
+            return;
+        };
+        self.trash_or_confirm(vec![path], ctx);
+    }
+
+    fn trash_or_confirm(&mut self, paths: Vec<PathBuf>, ctx: &egui::Context) {
         if paths.is_empty() {
             return;
         }
-
         if paths.iter().any(|p| trash_bin::lacks_recycle_bin(p)) {
             self.pending_permanent_delete = Some(paths);
             return;
