@@ -514,7 +514,9 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool) -> bool
             );
         }
 
-        // Right end: trash button, then the index, progressively shortened
+        // Right end: the counter stays in the corner, the trash button sits
+        // to its left (the iced footer put the copy buttons there too).
+        // The counter is shortened before the button is dropped.
         if !pane.image_paths.is_empty() {
             let used = ui.min_rect().width();
             let space = total - used - margin;
@@ -522,21 +524,34 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool) -> bool
             ui.with_layout(
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
-                    let mut space = space;
-                    if show_buttons && space >= FOOTER_BUTTON_W {
-                        if trash_button(ui).clicked() {
-                            trash_clicked = true;
-                        }
-                        space -= FOOTER_BUTTON_W;
-                    }
-                    if space >= index_w {
+                    let counter_w = if space >= index_w + button_w {
                         ui.label(
                             egui::RichText::new(&index_text).monospace().color(bright).size(13.0),
                         );
+                        index_w
+                    } else if space >= short_index_w + button_w {
+                        ui.label(
+                            egui::RichText::new(&short_index).monospace().color(bright).size(13.0),
+                        );
+                        short_index_w
+                    } else if space >= index_w {
+                        ui.label(
+                            egui::RichText::new(&index_text).monospace().color(bright).size(13.0),
+                        );
+                        return;
                     } else if space >= short_index_w {
                         ui.label(
                             egui::RichText::new(&short_index).monospace().color(bright).size(13.0),
                         );
+                        return;
+                    } else {
+                        return;
+                    };
+                    if show_buttons && space - counter_w >= FOOTER_BUTTON_W {
+                        ui.add_space(4.0);
+                        if trash_button(ui).clicked() {
+                            trash_clicked = true;
+                        }
                     }
                 },
             );
