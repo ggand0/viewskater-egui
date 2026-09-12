@@ -212,7 +212,7 @@ pub struct SlidingWindowCache {
     /// this queue and uploads up to `UPLOADS_PER_FRAME` per frame.
     pending_uploads: VecDeque<(usize, egui::ColorImage, String)>,
 
-    /// Decode requests waiting for a thread slot. `spawn_load` pushes here
+    /// Decode requests waiting for a thread slot. `request_decode` pushes here
     /// when the concurrent limit is reached; `poll` spawns the next one
     /// when a decode completes and frees a slot.
     pending_decodes: VecDeque<(usize, PathBuf)>,
@@ -288,7 +288,7 @@ impl SlidingWindowCache {
             }
             let file_index = self.first_file_index + i;
             if file_index < num_files {
-                self.spawn_load(file_index, &image_paths[file_index]);
+                self.request_decode(file_index, &image_paths[file_index]);
             }
         }
     }
@@ -374,7 +374,7 @@ impl SlidingWindowCache {
             // Spawn load for new rightmost slot
             let new_file_index = self.first_file_index + self.cache_size() - 1;
             if new_file_index < num_files {
-                self.spawn_load(new_file_index, &image_paths[new_file_index]);
+                self.request_decode(new_file_index, &image_paths[new_file_index]);
             }
         }
 
@@ -397,7 +397,7 @@ impl SlidingWindowCache {
             self.first_file_index -= 1;
 
             // Spawn load for new leftmost slot
-            self.spawn_load(self.first_file_index, &image_paths[self.first_file_index]);
+            self.request_decode(self.first_file_index, &image_paths[self.first_file_index]);
         }
 
         self.current_texture_for(new_index)
@@ -470,12 +470,12 @@ impl SlidingWindowCache {
             let right = first + size - 1;
             if right < num_files {
                 self.slots.push_back(None);
-                self.spawn_load(right, &image_paths[right]);
+                self.request_decode(right, &image_paths[right]);
             } else if first > 0 {
                 self.first_file_index = first - 1;
                 self.slots.push_front(None);
                 let left = self.first_file_index;
-                self.spawn_load(left, &image_paths[left]);
+                self.request_decode(left, &image_paths[left]);
             } else {
                 self.slots.push_back(None);
             }
@@ -555,7 +555,7 @@ impl SlidingWindowCache {
     /// Queue a background decode. If fewer than `self.max_decode_threads`
     /// threads are running, spawns immediately; otherwise queues until a
     /// slot opens in `poll`.
-    fn spawn_load(&mut self, file_index: usize, path: &Path) {
+    fn request_decode(&mut self, file_index: usize, path: &Path) {
         if self.in_flight.contains_key(path) {
             return;
         }
