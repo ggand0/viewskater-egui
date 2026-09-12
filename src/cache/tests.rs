@@ -206,6 +206,11 @@ fn remove_after_window_changes_nothing() {
     assert!(c.in_flight.is_empty());
 }
 
+/// The typical culling case. Window over files 5..9 (all loaded), file 7
+/// is trashed. Expected: slot for 7 dropped, the four other textures kept
+/// (no re-decode), and one new load queued for the file that is now
+/// index 9 (it used to be 10). `assert_slots_consistent` checks every
+/// slot holds the texture of the file that now has that index.
 #[test]
 fn remove_center_fills_from_the_right() {
     let ctx = egui::Context::default();
@@ -328,6 +333,17 @@ fn remove_renumbers_in_flight_and_queues() {
     assert_eq!(uploads, [6]);
 }
 
+/// The race. A background thread was told to decode file 8. While it
+/// works, file 8 is trashed, so a different file is now number 8 (the one
+/// that used to be 9). When the thread reports back, its result must not
+/// land in slot 8.
+///
+/// This works because threads report the path they decoded, not the
+/// number, and `poll` looks the number up in `in_flight`. The removal
+/// took the trashed path out of `in_flight`, so the late result finds no
+/// entry and is dropped. `renumbered_decode_result_lands_in_the_right_slot`
+/// below is the other half: a thread decoding a file that survived the
+/// removal lands in that file's new slot.
 #[test]
 fn stale_decode_result_is_dropped_by_poll() {
     let ctx = egui::Context::default();

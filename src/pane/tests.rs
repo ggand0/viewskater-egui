@@ -34,6 +34,12 @@ fn empty_pane_removes_nothing() {
     assert!(!called, "trasher must not run for an empty pane");
 }
 
+/// The safety promise. The trash function is a parameter of
+/// `remove_current`, so this test passes one that always fails, standing
+/// in for the trash crate refusing (read-only share, no trash folder).
+/// After the failure the list, the index and the image on screen must be
+/// exactly what they were: the pane must never drop a file it did not
+/// actually move.
 #[test]
 fn failed_move_leaves_pane_untouched() {
     let ctx = egui::Context::default();
@@ -173,6 +179,18 @@ fn settle(p: &mut Pane) {
     }
 }
 
+/// The full culling loop on real PNG files with the live caches.
+///
+/// Situation: a folder of six images opened at index 2. The trash
+/// function is a rename into a second tempdir ("bin"), which is what the
+/// trash crate does on the same filesystem, so nothing touches the real
+/// trash.
+///
+/// Checks, in order: the file left its folder and arrived in the bin; no
+/// other file moved; the list shrank by one; the same index now names the
+/// next file and it is on screen. Then it jumps to the end and deletes
+/// until the folder is empty, checking each step shows an image, to
+/// exercise the step-back-at-end and empty-pane paths.
 #[test]
 fn real_files_move_out_and_the_pane_follows() {
     let ctx = egui::Context::default();
