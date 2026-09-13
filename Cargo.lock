@@ -1696,7 +1696,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.58.0",
+ "windows-core 0.57.0",
 ]
 
 [[package]]
@@ -3733,8 +3733,7 @@ dependencies = [
 [[package]]
 name = "trash"
 version = "5.2.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0cf8ced01d5c32c50f1b71a7256ac3fac5bf38a6c94042206f37292fcf08a49"
+source = "git+https://github.com/ggand0/trash-rs.git?branch=fix-windows-unc-parsing-name#fb9ee8a45158ec8cb1fe7ac2055d19cac59de708"
 dependencies = [
  "chrono",
  "libc",
