@@ -44,7 +44,7 @@ sysinfo = "0.33"
 libc = "0.2"
 wgpu = { version = "24", default-features = false, features = ["counters"] }
 mimalloc = { version = "0.1", default-features = false }
-trash = "5.2"
+trash = "5.2.9"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
@@ -71,11 +71,6 @@ chrono = "0.4"
 winres = "0.1"
 
 [patch.crates-io]
-# Fork with the Windows network-path fix (Byron/trash-rs#55): trash 5.2.8 hands
-# the shell `UNC\host\share\...` after stripping `\\?\`, so every delete on a
-# mapped drive or UNC path fails with ERROR_FILE_NOT_FOUND. Drop once upstream
-# releases the fix.
-trash = { git = "https://github.com/ggand0/trash-rs.git", branch = "fix-windows-unc-parsing-name" }
 winit = { git = "https://github.com/ggand0/winit.git", branch = "custom-dnd-0.30.13" }
 egui-winit = { git = "https://github.com/ggand0/egui-winit-custom.git", branch = "main" }
 
