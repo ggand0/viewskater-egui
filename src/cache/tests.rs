@@ -361,7 +361,7 @@ fn stale_decode_result_is_dropped_by_poll() {
     let mut after = paths.clone();
     after.remove(8); // the file being decoded is the one removed
     c.remove_index(8, &after);
-    assert!(c.running_decodes.get(&paths[8]).is_none());
+    assert!(!c.running_decodes.contains_key(&paths[8]));
 
     // The thread finishes and reports the old path.
     c.tx.send(DecodeResult { path: paths[8].clone(), image: Some(one_pixel()), decode_ms: 0.0 })
