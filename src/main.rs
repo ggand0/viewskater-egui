@@ -26,6 +26,7 @@ mod perf;
 mod platform;
 mod settings;
 mod theme;
+mod trash_bin;
 mod view_animation;
 
 #[derive(Parser)]

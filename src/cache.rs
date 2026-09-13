@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
@@ -21,7 +21,7 @@ pub struct ThumbnailCache {
     cache: HashMap<usize, egui::ColorImage>,
     cache_bytes: usize,
     req_tx: mpsc::Sender<(usize, PathBuf)>,
-    res_rx: mpsc::Receiver<(usize, Option<egui::ColorImage>)>,
+    res_rx: mpsc::Receiver<(usize, PathBuf, Option<egui::ColorImage>)>,
     /// Index of the most recently sent request whose result hasn't arrived
     /// yet. Prevents re-sending the same request every hovered frame, which
     /// made the worker decode the same image twice.
@@ -52,7 +52,7 @@ impl ThumbnailCache {
                         None
                     }
                 };
-                let _ = res_tx.send((latest_idx, thumbnail));
+                let _ = res_tx.send((latest_idx, latest_path, thumbnail));
                 worker_ctx.request_repaint();
             }
         });
@@ -70,12 +70,20 @@ impl ThumbnailCache {
         }
     }
 
-    pub fn poll(&mut self) {
-        while let Ok((idx, img)) = self.res_rx.try_recv() {
+    /// Drain finished thumbnails. `image_paths` is the pane's current list;
+    /// a result whose path no longer sits at its index (the list changed
+    /// under the worker, e.g. a file was moved to the trash) is dropped and
+    /// re-requested on the next hover.
+    pub fn poll(&mut self, image_paths: &[PathBuf]) {
+        while let Ok((idx, path, img)) = self.res_rx.try_recv() {
             // Only clear when it matches: a newer request may already be
             // pending for a different index.
             if self.pending_idx == Some(idx) {
                 self.pending_idx = None;
+            }
+            if image_paths.get(idx) != Some(&path) {
+                log::debug!("thumb drop stale [{}] {}", idx, path.display());
+                continue;
             }
             let Some(img) = img else { continue };
             let img_bytes = img.pixels.len() * 4;
@@ -135,10 +143,48 @@ impl ThumbnailCache {
             evict_thumb_cache(&mut self.cache, &mut self.cache_bytes, center, budget_mb);
         }
     }
+
+    /// The file at `removed` left the list: drop its thumbnail and shift
+    /// every higher index down by one so cached entries keep pointing at
+    /// the same files. A request in flight for the old numbering is
+    /// dropped by `poll` when its path no longer matches.
+    pub fn remove_index(&mut self, removed: usize) {
+        let mut shifted = HashMap::with_capacity(self.cache.len());
+        for (idx, img) in self.cache.drain() {
+            match shift_index(idx, removed) {
+                Some(new_idx) => {
+                    shifted.insert(new_idx, img);
+                }
+                None => self.cache_bytes -= img.pixels.len() * 4,
+            }
+        }
+        self.cache = shifted;
+        self.texture_idx = self.texture_idx.and_then(|i| shift_index(i, removed));
+        self.pending_idx = None;
+    }
+}
+
+/// Index of a file after the file at `removed` left the list. `None` for
+/// the removed file itself.
+fn shift_index(idx: usize, removed: usize) -> Option<usize> {
+    use std::cmp::Ordering;
+    match idx.cmp(&removed) {
+        Ordering::Less => Some(idx),
+        Ordering::Equal => None,
+        Ordering::Greater => Some(idx - 1),
+    }
 }
 
 pub struct DecodeResult {
-    pub file_index: usize,
+    /// Path the thread decoded, instead of the file index it was given.
+    ///
+    /// Why: the list can change while the thread runs. If the thread was
+    /// started for file 8 and file 8 is then moved to the trash, a
+    /// different file is number 8 by the time the result arrives. An
+    /// index would put the deleted photo into that file's slot. A path
+    /// cannot be confused: `poll` looks it up in `running_decodes`, which
+    /// `remove_index` keeps current, and drops it if it is gone.
+    pub path: PathBuf,
     pub image: Option<egui::ColorImage>,
     pub decode_ms: f64,
 }
@@ -156,13 +202,17 @@ pub struct SlidingWindowCache {
 
     tx: mpsc::Sender<DecodeResult>,
     rx: mpsc::Receiver<DecodeResult>,
-    in_flight: HashSet<usize>,
+    /// Decodes running on a thread, keyed by path with the file index the
+    /// result belongs to. The index is updated by `remove_index`, so a
+    /// result that arrives after the list changed still lands in the
+    /// right slot, and a result for a path no longer tracked is dropped.
+    running_decodes: HashMap<PathBuf, usize>,
 
     /// Completed decodes waiting for GPU upload. `poll()` drains `rx` into
     /// this queue and uploads up to `UPLOADS_PER_FRAME` per frame.
     pending_uploads: VecDeque<(usize, egui::ColorImage, String)>,
 
-    /// Decode requests waiting for a thread slot. `spawn_load` pushes here
+    /// Decode requests waiting for a thread slot. `request_decode` pushes here
     /// when the concurrent limit is reached; `poll` spawns the next one
     /// when a decode completes and frees a slot.
     pending_decodes: VecDeque<(usize, PathBuf)>,
@@ -188,7 +238,7 @@ impl SlidingWindowCache {
             cache_count,
             tx,
             rx,
-            in_flight: HashSet::new(),
+            running_decodes: HashMap::new(),
             pending_uploads: VecDeque::new(),
             pending_decodes: VecDeque::new(),
             max_decode_threads: decode_threads,
@@ -210,7 +260,7 @@ impl SlidingWindowCache {
 
         // Drain any pending results from previous window
         while self.rx.try_recv().is_ok() {}
-        self.in_flight.clear();
+        self.running_decodes.clear();
         self.pending_uploads.clear();
         self.pending_decodes.clear();
 
@@ -238,7 +288,7 @@ impl SlidingWindowCache {
             }
             let file_index = self.first_file_index + i;
             if file_index < num_files {
-                self.spawn_load(file_index, &image_paths[file_index]);
+                self.request_decode(file_index, &image_paths[file_index]);
             }
         }
     }
@@ -251,24 +301,27 @@ impl SlidingWindowCache {
     pub fn poll(&mut self, image_paths: &[PathBuf]) {
         // Phase 1: drain decode results into the upload queue.
         while let Ok(result) = self.rx.try_recv() {
-            self.in_flight.remove(&result.file_index);
+            let Some(file_index) = self.running_decodes.remove(&result.path) else {
+                log::debug!("bg decode drop stale {}", result.path.display());
+                continue;
+            };
             if let Some(color_image) = result.image {
                 log::debug!(
                     "bg decode [{}]: {:.1}ms",
-                    result.file_index,
+                    file_index,
                     result.decode_ms,
                 );
                 let name = image_paths
-                    .get(result.file_index)
+                    .get(file_index)
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 self.pending_uploads
-                    .push_back((result.file_index, color_image, name));
+                    .push_back((file_index, color_image, name));
             }
 
             // A decode slot freed up — spawn the next queued decode if any.
-            while self.in_flight.len() < self.max_decode_threads {
+            while self.running_decodes.len() < self.max_decode_threads {
                 if let Some((idx, path)) = self.pending_decodes.pop_front() {
                     if self.slot_index_for(idx).is_some() {
                         self.spawn_thread(idx, &path);
@@ -321,7 +374,7 @@ impl SlidingWindowCache {
             // Spawn load for new rightmost slot
             let new_file_index = self.first_file_index + self.cache_size() - 1;
             if new_file_index < num_files {
-                self.spawn_load(new_file_index, &image_paths[new_file_index]);
+                self.request_decode(new_file_index, &image_paths[new_file_index]);
             }
         }
 
@@ -344,7 +397,7 @@ impl SlidingWindowCache {
             self.first_file_index -= 1;
 
             // Spawn load for new leftmost slot
-            self.spawn_load(self.first_file_index, &image_paths[self.first_file_index]);
+            self.request_decode(self.first_file_index, &image_paths[self.first_file_index]);
         }
 
         self.current_texture_for(new_index)
@@ -353,6 +406,80 @@ impl SlidingWindowCache {
     /// Rebuild cache around a new position (slider release, Home/End).
     pub fn jump_to(&mut self, new_index: usize, image_paths: &[PathBuf]) {
         self.initialize(new_index, image_paths);
+    }
+
+    /// The file at `removed` was moved to the trash. `image_paths` is the
+    /// list after removal, so every file that came after it now has an
+    /// index one lower. This keeps the loaded images in memory and only
+    /// decodes the one file that enters the window to fill the gap.
+    ///
+    /// The window is the `2 * cache_count + 1` files starting at
+    /// `first_file_index`: the current image plus `cache_count` on each
+    /// side. Three cases:
+    ///
+    /// - `removed` is inside the window. This is the single-pane case,
+    ///   because the file on screen is always inside its own window. Its
+    ///   slot is dropped, the other loaded images are kept, and the empty
+    ///   slot is filled by loading the next file past the window. At the
+    ///   end of the list there is no such file, so the window moves back
+    ///   one and loads the file before it instead. A folder smaller than
+    ///   the window just keeps an empty slot.
+    /// - `removed` is before the window. Only possible in dual pane: the
+    ///   other pane, showing the same folder, trashed a file this pane is
+    ///   not near. The loaded images are the same photos with indices one
+    ///   lower, so `first_file_index` moves back one and nothing is
+    ///   decoded.
+    /// - `removed` is after the window. Same dual-pane situation on the
+    ///   other side. Nothing changes.
+    pub fn remove_index(&mut self, removed: usize, image_paths: &[PathBuf]) {
+        let num_files = image_paths.len();
+        let size = self.slots.len();
+        let first = self.first_file_index;
+
+        // Reindex every record that holds a file index: decodes running
+        // on a thread, decodes waiting for a thread, and images waiting
+        // for upload. Records for the removed file are dropped. This
+        // happens before the fill load below is queued, because that load
+        // registers itself with its new index and must not be shifted.
+        self.running_decodes.retain(|_, idx| match shift_index(*idx, removed) {
+            Some(new_idx) => {
+                *idx = new_idx;
+                true
+            }
+            None => false,
+        });
+        self.pending_decodes.retain_mut(|(idx, _)| match shift_index(*idx, removed) {
+            Some(new_idx) => {
+                *idx = new_idx;
+                true
+            }
+            None => false,
+        });
+        self.pending_uploads.retain_mut(|(idx, _, _)| match shift_index(*idx, removed) {
+            Some(new_idx) => {
+                *idx = new_idx;
+                true
+            }
+            None => false,
+        });
+
+        if removed < first {
+            self.first_file_index = first - 1;
+        } else if removed < first + size {
+            self.slots.remove(removed - first);
+            let right = first + size - 1;
+            if right < num_files {
+                self.slots.push_back(None);
+                self.request_decode(right, &image_paths[right]);
+            } else if first > 0 {
+                self.first_file_index = first - 1;
+                self.slots.push_front(None);
+                let left = self.first_file_index;
+                self.request_decode(left, &image_paths[left]);
+            } else {
+                self.slots.push_back(None);
+            }
+        }
     }
 
     /// Change the sliding window half-size and reinitialize around current position.
@@ -374,17 +501,17 @@ impl SlidingWindowCache {
     }
 
     /// Returns a compact summary of the cache window for debug logging.
-    /// Format: `[first..last] loaded/total inflight=N`
+    /// Format: `[first..last] loaded/total running=N`
     pub fn summary(&self) -> String {
         let last = self.first_file_index + self.slots.len().saturating_sub(1);
         let loaded = self.slots.iter().filter(|s| s.is_some()).count();
         let total = self.slots.len();
-        if self.in_flight.is_empty() {
+        if self.running_decodes.is_empty() {
             format!("[{}..{}] {}/{}", self.first_file_index, last, loaded, total)
         } else {
             format!(
-                "[{}..{}] {}/{} inflight={}",
-                self.first_file_index, last, loaded, total, self.in_flight.len()
+                "[{}..{}] {}/{} running={}",
+                self.first_file_index, last, loaded, total, self.running_decodes.len()
             )
         }
     }
@@ -399,6 +526,11 @@ impl SlidingWindowCache {
 
     pub fn total_mb(&self) -> f64 {
         self.total_bytes() as f64 / (1024.0 * 1024.0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn first_file_index_for_test(&self) -> usize {
+        self.first_file_index
     }
 
     /// Get the TextureHandle for a given file index, if cached.
@@ -423,15 +555,15 @@ impl SlidingWindowCache {
     /// Queue a background decode. If fewer than `self.max_decode_threads`
     /// threads are running, spawns immediately; otherwise queues until a
     /// slot opens in `poll`.
-    fn spawn_load(&mut self, file_index: usize, path: &Path) {
-        if self.in_flight.contains(&file_index) {
+    fn request_decode(&mut self, file_index: usize, path: &Path) {
+        if self.running_decodes.contains_key(path) {
             return;
         }
         if self.pending_decodes.iter().any(|(idx, _)| *idx == file_index) {
             return;
         }
 
-        if self.in_flight.len() < self.max_decode_threads {
+        if self.running_decodes.len() < self.max_decode_threads {
             self.spawn_thread(file_index, path);
         } else {
             self.pending_decodes.push_back((file_index, path.to_path_buf()));
@@ -440,7 +572,7 @@ impl SlidingWindowCache {
 
     /// Actually spawn the decode thread.
     fn spawn_thread(&mut self, file_index: usize, path: &Path) {
-        self.in_flight.insert(file_index);
+        self.running_decodes.insert(path.to_path_buf(), file_index);
 
         let path = path.to_path_buf();
         let tx = self.tx.clone();
@@ -457,7 +589,7 @@ impl SlidingWindowCache {
             };
             let decode_ms = start.elapsed().as_secs_f64() * 1000.0;
             let _ = tx.send(DecodeResult {
-                file_index,
+                path,
                 image,
                 decode_ms,
             });
@@ -518,7 +650,7 @@ impl SlidingWindowCache {
                     let file_index = self.first_file_index + i;
                     let is_current = file_index == current_index;
                     let is_loaded = self.slots.get(i).is_some_and(|s| s.is_some());
-                    let is_in_flight = self.in_flight.contains(&file_index);
+                    let is_running_decodes = self.running_decodes.values().any(|&i| i == file_index);
                     let is_valid = file_index < num_files;
 
                     let x = area.min.x + i as f32 * (cell_w + gap);
@@ -531,7 +663,7 @@ impl SlidingWindowCache {
                         egui::Color32::from_gray(25)
                     } else if is_loaded {
                         COL_LOADED
-                    } else if is_in_flight {
+                    } else if is_running_decodes {
                         COL_LOADING
                     } else {
                         COL_EMPTY
@@ -734,6 +866,26 @@ impl DecodeLruCache {
         self.total_bytes as f64 / (1024.0 * 1024.0)
     }
 
+    /// The file at `removed` left the list: drop its texture and shift
+    /// every higher key down by one. LRU order is preserved.
+    pub fn remove_index(&mut self, removed: usize) {
+        if let Some(handle) = self.entries.remove(&removed) {
+            self.total_bytes -= Self::handle_bytes(&handle);
+        }
+        let mut shifted = HashMap::with_capacity(self.entries.len());
+        for (idx, handle) in self.entries.drain() {
+            if let Some(new_idx) = shift_index(idx, removed) {
+                shifted.insert(new_idx, handle);
+            }
+        }
+        self.entries = shifted;
+        self.order = self
+            .order
+            .iter()
+            .filter_map(|&idx| shift_index(idx, removed))
+            .collect();
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
@@ -796,121 +948,4 @@ fn evict_thumb_cache_with_budget(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const TEST_BUDGET: usize = 1024;
-
-    fn make_thumb(size: usize) -> egui::ColorImage {
-        let pixel_count = size / 4;
-        egui::ColorImage {
-            size: [pixel_count, 1],
-            pixels: vec![egui::Color32::BLACK; pixel_count],
-        }
-    }
-
-    fn insert(cache: &mut HashMap<usize, egui::ColorImage>, bytes: &mut usize, idx: usize, size: usize) {
-        let img = make_thumb(size);
-        *bytes += img.pixels.len() * 4;
-        cache.insert(idx, img);
-    }
-
-    fn evict(cache: &mut HashMap<usize, egui::ColorImage>, bytes: &mut usize, current_idx: usize) {
-        evict_thumb_cache_with_budget(cache, bytes, current_idx, TEST_BUDGET);
-    }
-
-    #[test]
-    fn evicts_furthest_entry() {
-        let mut cache = HashMap::new();
-        let mut bytes = 0;
-        let each = TEST_BUDGET / 2 + 1;
-
-        insert(&mut cache, &mut bytes, 0, each);
-        insert(&mut cache, &mut bytes, 50, each);
-        insert(&mut cache, &mut bytes, 45, each);
-
-        evict(&mut cache, &mut bytes, 45);
-
-        assert!(!cache.contains_key(&0), "furthest entry (0) should be evicted");
-        assert!(cache.contains_key(&45), "current position should remain");
-    }
-
-    #[test]
-    fn evicts_multiple_until_under_budget() {
-        let mut cache = HashMap::new();
-        let mut bytes = 0;
-        let chunk = TEST_BUDGET / 3 + 1;
-
-        insert(&mut cache, &mut bytes, 0, chunk);
-        insert(&mut cache, &mut bytes, 100, chunk);
-        insert(&mut cache, &mut bytes, 50, chunk);
-        insert(&mut cache, &mut bytes, 200, chunk);
-
-        evict(&mut cache, &mut bytes, 50);
-
-        assert!(bytes <= TEST_BUDGET);
-        assert!(cache.contains_key(&50), "current position should remain");
-        assert!(!cache.contains_key(&200), "furthest entry (200) should be evicted first");
-    }
-
-    #[test]
-    fn no_eviction_under_budget() {
-        let mut cache = HashMap::new();
-        let mut bytes = 0;
-        let small = TEST_BUDGET / 10;
-
-        insert(&mut cache, &mut bytes, 5, small);
-        insert(&mut cache, &mut bytes, 10, small);
-
-        evict(&mut cache, &mut bytes, 5);
-
-        assert_eq!(cache.len(), 2);
-    }
-
-    #[test]
-    fn keeps_at_least_one_entry() {
-        let mut cache = HashMap::new();
-        let mut bytes = 0;
-
-        insert(&mut cache, &mut bytes, 42, TEST_BUDGET + 1000);
-
-        evict(&mut cache, &mut bytes, 42);
-
-        assert_eq!(cache.len(), 1, "should never evict the last entry");
-    }
-
-    #[test]
-    fn set_budget_evicts_existing_entries() {
-        let ctx = egui::Context::default();
-        let mut tc = ThumbnailCache::new(&ctx, 0);
-        let mb = 1024 * 1024;
-
-        insert(&mut tc.cache, &mut tc.cache_bytes, 0, mb);
-        insert(&mut tc.cache, &mut tc.cache_bytes, 10, mb);
-        insert(&mut tc.cache, &mut tc.cache_bytes, 100, mb);
-        tc.texture_idx = Some(10);
-
-        tc.set_budget_mb(2);
-
-        assert!(tc.cache_bytes <= 2 * mb);
-        assert!(tc.cache.contains_key(&10), "displayed entry should remain");
-        assert!(!tc.cache.contains_key(&100), "furthest entry should be evicted");
-    }
-
-    #[test]
-    fn bytes_tracking_stays_consistent() {
-        let mut cache = HashMap::new();
-        let mut bytes = 0;
-        let chunk = TEST_BUDGET / 2 + 1;
-
-        insert(&mut cache, &mut bytes, 0, chunk);
-        insert(&mut cache, &mut bytes, 50, chunk);
-        insert(&mut cache, &mut bytes, 100, chunk);
-
-        evict(&mut cache, &mut bytes, 50);
-
-        let actual: usize = cache.values().map(|img| img.pixels.len() * 4).sum();
-        assert_eq!(bytes, actual);
-    }
-
-}
+mod tests;

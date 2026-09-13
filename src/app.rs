@@ -1,3 +1,4 @@
+mod culling;
 mod handlers;
 
 use std::collections::VecDeque;
@@ -309,6 +310,11 @@ pub struct App {
     last_preview_idx: Option<usize>,
     preview_stale_since: Option<(usize, Instant)>,
     preview_bench: Option<crate::bench::preview::PreviewBench>,
+    /// Outcome of the last trash move, painted briefly over the image.
+    toast: Option<culling::Toast>,
+    /// Files waiting for the user to confirm a permanent delete (Windows
+    /// locations without a Recycle Bin).
+    pending_permanent_delete: Option<Vec<PathBuf>>,
 }
 
 impl App {
@@ -349,6 +355,8 @@ impl App {
             last_preview_idx: None,
             preview_stale_since: None,
             preview_bench: None,
+            toast: None,
+            pending_permanent_delete: None,
         };
 
         if !paths.is_empty() {
@@ -626,8 +634,8 @@ impl App {
                     if independent {
                         let muted = egui::Color32::from_gray(50);
                         for (i, (pane, x, w)) in [
-                            (&first[0], available.min.x, left_w),
-                            (&rest[0], right_x, right_w),
+                            (&mut first[0], available.min.x, left_w),
+                            (&mut rest[0], right_x, right_w),
                         ]
                         .into_iter()
                         .enumerate()
@@ -636,6 +644,19 @@ impl App {
                                 egui::pos2(x, available.min.y),
                                 egui::vec2(w, strip_h),
                             );
+                            // A real widget, so egui routes the click by layer: a
+                            // menu popup lying over the strip keeps its click (the
+                            // Edit menu's first row overlaps the strip). The strip
+                            // is added after the divider handle, so it takes the
+                            // top 18 px of the handle's grab area.
+                            let response = ui.interact(
+                                strip_rect,
+                                ui.id().with(("pane_strip", i)),
+                                egui::Sense::click(),
+                            );
+                            if response.clicked() {
+                                pane.selected = !pane.selected;
+                            }
                             let color = if pane.selected { accent } else { muted };
                             ui.painter().rect_filled(strip_rect, 0.0, color);
 
@@ -652,26 +673,6 @@ impl App {
                                 egui::FontId::monospace(11.0),
                                 text_color,
                             );
-                        }
-
-                        // Handle clicks on strips (use raw pointer to avoid
-                        // conflicting with divider/pane interactions)
-                        if ui.input(|i| i.pointer.any_click()) {
-                            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                                let strip_area = egui::Rect::from_min_size(
-                                    available.min,
-                                    egui::vec2(available.width(), strip_h),
-                                );
-                                if strip_area.contains(pos) {
-                                    let divider_center =
-                                        available.min.x + left_w + divider_w / 2.0;
-                                    if pos.x < divider_center {
-                                        first[0].selected = !first[0].selected;
-                                    } else {
-                                        rest[0].selected = !rest[0].selected;
-                                    }
-                                }
-                            }
                         }
                     }
 
@@ -858,7 +859,16 @@ impl eframe::App for App {
 
         // Footer — in fullscreen, revealed when cursor near bottom edge
         if self.settings.show_footer && (!self.is_fullscreen || cursor_near_bottom) {
-            menu::show_footer(ctx, &self.panes, self.divider_fraction);
+            let clicked = menu::show_footer(
+                ctx,
+                &self.panes,
+                self.divider_fraction,
+                self.settings.show_footer_buttons,
+                &self.theme,
+            );
+            if let Some(pane_idx) = clicked {
+                self.trash_pane_image(pane_idx, ctx);
+            }
         }
 
         // Slider panel — in fullscreen, revealed when cursor near bottom edge
@@ -916,5 +926,8 @@ impl eframe::App for App {
 
         // About modal (on top of everything)
         about::show_about_modal(ctx, &mut self.show_about, &self.theme);
+
+        self.paint_toast(ctx);
+        self.show_permanent_delete_modal(ctx);
     }
 }

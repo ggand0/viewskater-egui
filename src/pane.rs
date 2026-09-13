@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use eframe::egui;
@@ -309,7 +309,74 @@ impl Pane {
             cache.poll(&self.image_paths);
         }
         if let Some(tc) = &mut self.thumbnail_cache {
-            tc.poll();
+            tc.poll(&self.image_paths);
+        }
+    }
+
+    /// Move the current image to the trash through `trasher` and drop it
+    /// from the pane. Nothing in the pane changes unless `trasher` returns
+    /// `Ok`, so a failed move leaves the list, index and caches as they
+    /// were. Returns the path that was removed, or `None` for an empty pane.
+    ///
+    /// `trasher` is injected so the list bookkeeping can be tested without
+    /// touching a real trash; the app passes `trash_bin::move_to_trash`.
+    pub(crate) fn remove_current<E>(
+        &mut self,
+        ctx: &egui::Context,
+        trasher: impl FnOnce(&Path) -> Result<(), E>,
+    ) -> Result<Option<PathBuf>, E> {
+        let Some(path) = self.image_paths.get(self.current_index).cloned() else {
+            return Ok(None);
+        };
+        trasher(&path)?;
+        self.remove_index(self.current_index, ctx);
+        Ok(Some(path))
+    }
+
+    /// Drop the file at `index` from the pane after it left the directory.
+    /// Every cache keyed by file index shifts with the list. If the current
+    /// image was removed the pane shows the next one, or the previous one
+    /// at the end of the list; an emptied pane shows the drop hint.
+    pub(crate) fn remove_index(&mut self, index: usize, ctx: &egui::Context) {
+        if index >= self.image_paths.len() {
+            return;
+        }
+        self.image_paths.remove(index);
+        if let Some(cache) = &mut self.cache {
+            cache.remove_index(index, &self.image_paths);
+        }
+        self.decode_cache.remove_index(index);
+        if let Some(tc) = &mut self.thumbnail_cache {
+            tc.remove_index(index);
+        }
+
+        if self.image_paths.is_empty() {
+            self.close();
+            return;
+        }
+
+        if index < self.current_index {
+            // A file before the current one left: same image, lower index.
+            self.current_index -= 1;
+            return;
+        }
+        if index > self.current_index {
+            return;
+        }
+
+        // The current image itself left. Show the file that took its
+        // index, or the last file when the removed one was last.
+        self.current_index = index.min(self.image_paths.len() - 1);
+        if self.reset_zoom_pan_on_navigation {
+            self.reset_view();
+        }
+        let cached = self
+            .cache
+            .as_ref()
+            .and_then(|c| c.current_texture_for(self.current_index));
+        match cached {
+            Some(texture) => self.set_current_texture(Some(texture), ctx),
+            None => self.load_sync(ctx),
         }
     }
 
@@ -586,3 +653,6 @@ impl Pane {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

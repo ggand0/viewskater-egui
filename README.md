@@ -66,6 +66,7 @@ On macOS, use **Cmd** instead of **Ctrl**.
 | Ctrl+1 / Ctrl+2 | Single / dual pane |
 | Ctrl+O | Open file |
 | Ctrl+Shift+O | Open folder |
+| Delete (also Cmd+Backspace on macOS) | Move the current image to the Trash |
 | Ctrl+W | Close images |
 | Ctrl+Q | Quit |
 | Scroll wheel | Zoom (centered on cursor) |

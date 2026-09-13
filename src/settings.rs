@@ -350,6 +350,9 @@ pub struct ImageSortOrder {
 #[serde(default)]
 pub struct AppSettings {
     pub show_footer: bool,
+    /// Action buttons at the right end of the footer (Move to Trash).
+    /// Off for people who use the viewer as a plain reader.
+    pub show_footer_buttons: bool,
     pub show_fps: bool,
     pub show_cache_overlay: bool,
     pub sync_zoom_pan: bool,
@@ -371,6 +374,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             show_footer: true,
+            show_footer_buttons: true,
             show_fps: true,
             show_cache_overlay: false,
             sync_zoom_pan: true,
@@ -693,6 +697,9 @@ fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiT
     section(ui, "Display", None, theme, |ui| {
         ui.horizontal(|ui| {
             toggle_switch(ui, &mut settings.show_footer, "Footer", theme);
+        });
+        ui.horizontal(|ui| {
+            toggle_switch(ui, &mut settings.show_footer_buttons, "Footer Buttons", theme);
         });
         ui.horizontal(|ui| {
             toggle_switch(ui, &mut settings.show_fps, "FPS Overlay", theme);
