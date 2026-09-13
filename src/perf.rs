@@ -105,6 +105,13 @@ impl ImagePerfTracker {
         }
     }
 
+    /// Latest RSS and wgpu memory readings in bytes. Refreshes the RSS
+    /// reading first (throttled to once per second like the overlay).
+    pub(crate) fn memory_bytes(&mut self) -> (u64, u64) {
+        self.poll_memory();
+        (self.memory_bytes, self.gpu_memory_bytes)
+    }
+
     /// Query process RSS, throttled to once per second.
     fn poll_memory(&mut self) {
         let now = Instant::now();

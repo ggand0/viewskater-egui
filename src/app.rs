@@ -1,5 +1,6 @@
+mod bench;
 mod culling;
-mod handlers;
+pub(crate) mod handlers;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -310,6 +311,12 @@ pub struct App {
     last_preview_idx: Option<usize>,
     preview_stale_since: Option<(usize, Instant)>,
     preview_bench: Option<crate::bench::preview::PreviewBench>,
+    nav_bench: Option<crate::bench::nav::NavBench>,
+    bench_opts: crate::bench::BenchOptions,
+    /// 1-based index of the current benchmark run.
+    bench_run: usize,
+    /// Process start, for the benchmark's time-to-first-image.
+    app_start: Instant,
     /// Outcome of the last trash move, painted briefly over the image.
     toast: Option<culling::Toast>,
     /// Files waiting for the user to confirm a permanent delete (Windows
@@ -324,7 +331,8 @@ impl App {
         log_buffer: Arc<Mutex<VecDeque<String>>>,
         settings: AppSettings,
         file_receiver: Receiver<PathBuf>,
-        bench_preview: bool,
+        bench_opts: crate::bench::BenchOptions,
+        app_start: Instant,
     ) -> Self {
         let theme = UiTheme::teal_dark();
         theme.apply_to_visuals(&cc.egui_ctx);
@@ -355,6 +363,10 @@ impl App {
             last_preview_idx: None,
             preview_stale_since: None,
             preview_bench: None,
+            nav_bench: None,
+            bench_opts,
+            bench_run: 0,
+            app_start,
             toast: None,
             pending_permanent_delete: None,
         };
@@ -388,15 +400,7 @@ impl App {
             app.perf.record_image_load();
         }
 
-        if bench_preview {
-            let n = app.panes[0].image_paths.len();
-            if n > 1 {
-                log::info!("preview bench: starting on {n} images");
-                app.preview_bench = Some(crate::bench::preview::PreviewBench::new(n));
-            } else {
-                log::error!("--bench-preview requires a folder with at least 2 images");
-            }
-        }
+        app.start_benchmarks();
 
         let mut fonts = egui::FontDefinitions::default();
         let mut cjk_loaded = false;
@@ -793,7 +797,12 @@ impl eframe::App for App {
 
         self.handle_external_open_requests(ctx);
         self.handle_dropped_files(ctx);
-        self.handle_keyboard(ctx);
+        if self.nav_bench.is_some() {
+            // The benchmark is the keyboard for the duration of the run.
+            self.tick_nav_bench(ctx);
+        } else {
+            self.handle_keyboard(ctx);
+        }
         self.update_title(ctx);
 
         // Detect cursor proximity to screen edges for fullscreen UI reveal

@@ -219,6 +219,11 @@ pub struct SlidingWindowCache {
 
     max_decode_threads: usize,
 
+    /// Background decode times in ms, collected only while a benchmark
+    /// asks for them (`set_decode_sampling`). None otherwise, so the
+    /// normal path pays nothing.
+    decode_samples: Option<Vec<f64>>,
+
     ctx: egui::Context,
 }
 
@@ -242,8 +247,32 @@ impl SlidingWindowCache {
             pending_uploads: VecDeque::new(),
             pending_decodes: VecDeque::new(),
             max_decode_threads: decode_threads,
+            decode_samples: None,
             ctx: ctx.clone(),
         }
+    }
+
+    /// Start or stop collecting background decode times for a benchmark.
+    /// Starting clears any samples collected so far.
+    pub fn set_decode_sampling(&mut self, on: bool) {
+        self.decode_samples = if on { Some(Vec::new()) } else { None };
+    }
+
+    /// Hand over the decode times collected since sampling started (or
+    /// since the last call) and keep sampling.
+    pub fn take_decode_samples(&mut self) -> Vec<f64> {
+        match &mut self.decode_samples {
+            Some(v) => std::mem::take(v),
+            None => Vec::new(),
+        }
+    }
+
+    /// True when nothing is decoding, queued to decode, or waiting for GPU
+    /// upload: every slot the window wants is either loaded or failed.
+    pub fn is_settled(&self) -> bool {
+        self.running_decodes.is_empty()
+            && self.pending_decodes.is_empty()
+            && self.pending_uploads.is_empty()
     }
 
     fn cache_size(&self) -> usize {
@@ -311,6 +340,9 @@ impl SlidingWindowCache {
                     file_index,
                     result.decode_ms,
                 );
+                if let Some(samples) = &mut self.decode_samples {
+                    samples.push(result.decode_ms);
+                }
                 let name = image_paths
                     .get(file_index)
                     .and_then(|p| p.file_name())

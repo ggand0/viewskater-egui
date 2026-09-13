@@ -40,6 +40,29 @@ struct Args {
     /// latency stats to the log.
     #[arg(long)]
     bench_preview: bool,
+
+    /// Run the keyboard navigation benchmark on the given folder and exit:
+    /// skate to the end and back, then tap through at a human pace.
+    /// Combines with --bench-preview (nav runs first).
+    #[arg(long)]
+    bench_nav: bool,
+
+    /// Steps per second in the tap phase of --bench-nav.
+    #[arg(long, default_value_t = 6.0, value_name = "PER_SEC")]
+    bench_tap_rate: f64,
+
+    /// Repeat the benchmarks this many times in one process, reopening the
+    /// folder between runs.
+    #[arg(long, default_value_t = 1, value_name = "N")]
+    bench_runs: usize,
+
+    /// Write a JSON and a markdown report per run into this directory.
+    #[arg(long, value_name = "DIR")]
+    bench_out: Option<PathBuf>,
+
+    /// Free text copied into the report header, e.g. "cold" or "warm".
+    #[arg(long, value_name = "TEXT")]
+    bench_label: Option<String>,
 }
 
 /// Configure eframe's wgpu setup with the user-selected MemoryHints. The hint
@@ -97,6 +120,7 @@ fn load_icon() -> Option<egui::IconData> {
 }
 
 fn main() -> eframe::Result {
+    let app_start = std::time::Instant::now();
     let log_buffer = file_io::setup_logger();
     file_io::setup_panic_hook(log_buffer.clone());
     let args = Args::parse();
@@ -165,7 +189,15 @@ fn main() -> eframe::Result {
                 log_buffer,
                 settings,
                 file_rx,
-                args.bench_preview,
+                bench::BenchOptions {
+                    nav: args.bench_nav,
+                    preview: args.bench_preview,
+                    tap_rate: args.bench_tap_rate,
+                    runs: args.bench_runs.max(1),
+                    out_dir: args.bench_out,
+                    label: args.bench_label,
+                },
+                app_start,
             )))
         }),
     )

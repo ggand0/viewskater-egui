@@ -3884,6 +3884,7 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "rfd",
  "serde",
+ "serde_json",
  "serde_yaml",
  "sysinfo",
  "tempfile",

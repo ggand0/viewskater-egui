@@ -297,6 +297,22 @@ impl Pane {
             .is_some_and(|c| c.current_texture_for(new_index).is_some())
     }
 
+    /// Benchmark hooks: collect background decode times, and report when
+    /// the sliding window has nothing in flight.
+    pub(crate) fn set_decode_sampling(&mut self, on: bool) {
+        if let Some(cache) = &mut self.cache {
+            cache.set_decode_sampling(on);
+        }
+    }
+
+    pub(crate) fn take_decode_samples(&mut self) -> Vec<f64> {
+        self.cache.as_mut().map_or_else(Vec::new, |c| c.take_decode_samples())
+    }
+
+    pub(crate) fn is_settled(&self) -> bool {
+        self.cache.as_ref().is_none_or(|c| c.is_settled())
+    }
+
     /// Returns (lru_mb, sliding_window_mb).
     pub(crate) fn cache_memory_mb(&self) -> (f64, f64) {
         let lru = self.decode_cache.total_mb();
