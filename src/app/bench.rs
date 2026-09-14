@@ -82,7 +82,10 @@ impl App {
             Drive::Settle => {
                 let pane = &self.panes[0];
                 let has_texture = pane.current_texture.is_some();
-                let settled = pane.is_settled();
+                // The new window is full and no decode thread is alive
+                // anywhere, including leftovers from the previous run whose
+                // cache was dropped at reopen.
+                let settled = pane.is_settled() && crate::cache::active_decode_threads() == 0;
                 bench.tick_settle(now, has_texture, settled)
             }
             Drive::Step(dir) => {
@@ -137,7 +140,9 @@ impl App {
             ),
             nav: Some(bench.report()),
         };
-        log::info!("{}", report.to_text());
+        // Straight to stderr, not through the logger: the tracing layer
+        // escapes the color codes.
+        eprintln!("{}", report.to_text());
         if let Some(dir) = &self.bench_opts.out_dir {
             match report.write(dir) {
                 Ok((json, md)) => log::info!("bench report written: {} and {}", json.display(), md.display()),
@@ -176,7 +181,7 @@ impl App {
     fn finish_all_benchmarks(&mut self, ctx: &egui::Context) {
         if let Some(summary) = Summary::of(&self.bench_reports) {
             if self.bench_reports.len() > 1 {
-                log::info!("{}", summary.to_markdown());
+                eprintln!("{}", summary.to_markdown());
             }
             if let Some(dir) = &self.bench_opts.out_dir {
                 match summary.write(dir) {

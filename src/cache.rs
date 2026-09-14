@@ -227,6 +227,33 @@ pub struct SlidingWindowCache {
     ctx: egui::Context,
 }
 
+/// Decode threads currently running, across every cache and pane. Threads
+/// are detached, so when a folder is reopened the old cache is dropped
+/// while its threads finish in the background; this is the only way to
+/// know they are gone. The benchmark waits for zero before measuring.
+static ACTIVE_DECODE_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn active_decode_threads() -> usize {
+    ACTIVE_DECODE_THREADS.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Guard held by a decode thread for its whole life; the count goes down
+/// when it drops, on panic too.
+struct InFlightDecode;
+
+impl InFlightDecode {
+    fn start() -> Self {
+        ACTIVE_DECODE_THREADS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for InFlightDecode {
+    fn drop(&mut self) {
+        ACTIVE_DECODE_THREADS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
 /// Maximum number of GPU uploads issued by `SlidingWindowCache::poll` per
 /// frame.
 const UPLOADS_PER_FRAME: usize = 2;
@@ -610,7 +637,9 @@ impl SlidingWindowCache {
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
 
+        let in_flight = InFlightDecode::start();
         std::thread::spawn(move || {
+            let _in_flight = in_flight;
             let start = Instant::now();
             let image = match open_image(&path) {
                 Ok(img) => Some(crate::decode::image_to_color_image(img)),
