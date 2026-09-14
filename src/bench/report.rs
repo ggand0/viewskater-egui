@@ -165,6 +165,17 @@ fn flag(timed_out: bool) -> &'static str {
     if timed_out { " (timed out)" } else { "" }
 }
 
+/// Bold cyan when the log goes to a terminal, so the headline numbers
+/// stand out. Plain when redirected.
+fn highlight(text: String) -> String {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        format!("\x1b[1;36m{text}\x1b[0m")
+    } else {
+        text
+    }
+}
+
 impl BenchReport {
     /// Multi-line text for the log.
     pub fn to_text(&self) -> String {
@@ -197,11 +208,14 @@ impl BenchReport {
             ));
             for s in [&nav.skate_right, &nav.skate_left].into_iter().flatten() {
                 out.push_str(&format!(
-                    "skate {}: {} images in {:.2}s = {:.1} img/s (+{} prefetched), stalls {}/{} frames ({:.0}%), \
+                    "skate {}: {} images in {:.2}s = {} (+{} prefetched), stalls {}/{} frames ({}), \
                      frame p50={:.1} p99={:.1} max={:.1} ms, decode n={} p50={:.1} p95={:.1} max={:.1} ms, \
                      cpu {}s, peak rss {:.0} MB gpu {:.0} MB{}\n",
-                    s.direction, s.images, s.wall_secs, s.images_per_sec, s.skipped_images,
-                    s.stall_frames, s.frames, s.stall_share * 100.0,
+                    s.direction, s.images, s.wall_secs,
+                    highlight(format!("{:.1} img/s", s.images_per_sec)),
+                    s.skipped_images,
+                    s.stall_frames, s.frames,
+                    highlight(format!("{:.0}%", s.stall_share * 100.0)),
                     s.frame_ms.median_ms, s.frame_ms.p99_ms, s.frame_ms.max_ms,
                     s.decode_ms.count, s.decode_ms.median_ms, s.decode_ms.p95_ms, s.decode_ms.max_ms,
                     opt_secs(s.cpu_secs), s.peak_rss_mb, s.peak_gpu_mb, flag(s.timed_out),
@@ -209,11 +223,13 @@ impl BenchReport {
             }
             if let Some(t) = &nav.tap {
                 out.push_str(&format!(
-                    "tap {:.1}/s: {} steps in {:.2}s, press-to-image p50={:.1} p95={:.1} max={:.1} ms, \
+                    "tap {:.1}/s: {} steps in {:.2}s, press-to-image p50={} p95={} max={:.1} ms, \
                      stalls {}/{} frames, frame p50={:.1} p99={:.1} max={:.1} ms, decode n={} p50={:.1} p95={:.1} max={:.1} ms, \
                      cpu {}s, peak rss {:.0} MB gpu {:.0} MB{}\n",
                     t.rate_per_sec, t.steps, t.wall_secs,
-                    t.step_latency_ms.median_ms, t.step_latency_ms.p95_ms, t.step_latency_ms.max_ms,
+                    highlight(format!("{:.1}", t.step_latency_ms.median_ms)),
+                    highlight(format!("{:.1}", t.step_latency_ms.p95_ms)),
+                    t.step_latency_ms.max_ms,
                     t.stall_frames, t.frames,
                     t.frame_ms.median_ms, t.frame_ms.p99_ms, t.frame_ms.max_ms,
                     t.decode_ms.count, t.decode_ms.median_ms, t.decode_ms.p95_ms, t.decode_ms.max_ms,

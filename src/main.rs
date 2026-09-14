@@ -62,7 +62,10 @@ struct Args {
     #[arg(long, default_value_t = 6.0, value_name = "PER_SEC")]
     bench_tap_rate: f64,
 
-    /// Steps in the tap phase of --bench-nav.
+    /// Add a tap phase to --bench-nav: N single steps at --bench-tap-rate,
+    /// measuring press-to-image latency. Off by default; useful for slow
+    /// sources (RAW, JPEG 2000, network shares) where a decode can take
+    /// longer than the gap between taps.
     #[arg(long, default_value_t = bench::nav::DEFAULT_TAP_STEPS, value_name = "N")]
     bench_tap_steps: usize,
 
