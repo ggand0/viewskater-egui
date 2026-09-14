@@ -250,10 +250,22 @@ impl SliderBench {
         // phase measures cache hits instead of clicks.
         let half = scrub.span.clamp(0.0, 1.0) / 2.0;
         let scrubbed = |t: f32| anchors.iter().any(|a| (t - a).abs() <= half + 0.5 / images);
-        let candidates: Vec<f32> = (0..jumps * 2)
-            .map(|i| (i as f32 + 0.5) / (jumps * 2) as f32)
-            .filter(|t| !scrubbed(*t))
-            .collect();
+        // Evenly spaced candidates over the rail, minus the scrubbed
+        // regions. Start with twice as many as needed and double the
+        // density until `jumps` survive, so the flag is honoured however
+        // much of the rail the scrubs cover. Give up once candidates are
+        // closer than one image apart.
+        let mut count = jumps * 2;
+        let candidates: Vec<f32> = loop {
+            let c: Vec<f32> = (0..count)
+                .map(|i| (i as f32 + 0.5) / count as f32)
+                .filter(|t| !scrubbed(*t))
+                .collect();
+            if c.len() >= jumps || count as f32 >= images * 2.0 {
+                break c;
+            }
+            count *= 2;
+        };
         let jump: Vec<f32> = super::scrambled_order(candidates.len())
             .into_iter()
             .map(|i| candidates[i])
@@ -582,6 +594,25 @@ mod tests {
         let b = SliderBench::new(101, 1.0, wide, 4, Instant::now());
         assert_eq!(b.jump_targets, vec![1.0 / 16.0, 15.0 / 16.0, 3.0 / 16.0, 13.0 / 16.0]);
         assert!(b.jump_targets.iter().all(|t| (t - 0.5).abs() > 0.2));
+    }
+
+    #[test]
+    fn jump_count_is_honoured_when_scrubs_cover_most_of_the_rail() {
+        // Three anchors with span 0.2 scrub 60 percent of the rail. The
+        // default 20 jumps must still be 20, all outside the scrubbed
+        // regions and all distinct.
+        let params = ScrubParams { anchors: 3, span: 0.2, passes: 3, secs: 2.0 };
+        let b = SliderBench::new(140, 4.0, params, 20, Instant::now());
+        assert_eq!(b.jump_targets.len(), 20);
+        for t in &b.jump_targets {
+            for a in [0.25f32, 0.5, 0.75] {
+                assert!((t - a).abs() > 0.1, "{t} inside the scrub at {a}");
+            }
+        }
+        let mut sorted = b.jump_targets.clone();
+        sorted.sort_by(|a, b| a.total_cmp(b));
+        sorted.dedup();
+        assert_eq!(sorted.len(), 20);
     }
 
     #[test]
