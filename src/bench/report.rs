@@ -165,11 +165,14 @@ pub(crate) struct SyncStats {
 pub(crate) struct SliderPhaseReport {
     pub phase: String,
     pub wall_secs: f64,
-    /// Frames where the drag's rail position mapped to a new index: images
-    /// landed on. The drag jumps over the images in between.
+    /// Frames where the handle's rail position converted to an image
+    /// number different from the one on screen. Each such frame asks for
+    /// that image. Images the handle moved past between two frames are
+    /// never asked for and are not counted.
     pub positions: usize,
-    /// Positions that put an image on screen; the rest were skipped by
-    /// the 10 ms throttle or had no texture.
+    /// How many of those asks put the image on screen. The only way one
+    /// does not: `SliderLoader` refuses a decode less than 10 ms after
+    /// the previous one.
     pub images_shown: usize,
     pub display_ratio: f64,
     pub sync: SyncStats,
@@ -309,7 +312,7 @@ impl BenchReport {
                     format!(", click-to-image p50={} p95={:.1} max={:.1} ms", highlight(format!("{:.1}", j.median_ms)), j.p95_ms, j.max_ms)
                 });
                 out.push_str(&format!(
-                    "slider {}: landed on {} of {} images, {} shown ({} of landed) in {:.2}s, sync loads n={} block p50={} p95={:.1} max={:.1} ms \
+                    "slider {}: handle pointed at {} of {} images, {} displayed ({}) in {:.2}s, sync loads n={} block p50={} p95={:.1} max={:.1} ms \
                      (decode {:.1} convert {:.1} p50), lru hits {}, refill after {} releases p50={:.0} max={:.0} ms{}, \
                      frame p50={:.1} p99={:.1} max={:.1} ms, bg decode n={} p50={:.1} ms, cpu {}s, peak rss {:.0} MB gpu {:.0} MB{}\n",
                     ph.phase, ph.positions, sl.images, ph.images_shown,
@@ -398,7 +401,7 @@ impl BenchReport {
             out.push_str(&format!(
                 "\n## Slider navigation\n\n\
                  Sweep {:.1} s, {} scrub anchors, {} jumps over {} images. Settle: first image {}, window full {}{}.\n\n\
-                 | Phase | Positions landed on | Shown (of landed) | Sync block ms n, p50(median) / p95 / max | Sync p50 decode / convert ms | LRU hits | Refill ms p50 / max (releases) | Click-to-image ms p50 / p95 / max | Frame ms p50 / p99 / max | CPU s | Peak RSS MB | Peak GPU MB |\n\
+                 | Phase | Images the handle pointed at | Displayed (share of pointed at) | Sync block ms n, p50(median) / p95 / max | Sync p50 decode / convert ms | LRU hits | Refill ms p50 / max (releases) | Click-to-image ms p50 / p95 / max | Frame ms p50 / p99 / max | CPU s | Peak RSS MB | Peak GPU MB |\n\
                  |---|---|---|---|---|---|---|---|---|---|---|---|\n",
                 sl.sweep_secs, sl.scrub_anchors, sl.jumps, sl.images,
                 opt_ms(sl.settle_first_image_ms), opt_ms(sl.settle_settled_ms), flag(sl.settle_timed_out),
@@ -794,7 +797,7 @@ impl Summary {
         if self.folders.iter().any(|f| !f.slider.is_empty()) {
             out.push_str(
                 "\n## Slider navigation\n\n\
-                 | Folder | Runs | Phase | Landed on | Shown % of landed | Sync block p50 ms | Sync block p95 ms | LRU hits | Refill p50 ms | Click-to-image p50 ms | p95 ms | Frame p99 ms | CPU s |\n\
+                 | Folder | Runs | Phase | Images pointed at | Displayed % | Sync block p50 ms | Sync block p95 ms | LRU hits | Refill p50 ms | Click-to-image p50 ms | p95 ms | Frame p99 ms | CPU s |\n\
                  |---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
             );
             for f in &self.folders {
