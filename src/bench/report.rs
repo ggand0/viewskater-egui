@@ -195,6 +195,9 @@ pub(crate) struct SliderReport {
     pub images: usize,
     pub sweep_secs: f64,
     pub scrub_anchors: usize,
+    pub scrub_span: f32,
+    pub scrub_passes: usize,
+    pub scrub_secs: f64,
     pub jumps: usize,
     pub settle_first_image_ms: Option<f64>,
     pub settle_settled_ms: Option<f64>,
@@ -303,8 +306,8 @@ impl BenchReport {
         }
         if let Some(sl) = &self.slider {
             out.push_str(&format!(
-                "slider (sweep {:.1}s, {} scrub anchors, {} jumps): settle first image {}, window full {}{}\n",
-                sl.sweep_secs, sl.scrub_anchors, sl.jumps,
+                "slider (sweep {:.1}s; {} scrubs of {} passes across {:.0}% of the rail in {:.1}s; {} jumps): settle first image {}, window full {}{}\n",
+                sl.sweep_secs, sl.scrub_anchors, sl.scrub_passes, sl.scrub_span * 100.0, sl.scrub_secs, sl.jumps,
                 opt_ms(sl.settle_first_image_ms), opt_ms(sl.settle_settled_ms), flag(sl.settle_timed_out),
             ));
             for ph in sl.phases() {
@@ -312,7 +315,7 @@ impl BenchReport {
                     format!(", click-to-image p50={} p95={:.1} max={:.1} ms", highlight(format!("{:.1}", j.median_ms)), j.p95_ms, j.max_ms)
                 });
                 out.push_str(&format!(
-                    "slider {}: handle pointed at {} of {} images, {} displayed ({}) in {:.2}s, sync loads n={} block p50={} p95={:.1} max={:.1} ms \
+                    "slider {}: pointed at a new image on {} frames (folder: {} images), {} displayed ({}) in {:.2}s, sync loads n={} block p50={} p95={:.1} max={:.1} ms \
                      (decode {:.1} convert {:.1} p50), lru hits {}, refill after {} releases p50={:.0} max={:.0} ms{}, \
                      frame p50={:.1} p99={:.1} max={:.1} ms, bg decode n={} p50={:.1} ms, cpu {}s, peak rss {:.0} MB gpu {:.0} MB{}\n",
                     ph.phase, ph.positions, sl.images, ph.images_shown,
@@ -400,10 +403,10 @@ impl BenchReport {
         if let Some(sl) = &self.slider {
             out.push_str(&format!(
                 "\n## Slider navigation\n\n\
-                 Sweep {:.1} s, {} scrub anchors, {} jumps over {} images. Settle: first image {}, window full {}{}.\n\n\
-                 | Phase | Images the handle pointed at | Displayed (share of pointed at) | Sync block ms n, p50(median) / p95 / max | Sync p50 decode / convert ms | LRU hits | Refill ms p50 / max (releases) | Click-to-image ms p50 / p95 / max | Frame ms p50 / p99 / max | CPU s | Peak RSS MB | Peak GPU MB |\n\
+                 Sweep {:.1} s; {} scrubs of {} passes across {:.0}% of the rail in {:.1} s; {} jumps; {} images. Settle: first image {}, window full {}{}.\n\n\
+                 | Phase | Frames pointing at a new image | Displayed (share of those) | Sync block ms n, p50(median) / p95 / max | Sync p50 decode / convert ms | LRU hits | Refill ms p50 / max (releases) | Click-to-image ms p50 / p95 / max | Frame ms p50 / p99 / max | CPU s | Peak RSS MB | Peak GPU MB |\n\
                  |---|---|---|---|---|---|---|---|---|---|---|---|\n",
-                sl.sweep_secs, sl.scrub_anchors, sl.jumps, sl.images,
+                sl.sweep_secs, sl.scrub_anchors, sl.scrub_passes, sl.scrub_span * 100.0, sl.scrub_secs, sl.jumps, sl.images,
                 opt_ms(sl.settle_first_image_ms), opt_ms(sl.settle_settled_ms), flag(sl.settle_timed_out),
             ));
             for ph in sl.phases() {
@@ -797,7 +800,7 @@ impl Summary {
         if self.folders.iter().any(|f| !f.slider.is_empty()) {
             out.push_str(
                 "\n## Slider navigation\n\n\
-                 | Folder | Runs | Phase | Images pointed at | Displayed % | Sync block p50 ms | Sync block p95 ms | LRU hits | Refill p50 ms | Click-to-image p50 ms | p95 ms | Frame p99 ms | CPU s |\n\
+                 | Folder | Runs | Phase | Frames pointing at a new image | Displayed % | Sync block p50 ms | Sync block p95 ms | LRU hits | Refill p50 ms | Click-to-image p50 ms | p95 ms | Frame p99 ms | CPU s |\n\
                  |---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
             );
             for f in &self.folders {
@@ -901,7 +904,7 @@ mod summary_tests {
         };
         let mut a = sample();
         a.slider = Some(SliderReport {
-            images: 100, sweep_secs: 4.0, scrub_anchors: 0, jumps: 20,
+            images: 100, sweep_secs: 4.0, scrub_anchors: 0, scrub_span: 0.2, scrub_passes: 3, scrub_secs: 2.0, jumps: 20,
             settle_first_image_ms: None, settle_settled_ms: None, settle_timed_out: false,
             sweep: None, scrub: None, jump: Some(phase(80.0)),
         });

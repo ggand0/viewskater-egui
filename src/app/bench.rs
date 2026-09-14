@@ -90,7 +90,7 @@ impl App {
         self.slider_bench = Some(SliderBench::new(
             n,
             self.bench_opts.sweep_secs,
-            self.bench_opts.scrub_anchors,
+            self.bench_opts.scrub,
             self.bench_opts.jumps,
             run_start,
         ));

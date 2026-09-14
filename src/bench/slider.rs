@@ -8,10 +8,11 @@
 //!
 //! 1. Sweep: drag from the first image to the last over `sweep_secs`, one
 //!    position per frame, then release.
-//! 2. Scrub: at each of `scrub_anchors` scattered positions, press, drag a
-//!    little right, back left past the anchor, back to it, over one
-//!    second, then release. A person hunting for a frame; the return legs
-//!    revisit positions just loaded, so the LRU shows here.
+//! 2. Scrub: at each of `scrub.anchors` scattered positions, press and
+//!    drag back and forth across `scrub.span` of the rail (default a
+//!    fifth of it), `scrub.passes` times over `scrub.secs`, then release.
+//!    A person hunting for a frame; the return passes revisit images just
+//!    loaded, so the LRU shows here.
 //! 3. Jump: `jumps` scattered positions, each a press and release in one
 //!    frame. The click gesture.
 //!
@@ -25,10 +26,19 @@ use std::time::{Duration, Instant};
 use super::report::{SliderPhaseReport, SliderReport, SyncStats};
 use super::{process_cpu_secs, LatencyStats};
 
-/// How far a scrub moves each side of its anchor, as a share of the rail.
-const SCRUB_AMPLITUDE: f32 = 0.05;
-/// Duration of one scrub gesture, press to release.
-const SCRUB_SECS: f64 = 1.0;
+/// Shape of one scrub gesture, from the `--bench-scrub-*` flags.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ScrubParams {
+    /// How many anchors to scrub around; 0 skips the phase.
+    pub anchors: usize,
+    /// Width of the region swept, as a share of the rail. The handle goes
+    /// half of it each side of the anchor.
+    pub span: f32,
+    /// Back-and-forth passes per anchor.
+    pub passes: usize,
+    /// Duration of one gesture, press to release.
+    pub secs: f64,
+}
 /// A wait (for refill, or for a jump target to appear) longer than this is
 /// marked timed out and the run moves on.
 const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -201,6 +211,7 @@ enum Gesture {
 pub(crate) struct SliderBench {
     num_images: usize,
     sweep_secs: f64,
+    scrub_params: ScrubParams,
     /// Rail positions for the scrub and jump phases, disjoint.
     scrub_anchors: Vec<f32>,
     jump_targets: Vec<f32>,
@@ -225,18 +236,19 @@ impl SliderBench {
     /// bench's scrambled order (front, back, front + 1, back - 1, ...) so
     /// consecutive gestures land far apart; scrub takes the first
     /// `scrub_anchors`, jump the next `jumps`, clamped to the folder.
-    pub fn new(num_images: usize, sweep_secs: f64, scrub_anchors: usize, jumps: usize, run_start: Instant) -> Self {
+    pub fn new(num_images: usize, sweep_secs: f64, scrub: ScrubParams, jumps: usize, run_start: Instant) -> Self {
         let order = super::scrambled_order(num_images);
-        let span = (num_images - 1).max(1) as f32;
-        let t_of = |i: &usize| *i as f32 / span;
-        let scrub: Vec<f32> = order.iter().take(scrub_anchors).map(t_of).collect();
-        // Jump targets stay clear of every scrubbed range, otherwise the
-        // clicks land on images the scrub phase just put in the LRU and
-        // the phase measures cache hits instead of clicks.
-        let scrubbed = |t: f32| scrub.iter().any(|a| (t - a).abs() <= SCRUB_AMPLITUDE + 0.5 / span);
+        let images = (num_images - 1).max(1) as f32;
+        let t_of = |i: &usize| *i as f32 / images;
+        let anchors: Vec<f32> = order.iter().take(scrub.anchors).map(t_of).collect();
+        // Jump targets stay clear of every scrubbed region, otherwise the
+        // clicks hit images the scrub phase just put in the LRU and the
+        // phase measures cache hits instead of clicks.
+        let half = scrub.span.clamp(0.0, 1.0) / 2.0;
+        let scrubbed = |t: f32| anchors.iter().any(|a| (t - a).abs() <= half + 0.5 / images);
         let jump: Vec<f32> = order
             .iter()
-            .skip(scrub.len())
+            .skip(anchors.len())
             .map(t_of)
             .filter(|t| !scrubbed(*t))
             .take(jumps)
@@ -244,7 +256,13 @@ impl SliderBench {
         Self {
             num_images,
             sweep_secs: sweep_secs.max(0.1),
-            scrub_anchors: scrub,
+            scrub_params: ScrubParams {
+                span: scrub.span.clamp(0.0, 1.0),
+                passes: scrub.passes.max(1),
+                secs: scrub.secs.max(0.1),
+                ..scrub
+            },
+            scrub_anchors: anchors,
             jump_targets: jump,
             run_start,
             phase: Phase::Settle,
@@ -315,15 +333,19 @@ impl SliderBench {
             }
             Phase::Scrub => {
                 let anchor = self.scrub_anchors[self.cursor];
-                let u = ((now - since).as_secs_f64() / SCRUB_SECS) as f32;
-                let a = SCRUB_AMPLITUDE;
-                // anchor -> anchor + a -> anchor - a -> anchor, three legs.
-                let t = if u < 1.0 / 3.0 {
-                    anchor + a * (u * 3.0)
-                } else if u < 2.0 / 3.0 {
-                    anchor + a - 2.0 * a * ((u - 1.0 / 3.0) * 3.0)
+                let u = (now - since).as_secs_f64() / self.scrub_params.secs;
+                // Each pass: anchor -> +half -> -half -> anchor, three
+                // legs. `passes` of them fill the gesture.
+                let p = ((u * self.scrub_params.passes as f64).fract()) as f32;
+                let a = self.scrub_params.span / 2.0;
+                let t = if u >= 1.0 {
+                    anchor
+                } else if p < 1.0 / 3.0 {
+                    anchor + a * (p * 3.0)
+                } else if p < 2.0 / 3.0 {
+                    anchor + a - 2.0 * a * ((p - 1.0 / 3.0) * 3.0)
                 } else {
-                    anchor - a + a * ((u - 2.0 / 3.0) * 3.0).min(1.0)
+                    anchor - a + a * ((p - 2.0 / 3.0) * 3.0)
                 };
                 Some(BenchDrag { t: t.clamp(0.0, 1.0), released: u >= 1.0 })
             }
@@ -377,11 +399,11 @@ impl SliderBench {
         // clicked image came from the cache and nothing needed decoding,
         // so both are checked in order.
         if let Some(Gesture::Landing { clicked_at, target }) = self.gesture {
-            let landed = frame.has_texture && frame.current_index == target;
+            let target_on_screen = frame.has_texture && frame.current_index == target;
             let timed_out = now.duration_since(clicked_at) > WAIT_TIMEOUT;
-            if landed || timed_out {
+            if target_on_screen || timed_out {
                 if let Some(s) = self.stats() {
-                    if landed {
+                    if target_on_screen {
                         s.jump_ms.push((now - clicked_at).as_secs_f64() * 1000.0);
                     } else {
                         s.timed_out = true;
@@ -485,6 +507,9 @@ impl SliderBench {
             images: self.num_images,
             sweep_secs: self.sweep_secs,
             scrub_anchors: self.scrub_anchors.len(),
+            scrub_span: self.scrub_params.span,
+            scrub_passes: self.scrub_params.passes,
+            scrub_secs: self.scrub_params.secs,
             jumps: self.jump_targets.len(),
             settle_first_image_ms: self.settle_first_image.map(|d| d.as_secs_f64() * 1000.0),
             settle_settled_ms: self.settle_done.map(|d| d.as_secs_f64() * 1000.0),
@@ -508,8 +533,12 @@ mod tests {
         SliderFrame { target_changed, shown, current_index, has_texture: true, settled }
     }
 
+    fn scrub(anchors: usize) -> ScrubParams {
+        ScrubParams { anchors, span: 0.1, passes: 1, secs: 1.0 }
+    }
+
     fn settled_bench(n: usize, anchors: usize, jumps: usize, t0: Instant) -> SliderBench {
-        let mut b = SliderBench::new(n, 1.0, anchors, jumps, t0);
+        let mut b = SliderBench::new(n, 1.0, scrub(anchors), jumps, t0);
         assert_eq!(b.tick_settle(t0, true, true), Some(PhaseEnd(Phase::Settle)));
         assert_eq!(b.phase(), Phase::Sweep);
         b
@@ -521,7 +550,7 @@ mod tests {
         // each side. Order: 0, 100, 1, 99, 2, 98, ... so the first jump
         // candidates (2, 98, 3, 97, ...) all sit inside the scrub around
         // 0 or 100 and are skipped until index 6 and 94.
-        let b = SliderBench::new(101, 1.0, 2, 2, Instant::now());
+        let b = SliderBench::new(101, 1.0, scrub(2), 2, Instant::now());
         assert_eq!(b.scrub_anchors, vec![0.0, 1.0]);
         assert_eq!(b.jump_targets, vec![0.06, 0.94]);
         assert_eq!(b.index_of(0.94), 94);
@@ -550,6 +579,28 @@ mod tests {
         assert_eq!(r.display_ratio, 0.5);
         assert_eq!(r.releases, 1);
         assert_eq!(r.refill_ms.max_ms, 200.0);
+    }
+
+    #[test]
+    fn scrub_repeats_its_passes_across_the_span() {
+        let t0 = Instant::now();
+        let params = ScrubParams { anchors: 1, span: 0.4, passes: 2, secs: 2.0 };
+        let mut b = SliderBench::new(101, 1.0, params, 0, t0);
+        b.tick_settle(t0, true, true);
+        let d = b.drag(ms(t0, 1000)).unwrap();
+        b.tick(ms(t0, 1000), Some(d), frame(true, true, 100, false));
+        assert_eq!(b.tick(ms(t0, 1001), None, frame(false, false, 100, true)), Some(PhaseEnd(Phase::Sweep)));
+        let s0 = ms(t0, 1001);
+        // First anchor is image 0 (t = 0), half span 0.2. Each pass is
+        // anchor -> +0.2 -> -0.2 -> anchor over one second; the trough
+        // clamps at the rail start. Two passes in 2 s.
+        let at = |ms_: u64| b.drag(s0 + Duration::from_millis(ms_)).unwrap().t;
+        assert!((at(333) - 0.2).abs() < 2e-3, "{}", at(333));
+        assert_eq!(at(667), 0.0);
+        assert!(at(1000).abs() < 2e-3, "{}", at(1000));
+        assert!((at(1333) - 0.2).abs() < 2e-3, "second pass peak: {}", at(1333));
+        let end = b.drag(s0 + Duration::from_millis(2000)).unwrap();
+        assert!(end.released && end.t == 0.0);
     }
 
     #[test]

@@ -58,8 +58,21 @@ struct Args {
     bench_sweep_secs: f64,
 
     /// Number of scrub gestures in --bench-slider (0 skips the phase).
-    #[arg(long, default_value_t = 10, value_name = "N")]
+    /// Each one drags back and forth around a scattered position.
+    #[arg(long, default_value_t = 5, value_name = "N")]
     bench_scrub_anchors: usize,
+
+    /// Width of the region one scrub sweeps, as a share of the rail.
+    #[arg(long, default_value_t = 0.2, value_name = "SHARE")]
+    bench_scrub_span: f32,
+
+    /// Back-and-forth passes per scrub.
+    #[arg(long, default_value_t = 3, value_name = "N")]
+    bench_scrub_passes: usize,
+
+    /// Seconds one scrub takes, press to release.
+    #[arg(long, default_value_t = 2.0, value_name = "SECS")]
+    bench_scrub_secs: f64,
 
     /// Number of click-to-jump gestures in --bench-slider (0 skips).
     #[arg(long, default_value_t = 20, value_name = "N")]
@@ -234,7 +247,12 @@ fn main() -> eframe::Result {
                     tap_rate: args.bench_tap_rate,
                     tap_steps: args.bench_tap_steps,
                     sweep_secs: args.bench_sweep_secs,
-                    scrub_anchors: args.bench_scrub_anchors,
+                    scrub: bench::slider::ScrubParams {
+                        anchors: args.bench_scrub_anchors,
+                        span: args.bench_scrub_span,
+                        passes: args.bench_scrub_passes,
+                        secs: args.bench_scrub_secs,
+                    },
                     jumps: args.bench_jumps,
                     runs: args.bench_runs.max(1),
                     out_dir: args.bench_out,

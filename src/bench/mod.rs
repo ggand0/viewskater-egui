@@ -19,7 +19,7 @@ pub(crate) mod slider;
 
 /// Which benchmarks to run and how, from the CLI. Modes combine: nav runs
 /// first, then preview, on the same folder.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct BenchOptions {
     pub nav: bool,
     pub slider: bool,
@@ -33,10 +33,10 @@ pub(crate) struct BenchOptions {
     pub tap_rate: f64,
     /// Steps in the tap phase.
     pub tap_steps: usize,
-    /// `--bench-slider`: seconds for the sweep across the rail, number of
-    /// scrub anchors, number of jumps.
+    /// `--bench-slider`: seconds for the sweep across the rail, the scrub
+    /// gesture, number of jumps.
     pub sweep_secs: f64,
-    pub scrub_anchors: usize,
+    pub scrub: slider::ScrubParams,
     pub jumps: usize,
     /// Repeat the whole sequence this many times in one process, reopening
     /// the folder between runs.
