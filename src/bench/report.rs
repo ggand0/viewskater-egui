@@ -147,10 +147,70 @@ pub(crate) struct NavReport {
     pub tap: Option<TapReport>,
 }
 
+/// Main-thread sync loads from `Pane::load_sync` during one phase.
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct SyncStats {
+    pub count: usize,
+    pub decode_ms: LatencyStats,
+    pub convert_ms: LatencyStats,
+    /// Time to hand the pixels to egui. egui queues the GPU copy for the
+    /// end of the frame, so this is near zero and the real upload cost
+    /// shows in frame time. Kept for completeness, not printed.
+    pub upload_ms: LatencyStats,
+    /// decode + convert + upload: how long the frame was blocked.
+    pub total_ms: LatencyStats,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct SliderPhaseReport {
+    pub phase: String,
+    pub wall_secs: f64,
+    /// Slider positions visited (target index changed).
+    pub positions: usize,
+    /// Positions that put an image on screen; the rest were skipped by
+    /// the 10 ms throttle or had no texture.
+    pub images_shown: usize,
+    pub display_ratio: f64,
+    pub sync: SyncStats,
+    pub lru_hits: usize,
+    pub releases: usize,
+    /// Release to a full sliding window.
+    pub refill_ms: LatencyStats,
+    /// Jump phase only: click to the target image being on screen.
+    pub jump_ms: Option<LatencyStats>,
+    pub frame_ms: LatencyStats,
+    pub bg_decode_ms: LatencyStats,
+    pub cpu_secs: Option<f64>,
+    pub peak_rss_mb: f64,
+    pub peak_gpu_mb: f64,
+    pub timed_out: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct SliderReport {
+    pub images: usize,
+    pub sweep_secs: f64,
+    pub scrub_anchors: usize,
+    pub jumps: usize,
+    pub settle_first_image_ms: Option<f64>,
+    pub settle_settled_ms: Option<f64>,
+    pub settle_timed_out: bool,
+    pub sweep: Option<SliderPhaseReport>,
+    pub scrub: Option<SliderPhaseReport>,
+    pub jump: Option<SliderPhaseReport>,
+}
+
+impl SliderReport {
+    fn phases(&self) -> impl Iterator<Item = &SliderPhaseReport> {
+        [&self.sweep, &self.scrub, &self.jump].into_iter().flatten()
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct BenchReport {
     pub header: Header,
     pub nav: Option<NavReport>,
+    pub slider: Option<SliderReport>,
 }
 
 fn opt_secs(v: Option<f64>) -> String {
@@ -237,6 +297,36 @@ impl BenchReport {
                 ));
             }
         }
+        if let Some(sl) = &self.slider {
+            out.push_str(&format!(
+                "slider (sweep {:.1}s, {} scrub anchors, {} jumps): settle first image {}, window full {}{}\n",
+                sl.sweep_secs, sl.scrub_anchors, sl.jumps,
+                opt_ms(sl.settle_first_image_ms), opt_ms(sl.settle_settled_ms), flag(sl.settle_timed_out),
+            ));
+            for ph in sl.phases() {
+                let jump = ph.jump_ms.map_or(String::new(), |j| {
+                    format!(", click-to-image p50={} p95={:.1} max={:.1} ms", highlight(format!("{:.1}", j.median_ms)), j.p95_ms, j.max_ms)
+                });
+                out.push_str(&format!(
+                    "slider {}: {} positions, {} shown ({}) in {:.2}s, sync loads n={} block p50={} p95={:.1} max={:.1} ms \
+                     (decode {:.1} convert {:.1} p50), lru hits {}, refill after {} releases p50={:.0} max={:.0} ms{}, \
+                     frame p50={:.1} p99={:.1} max={:.1} ms, bg decode n={} p50={:.1} ms, cpu {}s, peak rss {:.0} MB gpu {:.0} MB{}\n",
+                    ph.phase, ph.positions, ph.images_shown,
+                    highlight(format!("{:.0}%", ph.display_ratio * 100.0)),
+                    ph.wall_secs,
+                    ph.sync.count,
+                    highlight(format!("{:.1}", ph.sync.total_ms.median_ms)),
+                    ph.sync.total_ms.p95_ms, ph.sync.total_ms.max_ms,
+                    ph.sync.decode_ms.median_ms, ph.sync.convert_ms.median_ms,
+                    ph.lru_hits,
+                    ph.releases, ph.refill_ms.median_ms, ph.refill_ms.max_ms,
+                    jump,
+                    ph.frame_ms.median_ms, ph.frame_ms.p99_ms, ph.frame_ms.max_ms,
+                    ph.bg_decode_ms.count, ph.bg_decode_ms.median_ms,
+                    opt_secs(ph.cpu_secs), ph.peak_rss_mb, ph.peak_gpu_mb, flag(ph.timed_out),
+                ));
+            }
+        }
         out
     }
 
@@ -300,6 +390,30 @@ impl BenchReport {
                     t.frame_ms.median_ms, t.frame_ms.p99_ms, t.frame_ms.max_ms,
                     t.decode_ms.count, t.decode_ms.median_ms, t.decode_ms.p95_ms, t.decode_ms.max_ms,
                     opt_secs(t.cpu_secs), t.peak_rss_mb, t.peak_gpu_mb,
+                ));
+            }
+        }
+        if let Some(sl) = &self.slider {
+            out.push_str(&format!(
+                "\n## Slider navigation\n\n\
+                 Sweep {:.1} s, {} scrub anchors, {} jumps. Settle: first image {}, window full {}{}.\n\n\
+                 | Phase | Positions | Shown | Sync block ms n, p50(median) / p95 / max | Sync p50 decode / convert ms | LRU hits | Refill ms p50 / max (releases) | Click-to-image ms p50 / p95 / max | Frame ms p50 / p99 / max | CPU s | Peak RSS MB | Peak GPU MB |\n\
+                 |---|---|---|---|---|---|---|---|---|---|---|---|\n",
+                sl.sweep_secs, sl.scrub_anchors, sl.jumps,
+                opt_ms(sl.settle_first_image_ms), opt_ms(sl.settle_settled_ms), flag(sl.settle_timed_out),
+            ));
+            for ph in sl.phases() {
+                let jump = ph.jump_ms.map_or("-".to_string(), |j| format!("{:.1} / {:.1} / {:.1}", j.median_ms, j.p95_ms, j.max_ms));
+                out.push_str(&format!(
+                    "| {}{} | {} | {} ({:.0}%) | {}, {:.1} / {:.1} / {:.1} | {:.1} / {:.1} | {} | {:.0} / {:.0} ({}) | {} | {:.1} / {:.1} / {:.1} | {} | {:.0} | {:.0} |\n",
+                    ph.phase, flag(ph.timed_out), ph.positions, ph.images_shown, ph.display_ratio * 100.0,
+                    ph.sync.count, ph.sync.total_ms.median_ms, ph.sync.total_ms.p95_ms, ph.sync.total_ms.max_ms,
+                    ph.sync.decode_ms.median_ms, ph.sync.convert_ms.median_ms,
+                    ph.lru_hits,
+                    ph.refill_ms.median_ms, ph.refill_ms.max_ms, ph.releases,
+                    jump,
+                    ph.frame_ms.median_ms, ph.frame_ms.p99_ms, ph.frame_ms.max_ms,
+                    opt_secs(ph.cpu_secs), ph.peak_rss_mb, ph.peak_gpu_mb,
                 ));
             }
         }
@@ -378,6 +492,7 @@ mod tests {
                 skate_left: Some(SkateReport { direction: "left".into(), ..skate }),
                 tap: None,
             }),
+            slider: None,
         }
     }
 
@@ -439,7 +554,7 @@ impl Spread {
     }
 
     fn cell(&self, decimals: usize) -> String {
-        if self.n <= 1 {
+        if self.n <= 1 || self.min == self.max {
             format!("{:.*}", decimals, self.mean)
         } else {
             format!("{:.*} ({:.*} to {:.*})", decimals, self.mean, decimals, self.min, decimals, self.max)
@@ -511,6 +626,43 @@ impl TapSummary {
     }
 }
 
+/// One slider phase aggregated over runs.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct SliderPhaseSummary {
+    pub phase: String,
+    pub positions: usize,
+    pub display_ratio: Spread,
+    pub sync_block_p50_ms: Spread,
+    pub sync_block_p95_ms: Spread,
+    pub lru_hits: Spread,
+    pub refill_p50_ms: Spread,
+    pub jump_p50_ms: Option<Spread>,
+    pub jump_p95_ms: Option<Spread>,
+    pub frame_p99_ms: Spread,
+    pub cpu_secs: Spread,
+    pub timeouts: usize,
+}
+
+impl SliderPhaseSummary {
+    fn of(runs: &[&SliderPhaseReport]) -> Self {
+        let has_jump = runs.iter().any(|r| r.jump_ms.is_some());
+        Self {
+            phase: runs[0].phase.clone(),
+            positions: runs[0].positions,
+            display_ratio: Spread::of(runs.iter().map(|r| r.display_ratio)),
+            sync_block_p50_ms: Spread::of(runs.iter().map(|r| r.sync.total_ms.median_ms)),
+            sync_block_p95_ms: Spread::of(runs.iter().map(|r| r.sync.total_ms.p95_ms)),
+            lru_hits: Spread::of(runs.iter().map(|r| r.lru_hits as f64)),
+            refill_p50_ms: Spread::of(runs.iter().map(|r| r.refill_ms.median_ms)),
+            jump_p50_ms: has_jump.then(|| Spread::of(runs.iter().filter_map(|r| r.jump_ms.map(|j| j.median_ms)))),
+            jump_p95_ms: has_jump.then(|| Spread::of(runs.iter().filter_map(|r| r.jump_ms.map(|j| j.p95_ms)))),
+            frame_p99_ms: Spread::of(runs.iter().map(|r| r.frame_ms.p99_ms)),
+            cpu_secs: Spread::of(runs.iter().filter_map(|r| r.cpu_secs)),
+            timeouts: runs.iter().filter(|r| r.timed_out).count(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct FolderSummary {
     pub folder: PathBuf,
@@ -521,6 +673,7 @@ pub(crate) struct FolderSummary {
     pub skate_right: Option<SkateSummary>,
     pub skate_left: Option<SkateSummary>,
     pub tap: Option<TapSummary>,
+    pub slider: Vec<SliderPhaseSummary>,
 }
 
 /// All runs of one invocation, averaged per folder. Written once at the
@@ -556,6 +709,11 @@ impl Summary {
             let rights: Vec<&SkateReport> = navs.iter().filter_map(|n| n.skate_right.as_ref()).collect();
             let lefts: Vec<&SkateReport> = navs.iter().filter_map(|n| n.skate_left.as_ref()).collect();
             let taps: Vec<&TapReport> = navs.iter().filter_map(|n| n.tap.as_ref()).collect();
+            let sliders: Vec<&SliderReport> = runs.iter().filter_map(|r| r.slider.as_ref()).collect();
+            let slider_phase = |pick: fn(&SliderReport) -> Option<&SliderPhaseReport>| {
+                let phases: Vec<&SliderPhaseReport> = sliders.iter().filter_map(|s| pick(s)).collect();
+                (!phases.is_empty()).then(|| SliderPhaseSummary::of(&phases))
+            };
             folders.push(FolderSummary {
                 folder: folder.clone(),
                 image_count: runs[0].header.image_count,
@@ -565,6 +723,14 @@ impl Summary {
                 skate_right: (!rights.is_empty()).then(|| SkateSummary::of(&rights)),
                 skate_left: (!lefts.is_empty()).then(|| SkateSummary::of(&lefts)),
                 tap: (!taps.is_empty()).then(|| TapSummary::of(&taps)),
+                slider: [
+                    slider_phase(|s| s.sweep.as_ref()),
+                    slider_phase(|s| s.scrub.as_ref()),
+                    slider_phase(|s| s.jump.as_ref()),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
             });
         }
         let h = &first.header;
@@ -622,6 +788,29 @@ impl Summary {
                     t.latency_p50_ms.cell(1), t.latency_p95_ms.cell(1), t.latency_max_ms.cell(1),
                     t.frame_p99_ms.cell(1), t.decode_p50_ms.cell(1), t.cpu_secs.cell(2),
                 ));
+            }
+        }
+        if self.folders.iter().any(|f| !f.slider.is_empty()) {
+            out.push_str(
+                "\n## Slider navigation\n\n\
+                 | Folder | Runs | Phase | Positions | Shown % | Sync block p50 ms | Sync block p95 ms | LRU hits | Refill p50 ms | Click-to-image p50 ms | p95 ms | Frame p99 ms | CPU s |\n\
+                 |---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
+            );
+            for f in &self.folders {
+                let name = f.folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                for ph in &f.slider {
+                    let timeouts = if ph.timeouts > 0 { format!(" ({} timed out)", ph.timeouts) } else { String::new() };
+                    let pct = Spread { mean: ph.display_ratio.mean * 100.0, min: ph.display_ratio.min * 100.0, max: ph.display_ratio.max * 100.0, n: ph.display_ratio.n };
+                    out.push_str(&format!(
+                        "| {} | {} | {}{} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                        name, f.runs, ph.phase, timeouts, ph.positions,
+                        pct.cell(0), ph.sync_block_p50_ms.cell(1), ph.sync_block_p95_ms.cell(1),
+                        ph.lru_hits.cell(0), ph.refill_p50_ms.cell(0),
+                        ph.jump_p50_ms.map_or("-".to_string(), |s| s.cell(1)),
+                        ph.jump_p95_ms.map_or("-".to_string(), |s| s.cell(1)),
+                        ph.frame_p99_ms.cell(1), ph.cpu_secs.cell(2),
+                    ));
+                }
             }
         }
         out.push_str("\n## Settle\n\n| Folder | Runs | First image ms | Window full ms |\n|---|---|---|---|\n");
@@ -684,6 +873,45 @@ mod summary_tests {
         assert_eq!(right.images_per_sec.max, 63.3);
         a1.nav = None;
         assert!(Summary::of(&[]).is_none());
+    }
+
+    #[test]
+    fn summary_aggregates_slider_phases() {
+        let phase = |p50: f64| SliderPhaseReport {
+            phase: "jump".into(),
+            wall_secs: 3.0,
+            positions: 20,
+            images_shown: 20,
+            display_ratio: 1.0,
+            sync: SyncStats { count: 20, total_ms: LatencyStats::from_ms(&[p50]), ..Default::default() },
+            lru_hits: 0,
+            releases: 20,
+            refill_ms: LatencyStats::from_ms(&[300.0]),
+            jump_ms: Some(LatencyStats::from_ms(&[p50])),
+            frame_ms: LatencyStats::from_ms(&[7.0]),
+            bg_decode_ms: LatencyStats::default(),
+            cpu_secs: Some(1.0),
+            peak_rss_mb: 500.0,
+            peak_gpu_mb: 200.0,
+            timed_out: false,
+        };
+        let mut a = sample();
+        a.slider = Some(SliderReport {
+            images: 100, sweep_secs: 4.0, scrub_anchors: 0, jumps: 20,
+            settle_first_image_ms: None, settle_settled_ms: None, settle_timed_out: false,
+            sweep: None, scrub: None, jump: Some(phase(80.0)),
+        });
+        let mut b = a.clone();
+        b.header.run = 2;
+        b.slider.as_mut().unwrap().jump.as_mut().unwrap().jump_ms = Some(LatencyStats::from_ms(&[100.0]));
+        let summary = Summary::of(&[a, b]).unwrap();
+        let sl = &summary.folders[0].slider;
+        assert_eq!(sl.len(), 1);
+        assert_eq!(sl[0].phase, "jump");
+        assert_eq!(sl[0].jump_p50_ms.unwrap().mean, 90.0);
+        let md = summary.to_markdown();
+        assert!(md.contains("| 4k_PNG_10MB | 2 | jump | 20 | 100 | 80.0 |"), "{md}");
+        assert!(md.contains("| 90.0 (80.0 to 100.0) |"), "{md}");
     }
 
     #[test]

@@ -7,7 +7,7 @@
 //!
 //! - [`preview`]: slider preview thumbnails (`--bench-preview`)
 //! - [`nav`]: keyboard navigation (`--bench-nav`)
-//! - planned: main slider navigation (`--bench-slider`)
+//! - [`slider`]: main slider navigation (`--bench-slider`)
 //!
 //! Shared measurement helpers live in this module; [`report`] holds the
 //! JSON and markdown output.
@@ -15,12 +15,14 @@
 pub(crate) mod nav;
 pub(crate) mod preview;
 pub(crate) mod report;
+pub(crate) mod slider;
 
 /// Which benchmarks to run and how, from the CLI. Modes combine: nav runs
 /// first, then preview, on the same folder.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct BenchOptions {
     pub nav: bool,
+    pub slider: bool,
     pub preview: bool,
     /// Folders to benchmark in order (`--bench-dir`, repeatable). Empty
     /// means the folder given as the positional path.
@@ -31,6 +33,11 @@ pub(crate) struct BenchOptions {
     pub tap_rate: f64,
     /// Steps in the tap phase.
     pub tap_steps: usize,
+    /// `--bench-slider`: seconds for the sweep across the rail, number of
+    /// scrub anchors, number of jumps.
+    pub sweep_secs: f64,
+    pub scrub_anchors: usize,
+    pub jumps: usize,
     /// Repeat the whole sequence this many times in one process, reopening
     /// the folder between runs.
     pub runs: usize,
@@ -42,8 +49,17 @@ pub(crate) struct BenchOptions {
 
 impl BenchOptions {
     pub fn any(&self) -> bool {
-        self.nav || self.preview
+        self.nav || self.slider || self.preview
     }
+}
+
+/// Visit order that jumps across the file list instead of walking to
+/// neighbours: front, back, front + 1, back - 1, ... Used by the preview,
+/// scrub and jump phases so consecutive targets are never cached.
+pub(crate) fn scrambled_order(n: usize) -> Vec<usize> {
+    (0..n)
+        .map(|i| if i.is_multiple_of(2) { i / 2 } else { n - 1 - i / 2 })
+        .collect()
 }
 
 /// Process CPU time (user + system) in seconds. Latency metrics can't see

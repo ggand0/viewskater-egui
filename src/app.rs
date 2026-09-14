@@ -188,6 +188,7 @@ pub(crate) fn paint_nav_slider(
     preview_stale_since: &mut Option<(usize, Instant)>,
     show_preview: bool,
     bench_hover_t: Option<f32>,
+    bench_drag: Option<crate::bench::slider::BenchDrag>,
 ) -> SliderResult {
     if max_images <= 1 {
         return SliderResult {
@@ -218,7 +219,15 @@ pub(crate) fn paint_nav_slider(
     let cy = rect.center().y;
     let handle_range = (rect.left() + handle_radius)..=(rect.right() - handle_radius);
 
-    if let Some(pos) = response.interact_pointer_pos() {
+    // --bench-slider injects the drag in place of the pointer; everything
+    // below (target, release, throttle, sync decode, refill) runs as for a
+    // real drag.
+    if let Some(drag) = bench_drag {
+        idx = (max as f32 * drag.t.clamp(0.0, 1.0)).round() as usize;
+        if idx != current_idx {
+            target = Some(idx);
+        }
+    } else if let Some(pos) = response.interact_pointer_pos() {
         let usable = rect.x_range().shrink(handle_radius);
         let drag_t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
         idx = (max as f32 * drag_t).round() as usize;
@@ -226,7 +235,7 @@ pub(crate) fn paint_nav_slider(
             target = Some(idx);
         }
     }
-    let released = response.drag_stopped();
+    let released = bench_drag.map_or_else(|| response.drag_stopped(), |d| d.released);
 
     let rail = egui::Rect::from_min_max(
         egui::pos2(rect.left(), cy - rail_radius),
@@ -312,6 +321,10 @@ pub struct App {
     preview_stale_since: Option<(usize, Instant)>,
     preview_bench: Option<crate::bench::preview::PreviewBench>,
     nav_bench: Option<crate::bench::nav::NavBench>,
+    slider_bench: Option<crate::bench::slider::SliderBench>,
+    /// Nav report of the current run, kept until the run's other modes
+    /// finish and the report is assembled.
+    run_nav_report: Option<crate::bench::report::NavReport>,
     bench_opts: crate::bench::BenchOptions,
     /// 1-based index of the current benchmark run.
     bench_run: usize,
@@ -368,6 +381,8 @@ impl App {
             preview_stale_since: None,
             preview_bench: None,
             nav_bench: None,
+            slider_bench: None,
+            run_nav_report: None,
             bench_opts,
             bench_run: 0,
             bench_dir_idx: 0,
@@ -494,11 +509,15 @@ impl App {
 
         let accent = self.theme.accent;
         let mut stale_since = self.preview_stale_since;
+        // No thumbnails while the slider bench drags, as with a real drag.
         let preview = (self.settings.slider_preview || self.preview_bench.is_some())
-            && self.panes.len() < 2;
+            && self.panes.len() < 2
+            && self.slider_bench.is_none();
         let bench_t = self.preview_bench.as_ref().and_then(|b| b.hover_t());
+        let now = Instant::now();
+        let bench_drag = self.slider_bench.as_ref().and_then(|b| b.drag(now));
         let result = egui::TopBottomPanel::bottom("nav")
-            .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent, &mut self.panes, &mut stale_since, preview, bench_t))
+            .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent, &mut self.panes, &mut stale_since, preview, bench_t, bench_drag))
             .inner;
         self.preview_stale_since = stale_since;
 
@@ -528,7 +547,11 @@ impl App {
             self.preview_stale_since = None;
         }
 
-        self.apply_slider_result_all(result, ctx);
+        let target_changed = result.target.is_some();
+        let shown = self.apply_slider_result_all(result, ctx);
+        if self.slider_bench.is_some() {
+            self.tick_slider_bench(now, bench_drag, target_changed, shown, ctx);
+        }
     }
 
     fn show_central_panel(&mut self, ctx: &egui::Context) {
@@ -708,6 +731,7 @@ impl App {
                                         &mut stale_l,
                                         false,
                                         None,
+                                        None,
                                     )
                                 },
                             )
@@ -732,6 +756,7 @@ impl App {
                                         rest,
                                         &mut stale_r,
                                         false,
+                                        None,
                                         None,
                                     )
                                 },

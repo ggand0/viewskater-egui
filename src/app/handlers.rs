@@ -151,11 +151,14 @@ impl App {
     }
 
     /// Apply slider result to all panes (synced mode).
-    pub(super) fn apply_slider_result_all(&mut self, result: SliderResult, ctx: &egui::Context) {
+    /// Returns true if any pane put a new image on screen this frame.
+    pub(super) fn apply_slider_result_all(&mut self, result: SliderResult, ctx: &egui::Context) -> bool {
+        let mut shown = false;
         if let Some(idx) = result.target {
             for pane in &mut self.panes {
                 if pane.apply_slider_target(idx, ctx) {
                     self.perf.record_image_load();
+                    shown = true;
                 }
             }
             ctx.request_repaint();
@@ -166,6 +169,7 @@ impl App {
                 pane.apply_slider_release(ctx);
             }
         }
+        shown
     }
 
     /// Apply slider result to a single pane (independent mode).

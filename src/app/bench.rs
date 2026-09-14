@@ -1,10 +1,12 @@
 //! Drives the in-app benchmarks from `App::update`.
 //!
-//! `--bench-nav` replaces the keyboard for the duration of the run: every
-//! frame the bench says what a held key would do, the app runs the same
-//! `step_navigation` a key press runs, and the outcome goes back to the
-//! bench. When the run ends the report is logged, written if `--bench-out`
-//! was given, and the next run or benchmark starts, or the app closes.
+//! A run is: `--bench-nav` if asked, then `--bench-slider` if asked, on
+//! one folder. The nav bench replaces the keyboard: every frame it says
+//! what a held key would do, the app runs the same `step_navigation` a key
+//! press runs, and the outcome goes back. The slider bench replaces the
+//! pointer on the slider the same way (`BenchDrag`). When a run ends its
+//! report is printed, written if `--bench-out` was given, and the next
+//! run, folder or benchmark starts, or the app closes.
 
 use std::time::Instant;
 
@@ -12,6 +14,7 @@ use eframe::egui;
 
 use crate::bench::nav::{Drive, NavBench};
 use crate::bench::report::{BenchReport, Header, Summary};
+use crate::bench::slider::{BenchDrag, SliderBench, SliderFrame};
 
 use super::App;
 
@@ -36,15 +39,26 @@ impl App {
             return;
         }
         self.bench_run = 1;
-        if self.bench_opts.nav {
-            self.start_nav_bench(self.app_start);
+        if self.bench_opts.nav || self.bench_opts.slider {
+            self.start_run(self.app_start);
         } else if self.bench_opts.preview {
             self.start_preview_bench();
         }
     }
 
-    /// `run_start`: process start for the first run, the folder reopen
-    /// for every later run, so settle times stay comparable.
+    /// Begin one run on the open folder. `run_start`: process start for
+    /// the first run, the folder reopen for every later run, so settle
+    /// times stay comparable.
+    fn start_run(&mut self, run_start: Instant) {
+        self.run_nav_report = None;
+        self.panes[0].set_decode_sampling(true);
+        if self.bench_opts.nav {
+            self.start_nav_bench(run_start);
+        } else {
+            self.start_slider_bench(run_start);
+        }
+    }
+
     fn start_nav_bench(&mut self, run_start: Instant) {
         let n = self.panes[0].image_paths.len();
         log::info!(
@@ -52,7 +66,6 @@ impl App {
             self.bench_run,
             self.bench_opts.runs
         );
-        self.panes[0].set_decode_sampling(true);
         self.nav_bench = Some(NavBench::new(
             n,
             self.settings.cache_count,
@@ -61,6 +74,37 @@ impl App {
             self.bench_opts.tap_steps,
             run_start,
         ));
+    }
+
+    fn start_slider_bench(&mut self, run_start: Instant) {
+        let n = self.panes[0].image_paths.len();
+        log::info!(
+            "slider bench: run {}/{} on {n} images",
+            self.bench_run,
+            self.bench_opts.runs
+        );
+        self.panes[0].set_sync_sampling(true);
+        // Background decodes from the nav bench's last phase are not
+        // this bench's; start the sink clean.
+        let _ = self.panes[0].take_decode_samples();
+        self.slider_bench = Some(SliderBench::new(
+            n,
+            self.bench_opts.sweep_secs,
+            self.bench_opts.scrub_anchors,
+            self.bench_opts.jumps,
+            run_start,
+        ));
+    }
+
+    /// Whether the pane is showing an image, and whether nothing is
+    /// loading anywhere: the new window is full and no decode thread is
+    /// alive, including leftovers from a previous run whose cache was
+    /// dropped at reopen.
+    fn pane_state(&self) -> (bool, bool) {
+        let pane = &self.panes[0];
+        let has_texture = pane.current_texture.is_some();
+        let settled = pane.is_settled() && crate::cache::active_decode_threads() == 0;
+        (has_texture, settled)
     }
 
     pub(super) fn start_preview_bench(&mut self) {
@@ -78,14 +122,11 @@ impl App {
         let (rss, gpu) = self.perf.memory_bytes();
         bench.observe_memory(rss, gpu);
 
-        let ended = match bench.drive(now) {
+        let drive = bench.drive(now);
+        let ended = match drive {
             Drive::Settle => {
-                let pane = &self.panes[0];
-                let has_texture = pane.current_texture.is_some();
-                // The new window is full and no decode thread is alive
-                // anywhere, including leftovers from the previous run whose
-                // cache was dropped at reopen.
-                let settled = pane.is_settled() && crate::cache::active_decode_threads() == 0;
+                let (has_texture, settled) = self.pane_state();
+                let bench = self.nav_bench.as_mut().expect("nav bench");
                 bench.tick_settle(now, has_texture, settled)
             }
             Drive::Step(dir) => {
@@ -123,6 +164,56 @@ impl App {
         let Some(bench) = self.nav_bench.take() else {
             return;
         };
+        self.run_nav_report = Some(bench.report());
+        if self.bench_opts.slider {
+            // Same run, same run_start semantics: the slider bench settles
+            // from now, since the folder was not reopened.
+            self.start_slider_bench(Instant::now());
+        } else {
+            self.finish_run(None, ctx);
+        }
+    }
+
+    /// One frame of `--bench-slider`, after the slider result was applied.
+    /// `drag` is what the bench injected this frame.
+    pub(super) fn tick_slider_bench(
+        &mut self,
+        now: Instant,
+        drag: Option<BenchDrag>,
+        target_changed: bool,
+        shown: bool,
+        ctx: &egui::Context,
+    ) {
+        let (rss, gpu) = self.perf.memory_bytes();
+        let (has_texture, settled) = self.pane_state();
+        let current_index = self.panes[0].current_index;
+        let Some(bench) = self.slider_bench.as_mut() else {
+            return;
+        };
+        bench.observe_memory(rss, gpu);
+        let ended = if bench.phase_is_settle() {
+            bench.tick_settle(now, has_texture, settled)
+        } else {
+            bench.tick(now, drag, SliderFrame { target_changed, shown, current_index, has_texture, settled })
+        };
+        if let Some(end) = ended {
+            let (sync, lru_hits) = self.panes[0].take_sync_samples();
+            let bg = self.panes[0].take_decode_samples();
+            if let Some(bench) = self.slider_bench.as_mut() {
+                bench.set_samples(end.0, sync, lru_hits, bg);
+            }
+        }
+        if self.slider_bench.as_ref().is_some_and(SliderBench::is_done) {
+            let bench = self.slider_bench.take().expect("slider bench");
+            self.panes[0].set_sync_sampling(false);
+            self.finish_run(Some(bench.report()), ctx);
+        }
+        ctx.request_repaint();
+    }
+
+    /// Every mode of this run is done: assemble and write the report, then
+    /// start the next run, the next folder, the preview bench, or close.
+    fn finish_run(&mut self, slider: Option<crate::bench::report::SliderReport>, ctx: &egui::Context) {
         self.panes[0].set_decode_sampling(false);
 
         let folder = self.panes[0]
@@ -138,7 +229,8 @@ impl App {
                 self.bench_run,
                 self.bench_opts.runs,
             ),
-            nav: Some(bench.report()),
+            nav: self.run_nav_report.take(),
+            slider,
         };
         // Straight to stderr, not through the logger: the tracing layer
         // escapes the color codes.
@@ -159,7 +251,7 @@ impl App {
             self.bench_run += 1;
             let reopened = Instant::now();
             self.panes[0].open_path(&folder, ctx, options);
-            self.start_nav_bench(reopened);
+            self.start_run(reopened);
         } else if let Some(next) = self.bench_opts.dirs.get(self.bench_dir_idx + 1).cloned() {
             self.bench_dir_idx += 1;
             self.bench_run = 1;
@@ -169,7 +261,7 @@ impl App {
                 log::error!("bench: {} has fewer than 2 images, skipping", next.display());
                 self.finish_all_benchmarks(ctx);
             } else {
-                self.start_nav_bench(opened);
+                self.start_run(opened);
             }
         } else {
             self.finish_all_benchmarks(ctx);

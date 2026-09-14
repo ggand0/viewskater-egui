@@ -47,6 +47,24 @@ struct Args {
     #[arg(long)]
     bench_nav: bool,
 
+    /// Run the slider navigation benchmark on the given folder and exit:
+    /// a sweep across the rail, scrubs around scattered positions, and
+    /// clicks. Combines with --bench-nav (nav runs first in each run).
+    #[arg(long)]
+    bench_slider: bool,
+
+    /// Seconds the --bench-slider sweep takes to cross the rail.
+    #[arg(long, default_value_t = 4.0, value_name = "SECS")]
+    bench_sweep_secs: f64,
+
+    /// Number of scrub gestures in --bench-slider (0 skips the phase).
+    #[arg(long, default_value_t = 10, value_name = "N")]
+    bench_scrub_anchors: usize,
+
+    /// Number of click-to-jump gestures in --bench-slider (0 skips).
+    #[arg(long, default_value_t = 20, value_name = "N")]
+    bench_jumps: usize,
+
     /// Folder to benchmark. Repeat the flag to run several folders in one
     /// go; the positional path is then ignored. A summary averaged over
     /// all runs is written at the end.
@@ -209,11 +227,15 @@ fn main() -> eframe::Result {
                 file_rx,
                 bench::BenchOptions {
                     nav: args.bench_nav,
+                    slider: args.bench_slider,
                     preview: args.bench_preview,
                     dirs: args.bench_dir,
                     max_images: args.bench_max_images,
                     tap_rate: args.bench_tap_rate,
                     tap_steps: args.bench_tap_steps,
+                    sweep_secs: args.bench_sweep_secs,
+                    scrub_anchors: args.bench_scrub_anchors,
+                    jumps: args.bench_jumps,
                     runs: args.bench_runs.max(1),
                     out_dir: args.bench_out,
                     label: args.bench_label,
