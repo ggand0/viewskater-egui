@@ -48,8 +48,8 @@ struct Args {
     bench_nav: bool,
 
     /// Run the slider navigation benchmark on the given folder and exit:
-    /// a sweep across the rail, scrubs around scattered positions, and
-    /// clicks. Combines with --bench-nav (nav runs first in each run).
+    /// a sweep across the rail and back, scrubs around evenly spaced
+    /// positions, and clicks spread over the folder. Combines with --bench-nav (nav runs first in each run).
     #[arg(long)]
     bench_slider: bool,
 
@@ -58,8 +58,9 @@ struct Args {
     bench_sweep_secs: f64,
 
     /// Number of scrub gestures in --bench-slider (0 skips the phase).
-    /// Each one drags back and forth around a scattered position.
-    #[arg(long, default_value_t = 5, value_name = "N")]
+    /// Anchors are spaced evenly along the rail: 3 means 25, 50 and 75
+    /// percent of the folder.
+    #[arg(long, default_value_t = 3, value_name = "N")]
     bench_scrub_anchors: usize,
 
     /// Width of the region one scrub sweeps, as a share of the rail.
