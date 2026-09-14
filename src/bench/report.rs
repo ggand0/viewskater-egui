@@ -90,9 +90,11 @@ impl Header {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct SettleReport {
-    /// From process start to the first frame that showed an image.
+    /// From run start to the first frame that showed an image. Run start
+    /// is process start for the first run and the folder reopen for later
+    /// runs, so only the first run includes window creation.
     pub first_image_ms: Option<f64>,
-    /// From process start to the first frame with a full sliding window.
+    /// From run start to the first frame with a full sliding window.
     pub settled_ms: Option<f64>,
     pub timed_out: bool,
 }
@@ -188,7 +190,7 @@ impl BenchReport {
         );
         if let Some(nav) = &self.nav {
             out.push_str(&format!(
-                "settle: first image {}, window full {}{}\n",
+                "settle: first image {}, window full {}{}; p50 below means median\n",
                 opt_ms(nav.settle.first_image_ms),
                 opt_ms(nav.settle.settled_ms),
                 flag(nav.settle.timed_out),
@@ -257,7 +259,7 @@ impl BenchReport {
             out.push_str(&format!(
                 "\n## Keyboard navigation\n\n\
                  Settle: first image {}, window full {}{}.\n\n\
-                 | Phase | Images | Rate | Stalls | Frame ms p50 / p99 / max | Decode ms n, p50 / p95 / max | CPU s | Peak RSS MB | Peak GPU MB |\n\
+                 | Phase | Images | Rate | Stalls | Frame ms p50(median) / p99 / max | Decode ms n, p50(median) / p95 / max | CPU s | Peak RSS MB | Peak GPU MB |\n\
                  |---|---|---|---|---|---|---|---|---|\n",
                 opt_ms(nav.settle.first_image_ms),
                 opt_ms(nav.settle.settled_ms),
@@ -275,7 +277,7 @@ impl BenchReport {
             }
             if let Some(t) = &nav.tap {
                 out.push_str(&format!(
-                    "| tap {:.0}/s{} | {} steps | press-to-image {:.1} / {:.1} / {:.1} ms (p50 / p95 / max) | {}/{} | {:.1} / {:.1} / {:.1} | {}, {:.1} / {:.1} / {:.1} | {} | {:.0} | {:.0} |\n",
+                    "| tap {:.0}/s{} | {} steps | press-to-image {:.1} / {:.1} / {:.1} ms (p50(median) / p95 / max) | {}/{} | {:.1} / {:.1} / {:.1} | {}, {:.1} / {:.1} / {:.1} | {} | {:.0} | {:.0} |\n",
                     t.rate_per_sec, flag(t.timed_out), t.steps,
                     t.step_latency_ms.median_ms, t.step_latency_ms.p95_ms, t.step_latency_ms.max_ms,
                     t.stall_frames, t.frames,
@@ -314,7 +316,7 @@ impl BenchReport {
 mod tests {
     use super::*;
 
-    fn sample() -> BenchReport {
+    pub(super) fn sample() -> BenchReport {
         let skate = SkateReport {
             direction: "right".into(),
             images: 95,
@@ -391,5 +393,291 @@ mod tests {
         assert!(json.file_name().unwrap().to_string_lossy().ends_with("_host_4k_PNG_10MB_run1.json"));
         let text = std::fs::read_to_string(&md).unwrap();
         assert!(text.contains("skate right"));
+    }
+}
+
+/// Mean, min and max of one metric across the runs of one folder.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub(crate) struct Spread {
+    pub mean: f64,
+    pub min: f64,
+    pub max: f64,
+    pub n: usize,
+}
+
+impl Spread {
+    pub fn of(values: impl IntoIterator<Item = f64>) -> Self {
+        let mut s = Self { mean: 0.0, min: f64::INFINITY, max: f64::NEG_INFINITY, n: 0 };
+        let mut sum = 0.0;
+        for v in values {
+            sum += v;
+            s.min = s.min.min(v);
+            s.max = s.max.max(v);
+            s.n += 1;
+        }
+        if s.n == 0 {
+            return Self::default();
+        }
+        s.mean = sum / s.n as f64;
+        s
+    }
+
+    fn cell(&self, decimals: usize) -> String {
+        if self.n <= 1 {
+            format!("{:.*}", decimals, self.mean)
+        } else {
+            format!("{:.*} ({:.*} to {:.*})", decimals, self.mean, decimals, self.min, decimals, self.max)
+        }
+    }
+}
+
+/// One skate phase aggregated over runs.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct SkateSummary {
+    pub direction: String,
+    pub images: usize,
+    pub images_per_sec: Spread,
+    pub stall_share: Spread,
+    pub frame_p50_ms: Spread,
+    pub frame_p99_ms: Spread,
+    pub decode_p50_ms: Spread,
+    pub decode_p95_ms: Spread,
+    pub cpu_secs: Spread,
+    pub peak_rss_mb: Spread,
+    pub timeouts: usize,
+}
+
+impl SkateSummary {
+    fn of(runs: &[&SkateReport]) -> Self {
+        Self {
+            direction: runs[0].direction.clone(),
+            images: runs[0].images,
+            images_per_sec: Spread::of(runs.iter().map(|r| r.images_per_sec)),
+            stall_share: Spread::of(runs.iter().map(|r| r.stall_share)),
+            frame_p50_ms: Spread::of(runs.iter().map(|r| r.frame_ms.median_ms)),
+            frame_p99_ms: Spread::of(runs.iter().map(|r| r.frame_ms.p99_ms)),
+            decode_p50_ms: Spread::of(runs.iter().map(|r| r.decode_ms.median_ms)),
+            decode_p95_ms: Spread::of(runs.iter().map(|r| r.decode_ms.p95_ms)),
+            cpu_secs: Spread::of(runs.iter().filter_map(|r| r.cpu_secs)),
+            peak_rss_mb: Spread::of(runs.iter().map(|r| r.peak_rss_mb)),
+            timeouts: runs.iter().filter(|r| r.timed_out).count(),
+        }
+    }
+}
+
+/// The tap phase aggregated over runs.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct TapSummary {
+    pub rate_per_sec: f64,
+    pub steps: usize,
+    pub latency_p50_ms: Spread,
+    pub latency_p95_ms: Spread,
+    pub latency_max_ms: Spread,
+    pub frame_p99_ms: Spread,
+    pub decode_p50_ms: Spread,
+    pub cpu_secs: Spread,
+    pub timeouts: usize,
+}
+
+impl TapSummary {
+    fn of(runs: &[&TapReport]) -> Self {
+        Self {
+            rate_per_sec: runs[0].rate_per_sec,
+            steps: runs[0].steps,
+            latency_p50_ms: Spread::of(runs.iter().map(|r| r.step_latency_ms.median_ms)),
+            latency_p95_ms: Spread::of(runs.iter().map(|r| r.step_latency_ms.p95_ms)),
+            latency_max_ms: Spread::of(runs.iter().map(|r| r.step_latency_ms.max_ms)),
+            frame_p99_ms: Spread::of(runs.iter().map(|r| r.frame_ms.p99_ms)),
+            decode_p50_ms: Spread::of(runs.iter().map(|r| r.decode_ms.median_ms)),
+            cpu_secs: Spread::of(runs.iter().filter_map(|r| r.cpu_secs)),
+            timeouts: runs.iter().filter(|r| r.timed_out).count(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct FolderSummary {
+    pub folder: PathBuf,
+    pub image_count: usize,
+    pub runs: usize,
+    pub settle_first_image_ms: Spread,
+    pub settle_settled_ms: Spread,
+    pub skate_right: Option<SkateSummary>,
+    pub skate_left: Option<SkateSummary>,
+    pub tap: Option<TapSummary>,
+}
+
+/// All runs of one invocation, averaged per folder. Written once at the
+/// end as `<stamp>_<host>_summary.json` and `.md`.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct Summary {
+    pub date_utc: String,
+    pub version: String,
+    pub git_hash: String,
+    pub profile: String,
+    pub platform: String,
+    pub hostname: String,
+    pub label: Option<String>,
+    pub settings: SettingsSnapshot,
+    pub folders: Vec<FolderSummary>,
+}
+
+impl Summary {
+    /// Groups `reports` by folder in first-seen order. Empty input gives an
+    /// empty summary.
+    pub fn of(reports: &[BenchReport]) -> Option<Self> {
+        let first = reports.first()?;
+        let mut folders: Vec<FolderSummary> = Vec::new();
+        let mut order: Vec<PathBuf> = Vec::new();
+        for r in reports {
+            if !order.contains(&r.header.folder) {
+                order.push(r.header.folder.clone());
+            }
+        }
+        for folder in order {
+            let runs: Vec<&BenchReport> = reports.iter().filter(|r| r.header.folder == folder).collect();
+            let navs: Vec<&NavReport> = runs.iter().filter_map(|r| r.nav.as_ref()).collect();
+            let rights: Vec<&SkateReport> = navs.iter().filter_map(|n| n.skate_right.as_ref()).collect();
+            let lefts: Vec<&SkateReport> = navs.iter().filter_map(|n| n.skate_left.as_ref()).collect();
+            let taps: Vec<&TapReport> = navs.iter().filter_map(|n| n.tap.as_ref()).collect();
+            folders.push(FolderSummary {
+                folder: folder.clone(),
+                image_count: runs[0].header.image_count,
+                runs: runs.len(),
+                settle_first_image_ms: Spread::of(navs.iter().filter_map(|n| n.settle.first_image_ms)),
+                settle_settled_ms: Spread::of(navs.iter().filter_map(|n| n.settle.settled_ms)),
+                skate_right: (!rights.is_empty()).then(|| SkateSummary::of(&rights)),
+                skate_left: (!lefts.is_empty()).then(|| SkateSummary::of(&lefts)),
+                tap: (!taps.is_empty()).then(|| TapSummary::of(&taps)),
+            });
+        }
+        let h = &first.header;
+        Some(Self {
+            date_utc: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            version: h.version.clone(),
+            git_hash: h.git_hash.clone(),
+            profile: h.profile.clone(),
+            platform: h.platform.clone(),
+            hostname: h.hostname.clone(),
+            label: h.label.clone(),
+            settings: h.settings.clone(),
+            folders,
+        })
+    }
+
+    pub fn to_markdown(&self) -> String {
+        let mut out = format!(
+            "# Benchmark summary\n\n- Date: {}\n- Build: {} {} {} {}\n- Machine: {}\n- Settings: cache_count {}, decode_threads {}, lru_budget_mb {}, gpu {}\n",
+            self.date_utc, self.version, self.git_hash, self.profile, self.platform, self.hostname,
+            self.settings.cache_count, self.settings.decode_threads, self.settings.lru_budget_mb,
+            self.settings.gpu_memory_mode,
+        );
+        if let Some(label) = &self.label {
+            out.push_str(&format!("- Label: {label}\n"));
+        }
+        out.push_str(
+            "\nValues are the mean over runs, with the min to max range in brackets when there is more than one run. p50 means median.\n\n## Keyboard navigation, skate\n\n| Folder | Runs | Pass | Images | img/s | Stall % | Frame p50 ms | Frame p99 ms | Decode p50 ms | Decode p95 ms | CPU s | Peak RSS MB |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n",
+        );
+        for f in &self.folders {
+            let name = f.folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            for s in [&f.skate_right, &f.skate_left].into_iter().flatten() {
+                let timeouts = if s.timeouts > 0 { format!(" ({} timed out)", s.timeouts) } else { String::new() };
+                out.push_str(&format!(
+                    "| {} | {} | {}{} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                    name, f.runs, s.direction, timeouts, s.images,
+                    s.images_per_sec.cell(1),
+                    Spread { mean: s.stall_share.mean * 100.0, min: s.stall_share.min * 100.0, max: s.stall_share.max * 100.0, n: s.stall_share.n }.cell(0),
+                    s.frame_p50_ms.cell(1), s.frame_p99_ms.cell(1),
+                    s.decode_p50_ms.cell(1), s.decode_p95_ms.cell(1),
+                    s.cpu_secs.cell(2), s.peak_rss_mb.cell(0),
+                ));
+            }
+        }
+        out.push_str(
+            "\n## Keyboard navigation, tap\n\n| Folder | Runs | Rate | Steps | Press-to-image p50 ms | p95 ms | max ms | Frame p99 ms | Decode p50 ms | CPU s |\n|---|---|---|---|---|---|---|---|---|---|\n",
+        );
+        for f in &self.folders {
+            let name = f.folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if let Some(t) = &f.tap {
+                let timeouts = if t.timeouts > 0 { format!(" ({} timed out)", t.timeouts) } else { String::new() };
+                out.push_str(&format!(
+                    "| {} | {} | {:.0}/s{} | {} | {} | {} | {} | {} | {} | {} |\n",
+                    name, f.runs, t.rate_per_sec, timeouts, t.steps,
+                    t.latency_p50_ms.cell(1), t.latency_p95_ms.cell(1), t.latency_max_ms.cell(1),
+                    t.frame_p99_ms.cell(1), t.decode_p50_ms.cell(1), t.cpu_secs.cell(2),
+                ));
+            }
+        }
+        out.push_str("\n## Settle\n\n| Folder | Runs | First image ms | Window full ms |\n|---|---|---|---|\n");
+        for f in &self.folders {
+            let name = f.folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            out.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                name, f.runs, f.settle_first_image_ms.cell(0), f.settle_settled_ms.cell(0),
+            ));
+        }
+        out
+    }
+
+    pub fn write(&self, dir: &Path) -> std::io::Result<(PathBuf, PathBuf)> {
+        std::fs::create_dir_all(dir)?;
+        let stem = format!(
+            "{}_{}_summary",
+            chrono::Local::now().format("%Y%m%d_%H%M%S"),
+            self.hostname,
+        );
+        let json_path = dir.join(format!("{stem}.json"));
+        let md_path = dir.join(format!("{stem}.md"));
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        std::fs::File::create(&json_path)?.write_all(json.as_bytes())?;
+        std::fs::File::create(&md_path)?.write_all(self.to_markdown().as_bytes())?;
+        Ok((json_path, md_path))
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::tests::sample;
+    use super::*;
+
+    #[test]
+    fn spread_is_mean_min_max() {
+        let s = Spread::of([10.0, 20.0, 60.0]);
+        assert_eq!((s.mean, s.min, s.max, s.n), (30.0, 10.0, 60.0, 3));
+        assert_eq!(Spread::of([]), Spread::default());
+    }
+
+    #[test]
+    fn summary_groups_runs_by_folder_in_order() {
+        let mut a1 = sample();
+        let mut a2 = sample();
+        a2.header.run = 2;
+        if let Some(n) = a2.nav.as_mut() {
+            n.skate_right.as_mut().unwrap().images_per_sec = 43.3;
+        }
+        let mut b = sample();
+        b.header.folder = PathBuf::from("/data/small_images");
+        let summary = Summary::of(&[a1.clone(), b, a2]).unwrap();
+        assert_eq!(summary.folders.len(), 2);
+        assert_eq!(summary.folders[0].runs, 2);
+        assert_eq!(summary.folders[1].runs, 1);
+        let right = summary.folders[0].skate_right.as_ref().unwrap();
+        assert!((right.images_per_sec.mean - 53.3).abs() < 1e-9);
+        assert_eq!(right.images_per_sec.min, 43.3);
+        assert_eq!(right.images_per_sec.max, 63.3);
+        a1.nav = None;
+        assert!(Summary::of(&[]).is_none());
+    }
+
+    #[test]
+    fn summary_markdown_shows_ranges_only_for_repeated_runs() {
+        let mut a2 = sample();
+        a2.header.run = 2;
+        a2.nav.as_mut().unwrap().skate_right.as_mut().unwrap().images_per_sec = 43.3;
+        let md = Summary::of(&[sample(), a2]).unwrap().to_markdown();
+        assert!(md.contains("| 4k_PNG_10MB | 2 | right | 95 | 53.3 (43.3 to 63.3) |"), "{md}");
+        let single = Summary::of(&[sample()]).unwrap().to_markdown();
+        assert!(single.contains("| 4k_PNG_10MB | 1 | right | 95 | 63.3 |"), "{single}");
     }
 }

@@ -317,7 +317,7 @@ pub(crate) struct NavBench {
     max_images: Option<usize>,
     tap_rate: f64,
     tap_steps: usize,
-    app_start: Instant,
+    run_start: Instant,
     phase: Phase,
     settle_first_image: Option<Duration>,
     settle_done: Option<Duration>,
@@ -328,17 +328,17 @@ pub(crate) struct NavBench {
 }
 
 impl NavBench {
-    /// `app_start` is when the process started; settle times are measured
-    /// from it so they include window creation and the first sync decode.
-    /// `max_images` caps each skate pass; `tap_steps` the tap phase. Both
-    /// are clamped to the folder.
+    /// `run_start` is when this run began: process start for the first run
+    /// (so settle includes window creation and the first sync decode), the
+    /// folder reopen for later runs. `max_images` caps each skate pass;
+    /// `tap_steps` the tap phase. Both are clamped to the folder.
     pub fn new(
         num_images: usize,
         cache_count: usize,
         max_images: Option<usize>,
         tap_rate: f64,
         tap_steps: usize,
-        app_start: Instant,
+        run_start: Instant,
     ) -> Self {
         Self {
             num_images,
@@ -346,7 +346,7 @@ impl NavBench {
             max_images: max_images.map(|m| m.min(num_images.saturating_sub(1))),
             tap_rate,
             tap_steps,
-            app_start,
+            run_start,
             phase: Phase::Settle,
             settle_first_image: None,
             settle_done: None,
@@ -387,7 +387,7 @@ impl NavBench {
     /// `settled` whether its sliding window has nothing in flight.
     pub fn tick_settle(&mut self, now: Instant, has_texture: bool, settled: bool) -> Option<PhaseEnd> {
         debug_assert_eq!(self.phase, Phase::Settle);
-        let since_start = now.duration_since(self.app_start);
+        let since_start = now.duration_since(self.run_start);
         if has_texture && self.settle_first_image.is_none() {
             self.settle_first_image = Some(since_start);
         }

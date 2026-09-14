@@ -24,3 +24,6 @@ CLAUDE.md
 # macOS Finder metadata
 .DS_Store
 **/.DS_Store
+
+# Benchmark reports written by --bench-out
+benchmarks/

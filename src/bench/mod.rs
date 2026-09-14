@@ -22,6 +22,9 @@ pub(crate) mod report;
 pub(crate) struct BenchOptions {
     pub nav: bool,
     pub preview: bool,
+    /// Folders to benchmark in order (`--bench-dir`, repeatable). Empty
+    /// means the folder given as the positional path.
+    pub dirs: Vec<std::path::PathBuf>,
     /// Cap on images per skate pass of `--bench-nav`; None is the whole folder.
     pub max_images: Option<usize>,
     /// Steps per second in the tap phase of `--bench-nav`.

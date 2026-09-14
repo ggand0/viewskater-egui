@@ -47,6 +47,12 @@ struct Args {
     #[arg(long)]
     bench_nav: bool,
 
+    /// Folder to benchmark. Repeat the flag to run several folders in one
+    /// go; the positional path is then ignored. A summary averaged over
+    /// all runs is written at the end.
+    #[arg(long, value_name = "DIR")]
+    bench_dir: Vec<PathBuf>,
+
     /// Only skate through the first N images of the folder (and back).
     /// Default is the whole folder.
     #[arg(long, value_name = "N")]
@@ -201,6 +207,7 @@ fn main() -> eframe::Result {
                 bench::BenchOptions {
                     nav: args.bench_nav,
                     preview: args.bench_preview,
+                    dirs: args.bench_dir,
                     max_images: args.bench_max_images,
                     tap_rate: args.bench_tap_rate,
                     tap_steps: args.bench_tap_steps,

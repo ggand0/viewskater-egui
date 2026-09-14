@@ -315,6 +315,10 @@ pub struct App {
     bench_opts: crate::bench::BenchOptions,
     /// 1-based index of the current benchmark run.
     bench_run: usize,
+    /// Index into `bench_opts.dirs` of the folder being benchmarked.
+    bench_dir_idx: usize,
+    /// Every finished run, for the summary written at the end.
+    bench_reports: Vec<crate::bench::report::BenchReport>,
     /// Process start, for the benchmark's time-to-first-image.
     app_start: Instant,
     /// Outcome of the last trash move, painted briefly over the image.
@@ -366,6 +370,8 @@ impl App {
             nav_bench: None,
             bench_opts,
             bench_run: 0,
+            bench_dir_idx: 0,
+            bench_reports: Vec::new(),
             app_start,
             toast: None,
             pending_permanent_delete: None,
@@ -400,7 +406,7 @@ impl App {
             app.perf.record_image_load();
         }
 
-        app.start_benchmarks();
+        app.start_benchmarks(&cc.egui_ctx);
 
         let mut fonts = egui::FontDefinitions::default();
         let mut cjk_loaded = false;
