@@ -22,8 +22,12 @@ pub(crate) mod report;
 pub(crate) struct BenchOptions {
     pub nav: bool,
     pub preview: bool,
+    /// Cap on images per skate pass of `--bench-nav`; None is the whole folder.
+    pub max_images: Option<usize>,
     /// Steps per second in the tap phase of `--bench-nav`.
     pub tap_rate: f64,
+    /// Steps in the tap phase.
+    pub tap_steps: usize,
     /// Repeat the whole sequence this many times in one process, reopening
     /// the folder between runs.
     pub runs: usize,

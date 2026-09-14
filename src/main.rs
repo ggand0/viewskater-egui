@@ -47,9 +47,18 @@ struct Args {
     #[arg(long)]
     bench_nav: bool,
 
+    /// Only skate through the first N images of the folder (and back).
+    /// Default is the whole folder.
+    #[arg(long, value_name = "N")]
+    bench_max_images: Option<usize>,
+
     /// Steps per second in the tap phase of --bench-nav.
     #[arg(long, default_value_t = 6.0, value_name = "PER_SEC")]
     bench_tap_rate: f64,
+
+    /// Steps in the tap phase of --bench-nav.
+    #[arg(long, default_value_t = bench::nav::DEFAULT_TAP_STEPS, value_name = "N")]
+    bench_tap_steps: usize,
 
     /// Repeat the benchmarks this many times in one process, reopening the
     /// folder between runs.
@@ -192,7 +201,9 @@ fn main() -> eframe::Result {
                 bench::BenchOptions {
                     nav: args.bench_nav,
                     preview: args.bench_preview,
+                    max_images: args.bench_max_images,
                     tap_rate: args.bench_tap_rate,
+                    tap_steps: args.bench_tap_steps,
                     runs: args.bench_runs.max(1),
                     out_dir: args.bench_out,
                     label: args.bench_label,

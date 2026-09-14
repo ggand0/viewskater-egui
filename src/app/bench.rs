@@ -46,7 +46,9 @@ impl App {
         self.nav_bench = Some(NavBench::new(
             n,
             self.settings.cache_count,
+            self.bench_opts.max_images,
             self.bench_opts.tap_rate,
+            self.bench_opts.tap_steps,
             self.app_start,
         ));
     }
