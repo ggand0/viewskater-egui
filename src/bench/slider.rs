@@ -9,12 +9,13 @@
 //! 1. Sweep: drag from the first image to the last over `sweep_secs`, one
 //!    position per frame, release, then back from the last to the first
 //!    and release again.
-//! 2. Scrub: at each of `scrub.anchors` positions spaced evenly along the
-//!    rail (three anchors: 25, 50 and 75 percent), press and drag back
-//!    and forth across `scrub.span` of the rail (default a fifth of it),
-//!    `scrub.passes` times over `scrub.secs`, then release. A person
-//!    hunting for a frame; the return passes revisit images just loaded,
-//!    so the LRU shows here.
+//! 2. Scrub: at each of `scrub.anchors` positions spaced evenly from the
+//!    first image to the last (five anchors: 0, 25, 50, 75 and 100
+//!    percent), press and drag back and forth across `scrub.span` of the
+//!    rail (default a tenth of it, 5 percent each side), `scrub.passes`
+//!    times (default 2) over `scrub.secs`, then release. A person hunting
+//!    for a frame; the return passes revisit images just loaded, so the
+//!    LRU shows here.
 //! 3. Jump: `jumps` positions spread over the whole rail, outside the
 //!    scrubbed regions, ordered so consecutive clicks are far apart. Each
 //!    is a press and release in one frame. The click gesture.
@@ -235,16 +236,19 @@ pub(crate) struct SliderBench {
 }
 
 impl SliderBench {
-    /// `num_images` >= 2. Scrub anchors are spaced evenly along the rail,
-    /// `k` anchors at `1/(k+1) .. k/(k+1)`. Jump targets are twice as
-    /// many evenly spaced candidates with the scrubbed regions removed,
-    /// visited in the preview bench's scrambled order (first, last,
-    /// second, second to last, ...) so consecutive clicks are far apart.
+    /// `num_images` >= 2. Scrub anchors are spaced evenly from the first
+    /// image to the last: `k` anchors at `0, 1/(k-1), ..., 1`; a single
+    /// anchor sits in the middle. Jump targets are evenly spaced
+    /// candidates with the scrubbed regions removed, visited in the
+    /// preview bench's scrambled order (first, last, second, second to
+    /// last, ...) so consecutive clicks are far apart.
     pub fn new(num_images: usize, sweep_secs: f64, scrub: ScrubParams, jumps: usize, run_start: Instant) -> Self {
         let images = (num_images - 1).max(1) as f32;
-        let anchors: Vec<f32> = (1..=scrub.anchors)
-            .map(|i| i as f32 / (scrub.anchors + 1) as f32)
-            .collect();
+        let anchors: Vec<f32> = match scrub.anchors {
+            0 => Vec::new(),
+            1 => vec![0.5],
+            k => (0..k).map(|i| i as f32 / (k - 1) as f32).collect(),
+        };
         // Jump targets stay clear of every scrubbed region, otherwise the
         // clicks hit images the scrub phase just put in the LRU and the
         // phase measures cache hits instead of clicks.
@@ -579,14 +583,15 @@ mod tests {
 
     #[test]
     fn anchors_are_evenly_spaced_and_jumps_avoid_them() {
-        // Three anchors at 25, 50, 75 percent; span 0.1 covers +-0.05 plus
+        // Three anchors at 0, 50, 100 percent; span 0.1 covers +-0.05 plus
         // half an image. Four jumps: eight candidates at 1/16, 3/16, ...,
-        // 15/16; 5/16 (0.3125) is inside the scrub at 0.25? No: 0.0625
-        // away, outside 0.05 + 0.005. 7/16 = 0.4375 is 0.0625 from 0.5,
-        // outside too. All eight survive; scrambled order takes the
-        // first, last, second, second to last.
+        // 15/16. 1/16 = 0.0625 is 0.0625 from 0, outside 0.05 + 0.005;
+        // 7/16 = 0.4375 is 0.0625 from 0.5, outside too. All eight
+        // survive; scrambled order takes the first, last, second, second
+        // to last.
         let b = SliderBench::new(101, 1.0, scrub(3), 4, Instant::now());
-        assert_eq!(b.scrub_anchors, vec![0.25, 0.5, 0.75]);
+        assert_eq!(b.scrub_anchors, vec![0.0, 0.5, 1.0]);
+        assert_eq!(SliderBench::new(101, 1.0, scrub(5), 0, Instant::now()).scrub_anchors, vec![0.0, 0.25, 0.5, 0.75, 1.0]);
         assert_eq!(b.jump_targets, vec![1.0 / 16.0, 15.0 / 16.0, 3.0 / 16.0, 13.0 / 16.0]);
         // Wider scrub: span 0.4 around 0.5 removes everything from 0.3
         // to 0.7, so 5/16, 7/16, 9/16 and 11/16 are gone.
@@ -598,14 +603,14 @@ mod tests {
 
     #[test]
     fn jump_count_is_honoured_when_scrubs_cover_most_of_the_rail() {
-        // Three anchors with span 0.2 scrub 60 percent of the rail. The
-        // default 20 jumps must still be 20, all outside the scrubbed
-        // regions and all distinct.
-        let params = ScrubParams { anchors: 3, span: 0.2, passes: 3, secs: 2.0 };
+        // Wide scrubs at five anchors cover most of the rail. The 20
+        // jumps must still be 20, all outside the scrubbed regions and
+        // all distinct.
+        let params = ScrubParams { anchors: 5, span: 0.2, passes: 2, secs: 2.0 };
         let b = SliderBench::new(140, 4.0, params, 20, Instant::now());
         assert_eq!(b.jump_targets.len(), 20);
         for t in &b.jump_targets {
-            for a in [0.25f32, 0.5, 0.75] {
+            for a in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
                 assert!((t - a).abs() > 0.1, "{t} inside the scrub at {a}");
             }
         }
@@ -673,17 +678,20 @@ mod tests {
         let mut b = settled_bench(101, 2, 0, t0);
         let s0 = finish_sweep(&mut b, t0);
         assert_eq!(b.phase(), Phase::Scrub);
-        // Two anchors: one third and two thirds of the rail.
+        // Two anchors: the first image and the last. Around the first,
+        // the left half of the motion clamps at the rail start.
         let first = b.drag(s0).unwrap();
-        assert!((first.t - 1.0 / 3.0).abs() < 1e-6, "{first:?}");
+        assert_eq!(first.t, 0.0);
+        let trough = b.drag(s0 + Duration::from_millis(667)).unwrap();
+        assert_eq!(trough.t, 0.0, "clamped at the rail start");
         let end = b.drag(s0 + Duration::from_millis(1000)).unwrap();
         assert!(end.released);
-        b.tick(s0 + Duration::from_millis(1000), Some(end), frame(true, true, 33, false));
+        b.tick(s0 + Duration::from_millis(1000), Some(end), frame(true, true, 0, false));
         // Refilled: on to the second anchor, a fresh press.
-        assert_eq!(b.tick(s0 + Duration::from_millis(1050), None, frame(false, false, 33, true)), None);
+        assert_eq!(b.tick(s0 + Duration::from_millis(1050), None, frame(false, false, 0, true)), None);
         assert_eq!(b.phase(), Phase::Scrub);
         let d = b.drag(s0 + Duration::from_millis(1050)).unwrap();
-        assert!((d.t - 2.0 / 3.0).abs() < 1e-6, "{d:?}");
+        assert_eq!(d.t, 1.0, "{d:?}");
     }
 
     #[test]

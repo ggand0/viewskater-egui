@@ -58,17 +58,18 @@ struct Args {
     bench_sweep_secs: f64,
 
     /// Number of scrub gestures in --bench-slider (0 skips the phase).
-    /// Anchors are spaced evenly along the rail: 3 means 25, 50 and 75
-    /// percent of the folder.
-    #[arg(long, default_value_t = 3, value_name = "N")]
+    /// Anchors are spaced evenly from the first image to the last: 5
+    /// means 0, 25, 50, 75 and 100 percent of the folder.
+    #[arg(long, default_value_t = 5, value_name = "N")]
     bench_scrub_anchors: usize,
 
-    /// Width of the region one scrub sweeps, as a share of the rail.
-    #[arg(long, default_value_t = 0.2, value_name = "SHARE")]
+    /// Width of the region one scrub sweeps, as a share of the rail:
+    /// 0.1 is 5 percent each side of the anchor.
+    #[arg(long, default_value_t = 0.1, value_name = "SHARE")]
     bench_scrub_span: f32,
 
     /// Back-and-forth passes per scrub.
-    #[arg(long, default_value_t = 3, value_name = "N")]
+    #[arg(long, default_value_t = 2, value_name = "N")]
     bench_scrub_passes: usize,
 
     /// Seconds one scrub takes, press to release.
