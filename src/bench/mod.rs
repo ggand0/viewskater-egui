@@ -116,7 +116,8 @@ pub(crate) struct BenchArgs {
     #[arg(long, value_name = "DIR")]
     pub bench_out: Option<PathBuf>,
 
-    /// Free text copied into the report header, e.g. "cold" or "warm".
+    /// Free text copied into the report header to tell runs apart later,
+    /// e.g. "before-exif" or "files-not-in-os-cache".
     #[arg(long, value_name = "TEXT")]
     pub bench_label: Option<String>,
 }
@@ -174,7 +175,8 @@ pub(crate) struct BenchOptions {
     pub runs: usize,
     /// Directory for the JSON and markdown reports. Log only when None.
     pub out_dir: Option<PathBuf>,
-    /// Free text copied into the report header, e.g. "cold" or "warm".
+    /// Free text copied into the report header to tell runs apart later,
+    /// e.g. "before-exif" or "files-not-in-os-cache".
     pub label: Option<String>,
 }
 
