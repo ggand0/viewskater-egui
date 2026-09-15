@@ -30,8 +30,9 @@
 
 use std::time::{Duration, Instant};
 
+use super::phase::PhaseStats;
 use super::report::{SliderPhaseReport, SliderReport, SyncStats};
-use super::{process_cpu_secs, LatencyStats};
+use super::LatencyStats;
 
 /// Shape of one scrub gesture, from the `--bench-scrub-*` flags.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -86,73 +87,43 @@ pub(crate) enum Phase {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PhaseEnd(pub Phase);
 
-/// One sync load on the main thread, from `Pane::load_sync`.
+/// How long one synchronous load in `Pane::load_sync` took, per step.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct SyncSample {
+pub(crate) struct SyncLoadTiming {
     pub decode_ms: f64,
     pub convert_ms: f64,
     pub upload_ms: f64,
 }
 
-#[derive(Default)]
-struct FrameTimer {
-    last: Option<Instant>,
-    deltas_ms: Vec<f64>,
-}
-
-impl FrameTimer {
-    fn tick(&mut self, now: Instant) {
-        if let Some(last) = self.last {
-            self.deltas_ms.push((now - last).as_secs_f64() * 1000.0);
-        }
-        self.last = Some(now);
-    }
-}
-
-/// Bookkeeping shared by the three measured phases.
-struct PhaseStats {
-    started: Instant,
-    ended: Option<Instant>,
-    frames: FrameTimer,
+/// Bookkeeping for one slider phase: the shared frame, CPU, memory and
+/// background decode figures plus the slider's own counts.
+struct GestureStats {
+    core: PhaseStats,
     positions: usize,
     shown: usize,
     releases: usize,
     refill_ms: Vec<f64>,
     jump_ms: Vec<f64>,
-    sync: Vec<SyncSample>,
+    sync_loads: Vec<SyncLoadTiming>,
     lru_hits: usize,
-    bg_decode_ms: Vec<f64>,
-    cpu_start: Option<f64>,
-    cpu_secs: Option<f64>,
-    peak_rss_bytes: u64,
-    peak_gpu_bytes: u64,
-    timed_out: bool,
 }
 
-impl PhaseStats {
+impl GestureStats {
     fn start(now: Instant) -> Self {
         Self {
-            started: now,
-            ended: None,
-            frames: FrameTimer::default(),
+            core: PhaseStats::start(now),
             positions: 0,
             shown: 0,
             releases: 0,
             refill_ms: Vec::new(),
             jump_ms: Vec::new(),
-            sync: Vec::new(),
+            sync_loads: Vec::new(),
             lru_hits: 0,
-            bg_decode_ms: Vec::new(),
-            cpu_start: process_cpu_secs(),
-            cpu_secs: None,
-            peak_rss_bytes: 0,
-            peak_gpu_bytes: 0,
-            timed_out: false,
         }
     }
 
     fn observe(&mut self, now: Instant, frame: &SliderFrame) {
-        self.frames.tick(now);
+        self.core.tick_frame(now);
         if frame.target_changed {
             self.positions += 1;
         }
@@ -161,19 +132,13 @@ impl PhaseStats {
         }
     }
 
-    fn end(&mut self, now: Instant) {
-        self.ended = Some(now);
-        self.cpu_secs = match (self.cpu_start, process_cpu_secs()) {
-            (Some(a), Some(b)) => Some(b - a),
-            _ => None,
-        };
-    }
-
     fn report(&self, phase: &str) -> SliderPhaseReport {
-        let mb = |b: u64| b as f64 / (1024.0 * 1024.0);
+        let ms = |pick: fn(&SyncLoadTiming) -> f64| {
+            LatencyStats::from_ms(&self.sync_loads.iter().map(pick).collect::<Vec<_>>())
+        };
         SliderPhaseReport {
             phase: phase.to_string(),
-            wall_secs: self.ended.map_or(0.0, |e| (e - self.started).as_secs_f64()),
+            wall_secs: self.core.wall_secs(),
             positions: self.positions,
             images_shown: self.shown,
             display_ratio: if self.positions > 0 {
@@ -182,24 +147,22 @@ impl PhaseStats {
                 0.0
             },
             sync: SyncStats {
-                count: self.sync.len(),
-                decode_ms: LatencyStats::from_ms(&self.sync.iter().map(|s| s.decode_ms).collect::<Vec<_>>()),
-                convert_ms: LatencyStats::from_ms(&self.sync.iter().map(|s| s.convert_ms).collect::<Vec<_>>()),
-                upload_ms: LatencyStats::from_ms(&self.sync.iter().map(|s| s.upload_ms).collect::<Vec<_>>()),
-                total_ms: LatencyStats::from_ms(
-                    &self.sync.iter().map(|s| s.decode_ms + s.convert_ms + s.upload_ms).collect::<Vec<_>>(),
-                ),
+                count: self.sync_loads.len(),
+                decode_ms: ms(|s| s.decode_ms),
+                convert_ms: ms(|s| s.convert_ms),
+                upload_ms: ms(|s| s.upload_ms),
+                total_ms: ms(|s| s.decode_ms + s.convert_ms + s.upload_ms),
             },
             lru_hits: self.lru_hits,
             releases: self.releases,
             refill_ms: LatencyStats::from_ms(&self.refill_ms),
             jump_ms: (!self.jump_ms.is_empty()).then(|| LatencyStats::from_ms(&self.jump_ms)),
-            frame_ms: LatencyStats::from_ms(&self.frames.deltas_ms),
-            bg_decode_ms: LatencyStats::from_ms(&self.bg_decode_ms),
-            cpu_secs: self.cpu_secs,
-            peak_rss_mb: mb(self.peak_rss_bytes),
-            peak_gpu_mb: mb(self.peak_gpu_bytes),
-            timed_out: self.timed_out,
+            frame_ms: self.core.frame_stats(),
+            bg_decode_ms: self.core.decode_stats(),
+            cpu_secs: self.core.cpu_secs,
+            peak_rss_mb: self.core.peak_rss_mb(),
+            peak_gpu_mb: self.core.peak_gpu_mb(),
+            timed_out: self.core.timed_out,
         }
     }
 }
@@ -235,9 +198,9 @@ pub(crate) struct SliderBench {
     /// Position issued last frame, so a gesture can be released at the
     /// place it stopped.
     last_t: f32,
-    sweep: Option<PhaseStats>,
-    scrub: Option<PhaseStats>,
-    jump: Option<PhaseStats>,
+    sweep: Option<GestureStats>,
+    scrub: Option<GestureStats>,
+    jump: Option<GestureStats>,
 }
 
 impl SliderBench {
@@ -366,13 +329,19 @@ impl SliderBench {
         }
     }
 
-    fn stats(&mut self) -> Option<&mut PhaseStats> {
-        match self.phase {
+    fn stats_for(&mut self, phase: Phase) -> Option<&mut GestureStats> {
+        match phase {
             Phase::Sweep => self.sweep.as_mut(),
             Phase::Scrub => self.scrub.as_mut(),
             Phase::Jump => self.jump.as_mut(),
             Phase::Settle | Phase::Done => None,
         }
+    }
+
+    /// Stats of the phase in progress.
+    fn stats(&mut self) -> Option<&mut GestureStats> {
+        let phase = self.phase;
+        self.stats_for(phase)
     }
 
     /// Advance with what the app saw after applying this frame's drag.
@@ -418,7 +387,7 @@ impl SliderBench {
                     if target_on_screen {
                         s.jump_ms.push((now - clicked_at).as_secs_f64() * 1000.0);
                     } else {
-                        s.timed_out = true;
+                        s.core.timed_out = true;
                     }
                 }
                 self.gesture = Some(Gesture::Refilling { released_at: clicked_at });
@@ -433,7 +402,7 @@ impl SliderBench {
                         s.refill_ms.push((now - released_at).as_secs_f64() * 1000.0);
                     } else {
                         log::warn!("slider bench: window did not refill within {:?}", WAIT_TIMEOUT);
-                        s.timed_out = true;
+                        s.core.timed_out = true;
                     }
                 }
                 gesture_over = true;
@@ -457,7 +426,7 @@ impl SliderBench {
             return None;
         }
         if let Some(s) = self.stats() {
-            s.end(now);
+            s.core.end(now);
         }
         self.cursor = 0;
         self.start_phase_after(phase, now);
@@ -482,7 +451,7 @@ impl SliderBench {
         };
         match stats {
             Some(slot) => {
-                *slot = Some(PhaseStats::start(now));
+                *slot = Some(GestureStats::start(now));
                 self.gesture = Some(Gesture::Dragging { since: now });
             }
             None => self.gesture = None,
@@ -491,24 +460,24 @@ impl SliderBench {
 
     pub fn observe_memory(&mut self, rss_bytes: u64, gpu_bytes: u64) {
         if let Some(s) = self.stats() {
-            s.peak_rss_bytes = s.peak_rss_bytes.max(rss_bytes);
-            s.peak_gpu_bytes = s.peak_gpu_bytes.max(gpu_bytes);
+            s.core.observe_memory(rss_bytes, gpu_bytes);
         }
     }
 
-    /// Samples collected during `phase`, handed over by the driver when
-    /// that phase ended.
-    pub fn set_samples(&mut self, phase: Phase, sync: Vec<SyncSample>, lru_hits: usize, bg_decode_ms: Vec<f64>) {
-        let stats = match phase {
-            Phase::Sweep => self.sweep.as_mut(),
-            Phase::Scrub => self.scrub.as_mut(),
-            Phase::Jump => self.jump.as_mut(),
-            Phase::Settle | Phase::Done => None,
-        };
-        if let Some(s) = stats {
-            s.sync = sync;
+    /// Timings recorded during `phase`, handed over by the driver when
+    /// that phase ended: the main-thread loads with their LRU hit count,
+    /// and the background decodes.
+    pub fn set_timings(
+        &mut self,
+        phase: Phase,
+        sync_loads: Vec<SyncLoadTiming>,
+        lru_hits: usize,
+        bg_decode_ms: Vec<f64>,
+    ) {
+        if let Some(s) = self.stats_for(phase) {
+            s.sync_loads = sync_loads;
             s.lru_hits = lru_hits;
-            s.bg_decode_ms = bg_decode_ms;
+            s.core.decode_times_ms = bg_decode_ms;
         }
     }
 

@@ -319,21 +319,8 @@ pub struct App {
     file_receiver: Receiver<PathBuf>,
     last_preview_idx: Option<usize>,
     preview_stale_since: Option<(usize, Instant)>,
-    preview_bench: Option<crate::bench::preview::PreviewBench>,
-    nav_bench: Option<crate::bench::nav::NavBench>,
-    slider_bench: Option<crate::bench::slider::SliderBench>,
-    /// Nav report of the current run, kept until the run's other modes
-    /// finish and the report is assembled.
-    run_nav_report: Option<crate::bench::report::NavReport>,
-    bench_opts: crate::bench::BenchOptions,
-    /// 1-based index of the current benchmark run.
-    bench_run: usize,
-    /// Index into `bench_opts.dirs` of the folder being benchmarked.
-    bench_dir_idx: usize,
-    /// Every finished run, for the summary written at the end.
-    bench_reports: Vec<crate::bench::report::BenchReport>,
-    /// Process start, for the benchmark's time-to-first-image.
-    app_start: Instant,
+    /// The `--bench-*` modes and their progress; see app/bench.rs.
+    bench: bench::BenchState,
     /// Outcome of the last trash move, painted briefly over the image.
     toast: Option<culling::Toast>,
     /// Files waiting for the user to confirm a permanent delete (Windows
@@ -379,15 +366,7 @@ impl App {
             file_receiver,
             last_preview_idx: None,
             preview_stale_since: None,
-            preview_bench: None,
-            nav_bench: None,
-            slider_bench: None,
-            run_nav_report: None,
-            bench_opts,
-            bench_run: 0,
-            bench_dir_idx: 0,
-            bench_reports: Vec::new(),
-            app_start,
+            bench: bench::BenchState::new(bench_opts, app_start),
             toast: None,
             pending_permanent_delete: None,
         };
@@ -510,18 +489,18 @@ impl App {
         let accent = self.theme.accent;
         let mut stale_since = self.preview_stale_since;
         // No thumbnails while the slider bench drags, as with a real drag.
-        let preview = (self.settings.slider_preview || self.preview_bench.is_some())
+        let preview = (self.settings.slider_preview || self.bench.preview.is_some())
             && self.panes.len() < 2
-            && self.slider_bench.is_none();
-        let bench_t = self.preview_bench.as_ref().and_then(|b| b.hover_t());
+            && self.bench.slider.is_none();
+        let bench_t = self.bench.preview.as_ref().and_then(|b| b.hover_t());
         let now = Instant::now();
-        let bench_drag = self.slider_bench.as_ref().and_then(|b| b.drag(now));
+        let bench_drag = self.bench.slider.as_ref().and_then(|b| b.drag(now));
         let result = egui::TopBottomPanel::bottom("nav")
             .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent, &mut self.panes, &mut stale_since, preview, bench_t, bench_drag))
             .inner;
         self.preview_stale_since = stale_since;
 
-        if let Some(bench) = &mut self.preview_bench {
+        if let Some(bench) = &mut self.bench.preview {
             // At each phase end, sample the overlay's Preview FPS counter
             // and reset its 2s window so the next phase's sample is pure.
             if let Some(phase) = bench.tick(result.preview_cursor_index, result.preview_exact) {
@@ -530,7 +509,7 @@ impl App {
             }
             if bench.is_done() {
                 log::info!("{}", bench.report());
-                self.preview_bench = None;
+                self.bench.preview = None;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             } else {
                 ctx.request_repaint();
@@ -549,7 +528,7 @@ impl App {
 
         let target_changed = result.target.is_some();
         let shown = self.apply_slider_result_all(result, ctx);
-        if self.slider_bench.is_some() {
+        if self.bench.slider.is_some() {
             self.tick_slider_bench(now, bench_drag, target_changed, shown, ctx);
         }
     }
@@ -828,7 +807,7 @@ impl eframe::App for App {
 
         self.handle_external_open_requests(ctx);
         self.handle_dropped_files(ctx);
-        if self.nav_bench.is_some() {
+        if self.bench.nav.is_some() {
             // The benchmark is the keyboard for the duration of the run.
             self.tick_nav_bench(ctx);
         } else {

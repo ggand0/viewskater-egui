@@ -12,7 +12,10 @@
 //! Shared measurement helpers live in this module; [`report`] holds the
 //! JSON and markdown output.
 
+use std::path::PathBuf;
+
 pub(crate) mod nav;
+pub(crate) mod phase;
 pub(crate) mod preview;
 pub(crate) mod report;
 pub(crate) mod slider;
@@ -28,8 +31,124 @@ pub(crate) enum SkipPhase {
     Jump,
 }
 
-/// Which benchmarks to run and how, from the CLI. Modes combine: nav runs
-/// first, then slider, then preview, on the same folder.
+/// The `--bench-*` command line flags, flattened into the app's `Args`.
+/// `BenchOptions` is the same information in the shape the app uses.
+#[derive(clap::Args, Debug)]
+pub(crate) struct BenchArgs {
+    /// Run the slider preview benchmark on the given folder and exit.
+    /// Simulates hovering the navigation slider and reports thumbnail
+    /// latency stats to the log.
+    #[arg(long)]
+    pub bench_preview: bool,
+
+    /// Run the keyboard navigation benchmark on the given folder and exit:
+    /// skate to the end and back, then tap through at a human pace.
+    /// Combines with --bench-preview (nav runs first).
+    #[arg(long)]
+    pub bench_nav: bool,
+
+    /// Run the slider navigation benchmark on the given folder and exit:
+    /// a sweep across the rail and back, scrubs around evenly spaced
+    /// positions, and clicks spread over the folder. Combines with --bench-nav (nav runs first in each run).
+    #[arg(long)]
+    pub bench_slider: bool,
+
+    /// Seconds the --bench-slider sweep takes to cross the rail.
+    #[arg(long, default_value_t = 4.0, value_name = "SECS")]
+    pub bench_sweep_secs: f64,
+
+    /// Number of scrub gestures in --bench-slider (0 skips the phase).
+    /// Anchors are spaced evenly from the first image to the last: 5
+    /// means 0, 25, 50, 75 and 100 percent of the folder.
+    #[arg(long, default_value_t = 5, value_name = "N")]
+    pub bench_scrub_anchors: usize,
+
+    /// Width of the region one scrub sweeps, as a share of the rail:
+    /// 0.1 is 5 percent each side of the anchor.
+    #[arg(long, default_value_t = 0.1, value_name = "SHARE")]
+    pub bench_scrub_span: f32,
+
+    /// Back-and-forth passes per scrub.
+    #[arg(long, default_value_t = 2, value_name = "N")]
+    pub bench_scrub_passes: usize,
+
+    /// Seconds one scrub takes, press to release.
+    #[arg(long, default_value_t = 2.0, value_name = "SECS")]
+    pub bench_scrub_secs: f64,
+
+    /// Number of click-to-jump gestures in --bench-slider (0 skips).
+    #[arg(long, default_value_t = 20, value_name = "N")]
+    pub bench_jumps: usize,
+
+    /// Phases to leave out, comma separated: skate-left, sweep, scrub,
+    /// jump. All phases run by default.
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "PHASE,...")]
+    pub bench_skip: Vec<SkipPhase>,
+
+    /// Folder to benchmark. Repeat the flag to run several folders in one
+    /// go; the positional path is then ignored. A summary averaged over
+    /// all runs is written at the end.
+    #[arg(long, value_name = "DIR")]
+    pub bench_dir: Vec<PathBuf>,
+
+    /// Only skate through the first N images of the folder (and back).
+    /// Default is the whole folder.
+    #[arg(long, value_name = "N")]
+    pub bench_max_images: Option<usize>,
+
+    /// Steps per second in the tap phase of --bench-nav.
+    #[arg(long, default_value_t = 6.0, value_name = "PER_SEC")]
+    pub bench_tap_rate: f64,
+
+    /// Add a tap phase to --bench-nav: N single steps at --bench-tap-rate,
+    /// measuring press-to-image latency. Off by default; useful for slow
+    /// sources (RAW, JPEG 2000, network shares) where a decode can take
+    /// longer than the gap between taps.
+    #[arg(long, default_value_t = nav::DEFAULT_TAP_STEPS, value_name = "N")]
+    pub bench_tap_steps: usize,
+
+    /// Repeat the benchmarks this many times in one process, reopening the
+    /// folder between runs.
+    #[arg(long, default_value_t = 1, value_name = "N")]
+    pub bench_runs: usize,
+
+    /// Write a JSON and a markdown report per run into this directory.
+    #[arg(long, value_name = "DIR")]
+    pub bench_out: Option<PathBuf>,
+
+    /// Free text copied into the report header, e.g. "cold" or "warm".
+    #[arg(long, value_name = "TEXT")]
+    pub bench_label: Option<String>,
+}
+
+impl From<BenchArgs> for BenchOptions {
+    fn from(a: BenchArgs) -> Self {
+        Self {
+            nav: a.bench_nav,
+            slider: a.bench_slider,
+            preview: a.bench_preview,
+            skip: a.bench_skip,
+            dirs: a.bench_dir,
+            max_images: a.bench_max_images,
+            tap_rate: a.bench_tap_rate,
+            tap_steps: a.bench_tap_steps,
+            sweep_secs: a.bench_sweep_secs,
+            scrub: slider::ScrubParams {
+                anchors: a.bench_scrub_anchors,
+                span: a.bench_scrub_span,
+                passes: a.bench_scrub_passes,
+                secs: a.bench_scrub_secs,
+            },
+            jumps: a.bench_jumps,
+            runs: a.bench_runs.max(1),
+            out_dir: a.bench_out,
+            label: a.bench_label,
+        }
+    }
+}
+
+/// Which benchmarks to run and how. Modes combine: nav runs first, then
+/// slider, then preview, on the same folder.
 #[derive(Clone, Debug)]
 pub(crate) struct BenchOptions {
     pub nav: bool,
@@ -38,7 +157,7 @@ pub(crate) struct BenchOptions {
     pub skip: Vec<SkipPhase>,
     /// Folders to benchmark in order (`--bench-dir`, repeatable). Empty
     /// means the folder given as the positional path.
-    pub dirs: Vec<std::path::PathBuf>,
+    pub dirs: Vec<PathBuf>,
     /// Cap on images per skate pass of `--bench-nav`; None is the whole folder.
     pub max_images: Option<usize>,
     /// Steps per second in the tap phase of `--bench-nav`.
@@ -54,7 +173,7 @@ pub(crate) struct BenchOptions {
     /// the folder between runs.
     pub runs: usize,
     /// Directory for the JSON and markdown reports. Log only when None.
-    pub out_dir: Option<std::path::PathBuf>,
+    pub out_dir: Option<PathBuf>,
     /// Free text copied into the report header, e.g. "cold" or "warm".
     pub label: Option<String>,
 }

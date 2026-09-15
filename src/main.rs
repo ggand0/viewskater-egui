@@ -35,90 +35,8 @@ struct Args {
     /// Paths to image files or directories
     paths: Vec<PathBuf>,
 
-    /// Run the slider preview benchmark on the given folder and exit.
-    /// Simulates hovering the navigation slider and reports thumbnail
-    /// latency stats to the log.
-    #[arg(long)]
-    bench_preview: bool,
-
-    /// Run the keyboard navigation benchmark on the given folder and exit:
-    /// skate to the end and back, then tap through at a human pace.
-    /// Combines with --bench-preview (nav runs first).
-    #[arg(long)]
-    bench_nav: bool,
-
-    /// Run the slider navigation benchmark on the given folder and exit:
-    /// a sweep across the rail and back, scrubs around evenly spaced
-    /// positions, and clicks spread over the folder. Combines with --bench-nav (nav runs first in each run).
-    #[arg(long)]
-    bench_slider: bool,
-
-    /// Seconds the --bench-slider sweep takes to cross the rail.
-    #[arg(long, default_value_t = 4.0, value_name = "SECS")]
-    bench_sweep_secs: f64,
-
-    /// Number of scrub gestures in --bench-slider (0 skips the phase).
-    /// Anchors are spaced evenly from the first image to the last: 5
-    /// means 0, 25, 50, 75 and 100 percent of the folder.
-    #[arg(long, default_value_t = 5, value_name = "N")]
-    bench_scrub_anchors: usize,
-
-    /// Width of the region one scrub sweeps, as a share of the rail:
-    /// 0.1 is 5 percent each side of the anchor.
-    #[arg(long, default_value_t = 0.1, value_name = "SHARE")]
-    bench_scrub_span: f32,
-
-    /// Back-and-forth passes per scrub.
-    #[arg(long, default_value_t = 2, value_name = "N")]
-    bench_scrub_passes: usize,
-
-    /// Seconds one scrub takes, press to release.
-    #[arg(long, default_value_t = 2.0, value_name = "SECS")]
-    bench_scrub_secs: f64,
-
-    /// Number of click-to-jump gestures in --bench-slider (0 skips).
-    #[arg(long, default_value_t = 20, value_name = "N")]
-    bench_jumps: usize,
-
-    /// Phases to leave out, comma separated: skate-left, sweep, scrub,
-    /// jump. All phases run by default.
-    #[arg(long, value_enum, value_delimiter = ',', value_name = "PHASE,...")]
-    bench_skip: Vec<bench::SkipPhase>,
-
-    /// Folder to benchmark. Repeat the flag to run several folders in one
-    /// go; the positional path is then ignored. A summary averaged over
-    /// all runs is written at the end.
-    #[arg(long, value_name = "DIR")]
-    bench_dir: Vec<PathBuf>,
-
-    /// Only skate through the first N images of the folder (and back).
-    /// Default is the whole folder.
-    #[arg(long, value_name = "N")]
-    bench_max_images: Option<usize>,
-
-    /// Steps per second in the tap phase of --bench-nav.
-    #[arg(long, default_value_t = 6.0, value_name = "PER_SEC")]
-    bench_tap_rate: f64,
-
-    /// Add a tap phase to --bench-nav: N single steps at --bench-tap-rate,
-    /// measuring press-to-image latency. Off by default; useful for slow
-    /// sources (RAW, JPEG 2000, network shares) where a decode can take
-    /// longer than the gap between taps.
-    #[arg(long, default_value_t = bench::nav::DEFAULT_TAP_STEPS, value_name = "N")]
-    bench_tap_steps: usize,
-
-    /// Repeat the benchmarks this many times in one process, reopening the
-    /// folder between runs.
-    #[arg(long, default_value_t = 1, value_name = "N")]
-    bench_runs: usize,
-
-    /// Write a JSON and a markdown report per run into this directory.
-    #[arg(long, value_name = "DIR")]
-    bench_out: Option<PathBuf>,
-
-    /// Free text copied into the report header, e.g. "cold" or "warm".
-    #[arg(long, value_name = "TEXT")]
-    bench_label: Option<String>,
+    #[command(flatten)]
+    bench: bench::BenchArgs,
 }
 
 /// Configure eframe's wgpu setup with the user-selected MemoryHints. The hint
@@ -245,27 +163,7 @@ fn main() -> eframe::Result {
                 log_buffer,
                 settings,
                 file_rx,
-                bench::BenchOptions {
-                    nav: args.bench_nav,
-                    slider: args.bench_slider,
-                    preview: args.bench_preview,
-                    skip: args.bench_skip,
-                    dirs: args.bench_dir,
-                    max_images: args.bench_max_images,
-                    tap_rate: args.bench_tap_rate,
-                    tap_steps: args.bench_tap_steps,
-                    sweep_secs: args.bench_sweep_secs,
-                    scrub: bench::slider::ScrubParams {
-                        anchors: args.bench_scrub_anchors,
-                        span: args.bench_scrub_span,
-                        passes: args.bench_scrub_passes,
-                        secs: args.bench_scrub_secs,
-                    },
-                    jumps: args.bench_jumps,
-                    runs: args.bench_runs.max(1),
-                    out_dir: args.bench_out,
-                    label: args.bench_label,
-                },
+                args.bench.into(),
                 app_start,
             )))
         }),

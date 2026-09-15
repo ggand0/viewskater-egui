@@ -26,8 +26,9 @@ use std::time::{Duration, Instant};
 
 use crate::app::handlers::NavOutcome;
 
+use super::phase::PhaseStats;
 use super::report::{NavReport, SettleReport, SkateReport, TapReport};
-use super::{process_cpu_secs, LatencyStats};
+use super::LatencyStats;
 
 /// Default steps in the tap phase (`--bench-tap-steps`). Zero skips the
 /// phase: on local disk every tap is answered on the press frame, so it
@@ -62,66 +63,9 @@ pub(crate) enum Drive {
 }
 
 /// Returned by the tick functions when a phase just ended so the driver
-/// can hand over that phase's background decode samples.
+/// can hand over that phase's background decode times.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PhaseEnd(pub Phase);
-
-/// Frame-to-frame time within a phase.
-#[derive(Default)]
-struct FrameTimer {
-    last: Option<Instant>,
-    deltas_ms: Vec<f64>,
-}
-
-impl FrameTimer {
-    fn tick(&mut self, now: Instant) {
-        if let Some(last) = self.last {
-            self.deltas_ms.push((now - last).as_secs_f64() * 1000.0);
-        }
-        self.last = Some(now);
-    }
-}
-
-/// Bookkeeping shared by every measured phase.
-struct PhaseStats {
-    started: Instant,
-    ended: Option<Instant>,
-    frames: FrameTimer,
-    cpu_start: Option<f64>,
-    cpu_secs: Option<f64>,
-    peak_rss_bytes: u64,
-    peak_gpu_bytes: u64,
-    decode_ms: Vec<f64>,
-    timed_out: bool,
-}
-
-impl PhaseStats {
-    fn start(now: Instant) -> Self {
-        Self {
-            started: now,
-            ended: None,
-            frames: FrameTimer::default(),
-            cpu_start: process_cpu_secs(),
-            cpu_secs: None,
-            peak_rss_bytes: 0,
-            peak_gpu_bytes: 0,
-            decode_ms: Vec::new(),
-            timed_out: false,
-        }
-    }
-
-    fn end(&mut self, now: Instant) {
-        self.ended = Some(now);
-        self.cpu_secs = match (self.cpu_start, process_cpu_secs()) {
-            (Some(a), Some(b)) => Some(b - a),
-            _ => None,
-        };
-    }
-
-    fn wall_secs(&self) -> f64 {
-        self.ended.map_or(0.0, |e| (e - self.started).as_secs_f64())
-    }
-}
 
 struct SkateRun {
     stats: PhaseStats,
@@ -157,7 +101,7 @@ impl SkateRun {
 
     /// Returns true when the phase is over.
     fn tick(&mut self, now: Instant, outcome: NavOutcome) -> bool {
-        self.stats.frames.tick(now);
+        self.stats.tick_frame(now);
         if self.rate_start.is_some() {
             self.frames_counted += 1;
             if outcome.blocked {
@@ -211,11 +155,11 @@ impl SkateRun {
             } else {
                 0.0
             },
-            frame_ms: LatencyStats::from_ms(&self.stats.frames.deltas_ms),
-            decode_ms: LatencyStats::from_ms(&self.stats.decode_ms),
+            frame_ms: self.stats.frame_stats(),
+            decode_ms: self.stats.decode_stats(),
             cpu_secs: self.stats.cpu_secs,
-            peak_rss_mb: mb(self.stats.peak_rss_bytes),
-            peak_gpu_mb: mb(self.stats.peak_gpu_bytes),
+            peak_rss_mb: self.stats.peak_rss_mb(),
+            peak_gpu_mb: self.stats.peak_gpu_mb(),
             timed_out: self.stats.timed_out,
         }
     }
@@ -255,7 +199,7 @@ impl TapRun {
 
     /// Returns true when the phase is over.
     fn tick(&mut self, now: Instant, outcome: NavOutcome) -> bool {
-        self.stats.frames.tick(now);
+        self.stats.tick_frame(now);
         self.frames += 1;
         let pressed = *self.pending_since.get_or_insert_with(|| {
             // A new press. Keep the cadence anchored to the schedule, not
@@ -288,7 +232,7 @@ impl TapRun {
     }
 
     fn tick_idle(&mut self, now: Instant) {
-        self.stats.frames.tick(now);
+        self.stats.tick_frame(now);
         self.frames += 1;
     }
 
@@ -300,18 +244,14 @@ impl TapRun {
             step_latency_ms: LatencyStats::from_ms(&self.latencies_ms),
             frames: self.frames,
             stall_frames: self.stall_frames,
-            frame_ms: LatencyStats::from_ms(&self.stats.frames.deltas_ms),
-            decode_ms: LatencyStats::from_ms(&self.stats.decode_ms),
+            frame_ms: self.stats.frame_stats(),
+            decode_ms: self.stats.decode_stats(),
             cpu_secs: self.stats.cpu_secs,
-            peak_rss_mb: mb(self.stats.peak_rss_bytes),
-            peak_gpu_mb: mb(self.stats.peak_gpu_bytes),
+            peak_rss_mb: self.stats.peak_rss_mb(),
+            peak_gpu_mb: self.stats.peak_gpu_mb(),
             timed_out: self.stats.timed_out,
         }
     }
-}
-
-fn mb(bytes: u64) -> f64 {
-    bytes as f64 / (1024.0 * 1024.0)
 }
 
 pub(crate) struct NavBench {
@@ -485,31 +425,28 @@ impl NavBench {
         }
     }
 
-    /// Memory readings for this frame, kept as per-phase peaks.
-    pub fn observe_memory(&mut self, rss_bytes: u64, gpu_bytes: u64) {
-        let stats = match self.phase {
+    fn stats_for(&mut self, phase: Phase) -> Option<&mut PhaseStats> {
+        match phase {
             Phase::SkateRight => self.skate_right.as_mut().map(|r| &mut r.stats),
             Phase::SkateLeft => self.skate_left.as_mut().map(|r| &mut r.stats),
             Phase::Tap => self.tap.as_mut().map(|r| &mut r.stats),
             Phase::Settle | Phase::Done => None,
-        };
-        if let Some(s) = stats {
-            s.peak_rss_bytes = s.peak_rss_bytes.max(rss_bytes);
-            s.peak_gpu_bytes = s.peak_gpu_bytes.max(gpu_bytes);
         }
     }
 
-    /// Background decode times collected during `phase`, handed over by
+    /// Memory readings for this frame, kept as per-phase peaks.
+    pub fn observe_memory(&mut self, rss_bytes: u64, gpu_bytes: u64) {
+        let phase = self.phase;
+        if let Some(s) = self.stats_for(phase) {
+            s.observe_memory(rss_bytes, gpu_bytes);
+        }
+    }
+
+    /// Background decode times recorded during `phase`, handed over by
     /// the driver when that phase ended.
-    pub fn set_decode_samples(&mut self, phase: Phase, samples: Vec<f64>) {
-        let stats = match phase {
-            Phase::SkateRight => self.skate_right.as_mut().map(|r| &mut r.stats),
-            Phase::SkateLeft => self.skate_left.as_mut().map(|r| &mut r.stats),
-            Phase::Tap => self.tap.as_mut().map(|r| &mut r.stats),
-            Phase::Settle | Phase::Done => None,
-        };
-        if let Some(s) = stats {
-            s.decode_ms = samples;
+    pub fn set_decode_times(&mut self, phase: Phase, times_ms: Vec<f64>) {
+        if let Some(s) = self.stats_for(phase) {
+            s.decode_times_ms = times_ms;
         }
     }
 

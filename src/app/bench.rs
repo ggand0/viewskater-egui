@@ -13,22 +13,58 @@ use std::time::Instant;
 use eframe::egui;
 
 use crate::bench::nav::{Drive, NavBench};
-use crate::bench::report::{BenchReport, Header, Summary};
+use crate::bench::preview::PreviewBench;
+use crate::bench::report::{BenchReport, Header, NavReport, SliderReport, Summary};
 use crate::bench::slider::{BenchDrag, ScrubParams, SliderBench, SliderFrame};
-use crate::bench::SkipPhase;
+use crate::bench::{BenchOptions, SkipPhase};
 
 use super::App;
+
+/// Everything the benchmarks keep on the app between frames.
+pub(crate) struct BenchState {
+    pub opts: BenchOptions,
+    pub preview: Option<PreviewBench>,
+    pub nav: Option<NavBench>,
+    pub slider: Option<SliderBench>,
+    /// Nav report of the current run, kept until the run's other modes
+    /// finish and the report is assembled.
+    run_nav_report: Option<NavReport>,
+    /// 1-based index of the current run.
+    run: usize,
+    /// Index into `opts.dirs` of the folder being benchmarked.
+    dir_idx: usize,
+    /// Every finished run, for the summary written at the end.
+    reports: Vec<BenchReport>,
+    /// Process start, for the first run's time-to-first-image.
+    app_start: Instant,
+}
+
+impl BenchState {
+    pub fn new(opts: BenchOptions, app_start: Instant) -> Self {
+        Self {
+            opts,
+            preview: None,
+            nav: None,
+            slider: None,
+            run_nav_report: None,
+            run: 0,
+            dir_idx: 0,
+            reports: Vec::new(),
+            app_start,
+        }
+    }
+}
 
 impl App {
     /// Start whatever `--bench-*` asked for. Called once from `App::new`
     /// after the folder is open.
     pub(super) fn start_benchmarks(&mut self, ctx: &egui::Context) {
-        if !self.bench_opts.any() {
+        if !self.bench.opts.any() {
             return;
         }
         // --bench-dir folders replace whatever the positional path opened.
-        self.bench_dir_idx = 0;
-        if let Some(dir) = self.bench_opts.dirs.first().cloned() {
+        self.bench.dir_idx = 0;
+        if let Some(dir) = self.bench.opts.dirs.first().cloned() {
             let options = self.current_discovery_options();
             self.panes.truncate(1);
             self.panes[0].open_path(&dir, ctx, options);
@@ -39,10 +75,10 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
-        self.bench_run = 1;
-        if self.bench_opts.nav || self.bench_opts.slider {
-            self.start_run(self.app_start);
-        } else if self.bench_opts.preview {
+        self.bench.run = 1;
+        if self.bench.opts.nav || self.bench.opts.slider {
+            self.start_run(self.bench.app_start);
+        } else if self.bench.opts.preview {
             self.start_preview_bench();
         }
     }
@@ -51,9 +87,9 @@ impl App {
     /// the first run, the folder reopen for every later run, so settle
     /// times stay comparable.
     fn start_run(&mut self, run_start: Instant) {
-        self.run_nav_report = None;
-        self.panes[0].set_decode_sampling(true);
-        if self.bench_opts.nav {
+        self.bench.run_nav_report = None;
+        self.panes[0].record_decode_times(true);
+        if self.bench.opts.nav {
             self.start_nav_bench(run_start);
         } else {
             self.start_slider_bench(run_start);
@@ -64,16 +100,16 @@ impl App {
         let n = self.panes[0].image_paths.len();
         log::info!(
             "nav bench: run {}/{} on {n} images",
-            self.bench_run,
-            self.bench_opts.runs
+            self.bench.run,
+            self.bench.opts.runs
         );
-        self.nav_bench = Some(NavBench::new(
+        self.bench.nav = Some(NavBench::new(
             n,
             self.settings.cache_count,
-            self.bench_opts.max_images,
-            self.bench_opts.skips(SkipPhase::SkateLeft),
-            self.bench_opts.tap_rate,
-            self.bench_opts.tap_steps,
+            self.bench.opts.max_images,
+            self.bench.opts.skips(SkipPhase::SkateLeft),
+            self.bench.opts.tap_rate,
+            self.bench.opts.tap_steps,
             run_start,
         ));
     }
@@ -82,22 +118,22 @@ impl App {
         let n = self.panes[0].image_paths.len();
         log::info!(
             "slider bench: run {}/{} on {n} images",
-            self.bench_run,
-            self.bench_opts.runs
+            self.bench.run,
+            self.bench.opts.runs
         );
-        self.panes[0].set_sync_sampling(true);
+        self.panes[0].record_sync_load_times(true);
         // Background decodes from the nav bench's last phase are not
-        // this bench's; start the sink clean. The LRU is emptied too so
+        // this bench's; drop what was recorded. The LRU is emptied too so
         // the sweep does not hit images the keyboard bench loaded.
-        let _ = self.panes[0].take_decode_samples();
+        let _ = self.panes[0].take_decode_times();
         self.panes[0].clear_decode_lru();
-        let opts = &self.bench_opts;
+        let opts = &self.bench.opts;
         let scrub = ScrubParams {
             anchors: if opts.skips(SkipPhase::Scrub) { 0 } else { opts.scrub.anchors },
             ..opts.scrub
         };
         let jumps = if opts.skips(SkipPhase::Jump) { 0 } else { opts.jumps };
-        self.slider_bench = Some(SliderBench::new(
+        self.bench.slider = Some(SliderBench::new(
             n,
             opts.sweep_secs,
             opts.skips(SkipPhase::Sweep),
@@ -121,13 +157,13 @@ impl App {
     pub(super) fn start_preview_bench(&mut self) {
         let n = self.panes[0].image_paths.len();
         log::info!("preview bench: starting on {n} images");
-        self.preview_bench = Some(crate::bench::preview::PreviewBench::new(n));
+        self.bench.preview = Some(PreviewBench::new(n));
     }
 
     /// One frame of `--bench-nav`. Runs instead of `handle_keyboard`.
     pub(super) fn tick_nav_bench(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
-        let Some(bench) = self.nav_bench.as_mut() else {
+        let Some(bench) = self.bench.nav.as_mut() else {
             return;
         };
         let (rss, gpu) = self.perf.memory_bytes();
@@ -137,12 +173,12 @@ impl App {
         let ended = match drive {
             Drive::Settle => {
                 let (has_texture, settled) = self.pane_state();
-                let bench = self.nav_bench.as_mut().expect("nav bench");
+                let bench = self.bench.nav.as_mut().expect("nav bench");
                 bench.tick_settle(now, has_texture, settled)
             }
             Drive::Step(dir) => {
                 let outcome = self.step_navigation(dir, ctx);
-                let bench = self.nav_bench.as_mut().expect("nav bench");
+                let bench = self.bench.nav.as_mut().expect("nav bench");
                 bench.tick_nav(now, outcome)
             }
             Drive::Idle => {
@@ -153,17 +189,17 @@ impl App {
         };
 
         if let Some(end) = ended {
-            // The samples collected during the phase that just ended belong
-            // to it; taking them also clears the sink for the next phase.
-            let samples = self.panes[0].take_decode_samples();
-            if let Some(bench) = self.nav_bench.as_mut() {
-                // Settle's samples are the initial window fill, not
-                // navigation; set_decode_samples ignores that phase.
-                bench.set_decode_samples(end.0, samples);
+            // The decode times recorded during the phase that just ended
+            // belong to it; taking them also clears the list for the next.
+            let times = self.panes[0].take_decode_times();
+            if let Some(bench) = self.bench.nav.as_mut() {
+                // Settle's decodes are the initial window fill, not
+                // navigation; set_decode_times ignores that phase.
+                bench.set_decode_times(end.0, times);
             }
         }
 
-        let done = self.nav_bench.as_ref().is_some_and(NavBench::is_done);
+        let done = self.bench.nav.as_ref().is_some_and(NavBench::is_done);
         if done {
             self.finish_nav_bench(ctx);
         }
@@ -172,11 +208,11 @@ impl App {
     }
 
     fn finish_nav_bench(&mut self, ctx: &egui::Context) {
-        let Some(bench) = self.nav_bench.take() else {
+        let Some(bench) = self.bench.nav.take() else {
             return;
         };
-        self.run_nav_report = Some(bench.report());
-        if self.bench_opts.slider {
+        self.bench.run_nav_report = Some(bench.report());
+        if self.bench.opts.slider {
             // Same run, same run_start semantics: the slider bench settles
             // from now, since the folder was not reopened.
             self.start_slider_bench(Instant::now());
@@ -198,7 +234,7 @@ impl App {
         let (rss, gpu) = self.perf.memory_bytes();
         let (has_texture, settled) = self.pane_state();
         let current_index = self.panes[0].current_index;
-        let Some(bench) = self.slider_bench.as_mut() else {
+        let Some(bench) = self.bench.slider.as_mut() else {
             return;
         };
         bench.observe_memory(rss, gpu);
@@ -208,18 +244,18 @@ impl App {
             bench.tick(now, drag, SliderFrame { target_changed, shown, current_index, has_texture, settled })
         };
         if let Some(end) = ended {
-            let (sync, lru_hits) = self.panes[0].take_sync_samples();
-            let bg = self.panes[0].take_decode_samples();
-            if let Some(bench) = self.slider_bench.as_mut() {
-                bench.set_samples(end.0, sync, lru_hits, bg);
+            let (sync_loads, lru_hits) = self.panes[0].take_sync_load_times();
+            let bg = self.panes[0].take_decode_times();
+            if let Some(bench) = self.bench.slider.as_mut() {
+                bench.set_timings(end.0, sync_loads, lru_hits, bg);
             }
             // Each phase starts from the same state: nothing the previous
             // phase loaded stays in the LRU to turn its loads into hits.
             self.panes[0].clear_decode_lru();
         }
-        if self.slider_bench.as_ref().is_some_and(SliderBench::is_done) {
-            let bench = self.slider_bench.take().expect("slider bench");
-            self.panes[0].set_sync_sampling(false);
+        if self.bench.slider.as_ref().is_some_and(SliderBench::is_done) {
+            let bench = self.bench.slider.take().expect("slider bench");
+            self.panes[0].record_sync_load_times(false);
             self.finish_run(Some(bench.report()), ctx);
         }
         ctx.request_repaint();
@@ -227,8 +263,8 @@ impl App {
 
     /// Every mode of this run is done: assemble and write the report, then
     /// start the next run, the next folder, the preview bench, or close.
-    fn finish_run(&mut self, slider: Option<crate::bench::report::SliderReport>, ctx: &egui::Context) {
-        self.panes[0].set_decode_sampling(false);
+    fn finish_run(&mut self, slider: Option<SliderReport>, ctx: &egui::Context) {
+        self.panes[0].record_decode_times(false);
 
         let folder = self.panes[0]
             .dir_path
@@ -239,36 +275,36 @@ impl App {
                 &folder,
                 &self.panes[0].image_paths,
                 &self.settings,
-                self.bench_opts.label.clone(),
-                self.bench_run,
-                self.bench_opts.runs,
+                self.bench.opts.label.clone(),
+                self.bench.run,
+                self.bench.opts.runs,
             ),
-            nav: self.run_nav_report.take(),
+            nav: self.bench.run_nav_report.take(),
             slider,
         };
         // Straight to stderr, not through the logger: the tracing layer
         // escapes the color codes.
         eprintln!("{}", report.to_text());
-        if let Some(dir) = &self.bench_opts.out_dir {
+        if let Some(dir) = &self.bench.opts.out_dir {
             match report.write(dir) {
                 Ok((json, md)) => log::info!("bench report written: {} and {}", json.display(), md.display()),
                 Err(e) => log::error!("bench report could not be written to {}: {e}", dir.display()),
             }
         }
-        self.bench_reports.push(report);
+        self.bench.reports.push(report);
 
         let options = self.current_discovery_options();
-        if self.bench_run < self.bench_opts.runs {
+        if self.bench.run < self.bench.opts.runs {
             // Reopen the folder so the sliding window, LRU and thumbnails
             // start empty again. The OS page cache stays warm, which is
             // what a repeated run is for.
-            self.bench_run += 1;
+            self.bench.run += 1;
             let reopened = Instant::now();
             self.panes[0].open_path(&folder, ctx, options);
             self.start_run(reopened);
-        } else if let Some(next) = self.bench_opts.dirs.get(self.bench_dir_idx + 1).cloned() {
-            self.bench_dir_idx += 1;
-            self.bench_run = 1;
+        } else if let Some(next) = self.bench.opts.dirs.get(self.bench.dir_idx + 1).cloned() {
+            self.bench.dir_idx += 1;
+            self.bench.run = 1;
             let opened = Instant::now();
             self.panes[0].open_path(&next, ctx, options);
             if self.panes[0].image_paths.len() < 2 {
@@ -285,18 +321,18 @@ impl App {
     /// Every nav run is done: write the cross-run summary, then hand over
     /// to the preview bench or close.
     fn finish_all_benchmarks(&mut self, ctx: &egui::Context) {
-        if let Some(summary) = Summary::of(&self.bench_reports) {
-            if self.bench_reports.len() > 1 {
+        if let Some(summary) = Summary::of(&self.bench.reports) {
+            if self.bench.reports.len() > 1 {
                 eprintln!("{}", summary.to_markdown());
             }
-            if let Some(dir) = &self.bench_opts.out_dir {
+            if let Some(dir) = &self.bench.opts.out_dir {
                 match summary.write(dir) {
                     Ok((json, md)) => log::info!("bench summary written: {} and {}", json.display(), md.display()),
                     Err(e) => log::error!("bench summary could not be written to {}: {e}", dir.display()),
                 }
             }
         }
-        if self.bench_opts.preview {
+        if self.bench.opts.preview {
             self.start_preview_bench();
         } else {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
