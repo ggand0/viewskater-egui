@@ -319,6 +319,8 @@ pub(crate) struct NavBench {
     cache_count: usize,
     /// Images to walk per skate pass; None means the whole folder.
     max_images: Option<usize>,
+    /// `--bench-skip skate-left`.
+    skip_left: bool,
     tap_rate: f64,
     tap_steps: usize,
     run_start: Instant,
@@ -340,6 +342,7 @@ impl NavBench {
         num_images: usize,
         cache_count: usize,
         max_images: Option<usize>,
+        skip_left: bool,
         tap_rate: f64,
         tap_steps: usize,
         run_start: Instant,
@@ -348,6 +351,7 @@ impl NavBench {
             num_images,
             cache_count,
             max_images: max_images.map(|m| m.min(num_images.saturating_sub(1))),
+            skip_left,
             tap_rate,
             tap_steps,
             run_start,
@@ -421,17 +425,22 @@ impl NavBench {
             Phase::SkateRight => {
                 let run = self.skate_right.as_mut().expect("skate right run");
                 if run.tick(now, outcome) {
-                    // Coming back, the first images are the ones just shown
-                    // and still in the window; skip the same count. Walk
-                    // back exactly as far as the right pass went.
                     let walked = run.advances;
-                    self.phase = Phase::SkateLeft;
-                    self.skate_left = Some(SkateRun::new(
-                        now,
-                        -1,
-                        self.cache_count.min(self.num_images),
-                        Some(walked),
-                    ));
+                    if self.skip_left {
+                        self.start_tap_or_finish(now);
+                    } else {
+                        // Coming back, the first images are the ones just
+                        // shown and still in the window; skip the same
+                        // count. Walk back exactly as far as the right
+                        // pass went.
+                        self.phase = Phase::SkateLeft;
+                        self.skate_left = Some(SkateRun::new(
+                            now,
+                            -1,
+                            self.cache_count.min(self.num_images),
+                            Some(walked),
+                        ));
+                    }
                     return Some(PhaseEnd(Phase::SkateRight));
                 }
                 None
@@ -439,13 +448,7 @@ impl NavBench {
             Phase::SkateLeft => {
                 let run = self.skate_left.as_mut().expect("skate left run");
                 if run.tick(now, outcome) {
-                    let steps = self.tap_steps.min(self.num_images.saturating_sub(1));
-                    if steps == 0 {
-                        self.phase = Phase::Done;
-                    } else {
-                        self.phase = Phase::Tap;
-                        self.tap = Some(TapRun::new(now, self.tap_rate, steps));
-                    }
+                    self.start_tap_or_finish(now);
                     return Some(PhaseEnd(Phase::SkateLeft));
                 }
                 None
@@ -459,6 +462,19 @@ impl NavBench {
                 None
             }
             Phase::Settle | Phase::Done => None,
+        }
+    }
+
+    /// The tap phase only runs with `--bench-tap-steps`. Without it, or
+    /// with skate left skipped, the tap starts wherever the skating ended,
+    /// which is why it is a forward step count and not a position.
+    fn start_tap_or_finish(&mut self, now: Instant) {
+        let steps = self.tap_steps.min(self.num_images.saturating_sub(1));
+        if steps == 0 {
+            self.phase = Phase::Done;
+        } else {
+            self.phase = Phase::Tap;
+            self.tap = Some(TapRun::new(now, self.tap_rate, steps));
         }
     }
 
@@ -527,7 +543,7 @@ mod tests {
     #[test]
     fn settle_waits_for_texture_and_quiet_window() {
         let t0 = Instant::now();
-        let mut b = NavBench::new(10, 2, None, 6.0, 200, t0);
+        let mut b = NavBench::new(10, 2, None, false, 6.0, 200, t0);
         assert_eq!(b.drive(t0), Drive::Settle);
         assert_eq!(b.tick_settle(ms(t0, 100), false, true), None);
         assert_eq!(b.tick_settle(ms(t0, 200), true, false), None);
@@ -541,7 +557,7 @@ mod tests {
     #[test]
     fn skate_rate_excludes_prefetched_images_and_counts_stalls() {
         let t0 = Instant::now();
-        let mut b = NavBench::new(10, 2, None, 6.0, 200, t0);
+        let mut b = NavBench::new(10, 2, None, false, 6.0, 200, t0);
         b.tick_settle(t0, true, true);
         // Two prefetched advances at 10 ms spacing, then 4 counted advances
         // with one stall in between, then the end.
@@ -575,7 +591,7 @@ mod tests {
     #[test]
     fn skate_gives_up_after_no_progress() {
         let t0 = Instant::now();
-        let mut b = NavBench::new(10, 0, None, 6.0, 200, t0);
+        let mut b = NavBench::new(10, 0, None, false, 6.0, 200, t0);
         b.tick_settle(t0, true, true);
         assert_eq!(b.tick_nav(ms(t0, 10), ADV), None);
         assert_eq!(b.tick_nav(ms(t0, 5_000), STALL), None);
@@ -586,7 +602,7 @@ mod tests {
     #[test]
     fn tap_presses_on_schedule_and_measures_latency() {
         let t0 = Instant::now();
-        let mut b = NavBench::new(5, 0, None, 10.0, 200, t0); // 100 ms interval
+        let mut b = NavBench::new(5, 0, None, false, 10.0, 200, t0); // 100 ms interval
         b.tick_settle(t0, true, true);
         assert_eq!(b.tick_nav(t0, END), Some(PhaseEnd(Phase::SkateRight)));
         assert_eq!(b.tick_nav(t0, END), Some(PhaseEnd(Phase::SkateLeft)));
@@ -614,7 +630,7 @@ mod tests {
     #[test]
     fn max_images_caps_both_skate_passes() {
         let t0 = Instant::now();
-        let mut b = NavBench::new(1000, 0, Some(3), 6.0, 1, t0);
+        let mut b = NavBench::new(1000, 0, Some(3), false, 6.0, 1, t0);
         b.tick_settle(t0, true, true);
         // Right pass stops after 3 advances without seeing the end.
         assert_eq!(b.tick_nav(ms(t0, 1), ADV), None);
@@ -632,7 +648,7 @@ mod tests {
     #[test]
     fn zero_tap_steps_skips_the_tap_phase() {
         let t0 = Instant::now();
-        let mut b = NavBench::new(100, 0, None, 6.0, DEFAULT_TAP_STEPS, t0);
+        let mut b = NavBench::new(100, 0, None, false, 6.0, DEFAULT_TAP_STEPS, t0);
         assert_eq!(DEFAULT_TAP_STEPS, 0);
         b.tick_settle(t0, true, true);
         assert_eq!(b.tick_nav(t0, END), Some(PhaseEnd(Phase::SkateRight)));
@@ -642,9 +658,20 @@ mod tests {
     }
 
     #[test]
+    fn skate_left_can_be_skipped() {
+        let t0 = Instant::now();
+        let mut b = NavBench::new(100, 0, None, true, 6.0, 0, t0);
+        b.tick_settle(t0, true, true);
+        assert_eq!(b.tick_nav(t0, END), Some(PhaseEnd(Phase::SkateRight)));
+        assert!(b.is_done());
+        let r = b.report();
+        assert!(r.skate_right.is_some() && r.skate_left.is_none());
+    }
+
+    #[test]
     fn tap_step_count_is_configurable() {
         let t0 = Instant::now();
-        let mut b = NavBench::new(100, 0, None, 10.0, 2, t0);
+        let mut b = NavBench::new(100, 0, None, false, 10.0, 2, t0);
         b.tick_settle(t0, true, true);
         b.tick_nav(t0, END);
         b.tick_nav(t0, END);
@@ -656,7 +683,7 @@ mod tests {
     #[test]
     fn tap_ends_at_step_count_or_folder_end() {
         let t0 = Instant::now();
-        let mut b = NavBench::new(3, 0, None, 10.0, 200, t0); // 2 tap steps possible
+        let mut b = NavBench::new(3, 0, None, false, 10.0, 200, t0); // 2 tap steps possible
         b.tick_settle(t0, true, true);
         b.tick_nav(t0, END);
         b.tick_nav(t0, END);

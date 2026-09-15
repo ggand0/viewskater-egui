@@ -218,6 +218,8 @@ enum Gesture {
 pub(crate) struct SliderBench {
     num_images: usize,
     sweep_secs: f64,
+    /// `--bench-skip sweep`.
+    skip_sweep: bool,
     scrub_params: ScrubParams,
     /// Rail positions for the scrub and jump phases, disjoint.
     scrub_anchors: Vec<f32>,
@@ -245,7 +247,14 @@ impl SliderBench {
     /// positions, visited in the preview bench's scrambled order (first,
     /// last, second, second to last, ...) so consecutive clicks are far
     /// apart.
-    pub fn new(num_images: usize, sweep_secs: f64, scrub: ScrubParams, jumps: usize, run_start: Instant) -> Self {
+    pub fn new(
+        num_images: usize,
+        sweep_secs: f64,
+        skip_sweep: bool,
+        scrub: ScrubParams,
+        jumps: usize,
+        run_start: Instant,
+    ) -> Self {
         let anchors: Vec<f32> = match scrub.anchors {
             0 => Vec::new(),
             1 => vec![0.5],
@@ -258,6 +267,7 @@ impl SliderBench {
         Self {
             num_images,
             sweep_secs: sweep_secs.max(0.1),
+            skip_sweep,
             scrub_params: ScrubParams {
                 span: scrub.span.clamp(0.0, 1.0),
                 passes: scrub.passes.max(1),
@@ -314,9 +324,7 @@ impl SliderBench {
             } else {
                 self.settle_done = Some(since);
             }
-            self.phase = Phase::Sweep;
-            self.sweep = Some(PhaseStats::start(now));
-            self.gesture = Some(Gesture::Dragging { since: now });
+            self.start_phase_after(Phase::Settle, now);
             return Some(PhaseEnd(Phase::Settle));
         }
         None
@@ -452,34 +460,32 @@ impl SliderBench {
             s.end(now);
         }
         self.cursor = 0;
-        match phase {
-            Phase::Sweep => {
-                if self.scrub_anchors.is_empty() {
-                    self.skip_to_jump_or_done(now);
-                } else {
-                    self.phase = Phase::Scrub;
-                    self.scrub = Some(PhaseStats::start(now));
-                    self.gesture = Some(Gesture::Dragging { since: now });
-                }
-            }
-            Phase::Scrub => self.skip_to_jump_or_done(now),
-            Phase::Jump => {
-                self.phase = Phase::Done;
-                self.gesture = None;
-            }
-            Phase::Settle | Phase::Done => {}
-        }
+        self.start_phase_after(phase, now);
         Some(PhaseEnd(phase))
     }
 
-    fn skip_to_jump_or_done(&mut self, now: Instant) {
-        if self.jump_targets.is_empty() {
-            self.phase = Phase::Done;
-            self.gesture = None;
-        } else {
-            self.phase = Phase::Jump;
-            self.jump = Some(PhaseStats::start(now));
-            self.gesture = Some(Gesture::Dragging { since: now });
+    /// Enter the next phase that has something to do: sweep unless
+    /// skipped, scrub if it has anchors, jump if it has targets, else done.
+    fn start_phase_after(&mut self, phase: Phase, now: Instant) {
+        let next = match phase {
+            Phase::Settle if !self.skip_sweep => Phase::Sweep,
+            Phase::Settle | Phase::Sweep if !self.scrub_anchors.is_empty() => Phase::Scrub,
+            Phase::Settle | Phase::Sweep | Phase::Scrub if !self.jump_targets.is_empty() => Phase::Jump,
+            _ => Phase::Done,
+        };
+        self.phase = next;
+        let stats = match next {
+            Phase::Sweep => Some(&mut self.sweep),
+            Phase::Scrub => Some(&mut self.scrub),
+            Phase::Jump => Some(&mut self.jump),
+            Phase::Settle | Phase::Done => None,
+        };
+        match stats {
+            Some(slot) => {
+                *slot = Some(PhaseStats::start(now));
+                self.gesture = Some(Gesture::Dragging { since: now });
+            }
+            None => self.gesture = None,
         }
     }
 
@@ -542,7 +548,7 @@ mod tests {
     }
 
     fn settled_bench(n: usize, anchors: usize, jumps: usize, t0: Instant) -> SliderBench {
-        let mut b = SliderBench::new(n, 1.0, scrub(anchors), jumps, t0);
+        let mut b = SliderBench::new(n, 1.0, false, scrub(anchors), jumps, t0);
         assert_eq!(b.tick_settle(t0, true, true), Some(PhaseEnd(Phase::Settle)));
         assert_eq!(b.phase(), Phase::Sweep);
         b
@@ -563,15 +569,15 @@ mod tests {
 
     #[test]
     fn anchors_span_the_folder_and_jumps_are_spread_far_apart() {
-        let b = SliderBench::new(101, 1.0, scrub(3), 4, Instant::now());
+        let b = SliderBench::new(101, 1.0, false, scrub(3), 4, Instant::now());
         assert_eq!(b.scrub_anchors, vec![0.0, 0.5, 1.0]);
-        assert_eq!(SliderBench::new(101, 1.0, scrub(5), 0, Instant::now()).scrub_anchors, vec![0.0, 0.25, 0.5, 0.75, 1.0]);
-        assert_eq!(SliderBench::new(101, 1.0, scrub(1), 0, Instant::now()).scrub_anchors, vec![0.5]);
+        assert_eq!(SliderBench::new(101, 1.0, false, scrub(5), 0, Instant::now()).scrub_anchors, vec![0.0, 0.25, 0.5, 0.75, 1.0]);
+        assert_eq!(SliderBench::new(101, 1.0, false, scrub(1), 0, Instant::now()).scrub_anchors, vec![0.5]);
         // Four jumps at 1/8, 3/8, 5/8, 7/8, visited first, last, second,
         // second to last.
         assert_eq!(b.jump_targets, vec![0.125, 0.875, 0.375, 0.625]);
         assert_eq!(b.index_of(0.875), 88);
-        assert_eq!(SliderBench::new(140, 1.0, scrub(5), 20, Instant::now()).jump_targets.len(), 20);
+        assert_eq!(SliderBench::new(140, 1.0, false, scrub(5), 20, Instant::now()).jump_targets.len(), 20);
     }
 
     #[test]
@@ -611,7 +617,7 @@ mod tests {
     fn scrub_repeats_its_passes_across_the_span() {
         let t0 = Instant::now();
         let params = ScrubParams { anchors: 1, span: 0.4, passes: 2, secs: 2.0 };
-        let mut b = SliderBench::new(101, 1.0, params, 0, t0);
+        let mut b = SliderBench::new(101, 1.0, false, params, 0, t0);
         b.tick_settle(t0, true, true);
         let s0 = finish_sweep(&mut b, t0);
         assert_eq!(b.phase(), Phase::Scrub);
@@ -675,6 +681,26 @@ mod tests {
         assert_eq!(r.jump_ms.unwrap().max_ms, 90.0);
         assert_eq!(r.refill_ms.count, 2);
         assert_eq!(r.refill_ms.max_ms, 300.0);
+    }
+
+    #[test]
+    fn every_phase_can_be_skipped() {
+        let t0 = Instant::now();
+        // Sweep skipped: settle goes straight to the scrub.
+        let mut b = SliderBench::new(101, 1.0, true, scrub(2), 2, t0);
+        b.tick_settle(t0, true, true);
+        assert_eq!(b.phase(), Phase::Scrub);
+        assert!(b.drag(t0).is_some());
+        // Sweep and scrub skipped: straight to the jumps.
+        let mut b = SliderBench::new(101, 1.0, true, scrub(0), 2, t0);
+        b.tick_settle(t0, true, true);
+        assert_eq!(b.phase(), Phase::Jump);
+        // Everything skipped: done at settle.
+        let mut b = SliderBench::new(101, 1.0, true, scrub(0), 0, t0);
+        b.tick_settle(t0, true, true);
+        assert!(b.is_done());
+        let r = b.report();
+        assert!(r.sweep.is_none() && r.scrub.is_none() && r.jump.is_none());
     }
 
     #[test]

@@ -14,7 +14,8 @@ use eframe::egui;
 
 use crate::bench::nav::{Drive, NavBench};
 use crate::bench::report::{BenchReport, Header, Summary};
-use crate::bench::slider::{BenchDrag, SliderBench, SliderFrame};
+use crate::bench::slider::{BenchDrag, ScrubParams, SliderBench, SliderFrame};
+use crate::bench::SkipPhase;
 
 use super::App;
 
@@ -70,6 +71,7 @@ impl App {
             n,
             self.settings.cache_count,
             self.bench_opts.max_images,
+            self.bench_opts.skips(SkipPhase::SkateLeft),
             self.bench_opts.tap_rate,
             self.bench_opts.tap_steps,
             run_start,
@@ -89,11 +91,18 @@ impl App {
         // the sweep does not hit images the keyboard bench loaded.
         let _ = self.panes[0].take_decode_samples();
         self.panes[0].clear_decode_lru();
+        let opts = &self.bench_opts;
+        let scrub = ScrubParams {
+            anchors: if opts.skips(SkipPhase::Scrub) { 0 } else { opts.scrub.anchors },
+            ..opts.scrub
+        };
+        let jumps = if opts.skips(SkipPhase::Jump) { 0 } else { opts.jumps };
         self.slider_bench = Some(SliderBench::new(
             n,
-            self.bench_opts.sweep_secs,
-            self.bench_opts.scrub,
-            self.bench_opts.jumps,
+            opts.sweep_secs,
+            opts.skips(SkipPhase::Sweep),
+            scrub,
+            jumps,
             run_start,
         ));
     }

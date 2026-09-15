@@ -17,13 +17,25 @@ pub(crate) mod preview;
 pub(crate) mod report;
 pub(crate) mod slider;
 
+/// Phases that `--bench-skip` can leave out. Skate right stays because
+/// skate left needs it to reach the far end; the tap phase is opt-in
+/// through `--bench-tap-steps` instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum SkipPhase {
+    SkateLeft,
+    Sweep,
+    Scrub,
+    Jump,
+}
+
 /// Which benchmarks to run and how, from the CLI. Modes combine: nav runs
-/// first, then preview, on the same folder.
+/// first, then slider, then preview, on the same folder.
 #[derive(Clone, Debug)]
 pub(crate) struct BenchOptions {
     pub nav: bool,
     pub slider: bool,
     pub preview: bool,
+    pub skip: Vec<SkipPhase>,
     /// Folders to benchmark in order (`--bench-dir`, repeatable). Empty
     /// means the folder given as the positional path.
     pub dirs: Vec<std::path::PathBuf>,
@@ -50,6 +62,10 @@ pub(crate) struct BenchOptions {
 impl BenchOptions {
     pub fn any(&self) -> bool {
         self.nav || self.slider || self.preview
+    }
+
+    pub fn skips(&self, phase: SkipPhase) -> bool {
+        self.skip.contains(&phase)
     }
 }
 

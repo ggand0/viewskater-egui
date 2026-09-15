@@ -80,6 +80,11 @@ struct Args {
     #[arg(long, default_value_t = 20, value_name = "N")]
     bench_jumps: usize,
 
+    /// Phases to leave out, comma separated: skate-left, sweep, scrub,
+    /// jump. All phases run by default.
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "PHASE,...")]
+    bench_skip: Vec<bench::SkipPhase>,
+
     /// Folder to benchmark. Repeat the flag to run several folders in one
     /// go; the positional path is then ignored. A summary averaged over
     /// all runs is written at the end.
@@ -244,6 +249,7 @@ fn main() -> eframe::Result {
                     nav: args.bench_nav,
                     slider: args.bench_slider,
                     preview: args.bench_preview,
+                    skip: args.bench_skip,
                     dirs: args.bench_dir,
                     max_images: args.bench_max_images,
                     tap_rate: args.bench_tap_rate,
