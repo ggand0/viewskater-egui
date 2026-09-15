@@ -46,6 +46,10 @@ pub(crate) struct Pane {
     pub(crate) preview_budget_mb: usize,
     last_image_click: Option<ImageClick>,
     view_animation: Option<ViewAnimation>,
+    /// How long each synchronous load in `load_sync` took, plus the LRU hit
+    /// count, recorded only while `--bench-slider` asks
+    /// (`record_sync_load_times`).
+    sync_load_times: Option<(Vec<crate::bench::slider::SyncLoadTiming>, usize)>,
 }
 
 impl Pane {
@@ -79,6 +83,7 @@ impl Pane {
             preview_budget_mb,
             last_image_click: None,
             view_animation: None,
+            sync_load_times: None,
         }
     }
 
@@ -150,6 +155,9 @@ impl Pane {
         if let Some(cached_handle) = self.decode_cache.get(file_index) {
             self.set_current_texture(Some(cached_handle), ctx);
             log::debug!("LRU hit [{}]", file_index);
+            if let Some((_, hits)) = &mut self.sync_load_times {
+                *hits += 1;
+            }
             return;
         }
 
@@ -172,6 +180,9 @@ impl Pane {
                 let handle = self.decode_cache.insert(file_index, name, color_image);
                 let upload_ms = t2.elapsed().as_secs_f64() * 1000.0;
                 self.set_current_texture(Some(handle), ctx);
+                if let Some((times, _)) = &mut self.sync_load_times {
+                    times.push(crate::bench::slider::SyncLoadTiming { decode_ms, convert_ms, upload_ms });
+                }
 
                 log::debug!(
                     "load_sync [{}] ({}x{}): decode={:.1}ms convert={:.1}ms upload={:.1}ms total={:.1}ms [LRU: {} / {:.0} MB]",
@@ -295,6 +306,42 @@ impl Pane {
         self.cache
             .as_ref()
             .is_some_and(|c| c.current_texture_for(new_index).is_some())
+    }
+
+    /// Benchmark hooks. The pane owns the cache, so these forward to it:
+    /// record how long background decodes take, and report when the
+    /// sliding window has nothing in flight.
+    pub(crate) fn record_decode_times(&mut self, on: bool) {
+        if let Some(cache) = &mut self.cache {
+            cache.record_decode_times(on);
+        }
+    }
+
+    pub(crate) fn take_decode_times(&mut self) -> Vec<f64> {
+        self.cache.as_mut().map_or_else(Vec::new, |c| c.take_decode_times())
+    }
+
+    /// Empty the decode LRU so the next benchmark phase starts from the
+    /// same state as the previous one, whatever it loaded.
+    pub(crate) fn clear_decode_lru(&mut self) {
+        self.decode_cache.clear();
+    }
+
+    pub(crate) fn record_sync_load_times(&mut self, on: bool) {
+        self.sync_load_times = if on { Some((Vec::new(), 0)) } else { None };
+    }
+
+    /// Sync load timings and LRU hits since recording started or the last
+    /// call.
+    pub(crate) fn take_sync_load_times(&mut self) -> (Vec<crate::bench::slider::SyncLoadTiming>, usize) {
+        match &mut self.sync_load_times {
+            Some((times, hits)) => (std::mem::take(times), std::mem::take(hits)),
+            None => (Vec::new(), 0),
+        }
+    }
+
+    pub(crate) fn is_settled(&self) -> bool {
+        self.cache.as_ref().is_none_or(|c| c.is_settled())
     }
 
     /// Returns (lru_mb, sliding_window_mb).

@@ -219,7 +219,39 @@ pub struct SlidingWindowCache {
 
     max_decode_threads: usize,
 
+    /// How long each background decode took, in ms, recorded only while a
+    /// benchmark asks (`record_decode_times`). None otherwise, so the
+    /// normal path pays nothing.
+    decode_times_ms: Option<Vec<f64>>,
+
     ctx: egui::Context,
+}
+
+/// Decode threads currently running, across every cache and pane. Threads
+/// are detached, so when a folder is reopened the old cache is dropped
+/// while its threads finish in the background; this is the only way to
+/// know they are gone. The benchmark waits for zero before measuring.
+static ACTIVE_DECODE_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn active_decode_threads() -> usize {
+    ACTIVE_DECODE_THREADS.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Guard held by a decode thread for its whole life; the count goes down
+/// when it drops, on panic too.
+struct InFlightDecode;
+
+impl InFlightDecode {
+    fn start() -> Self {
+        ACTIVE_DECODE_THREADS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for InFlightDecode {
+    fn drop(&mut self) {
+        ACTIVE_DECODE_THREADS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 
 /// Maximum number of GPU uploads issued by `SlidingWindowCache::poll` per
@@ -242,8 +274,32 @@ impl SlidingWindowCache {
             pending_uploads: VecDeque::new(),
             pending_decodes: VecDeque::new(),
             max_decode_threads: decode_threads,
+            decode_times_ms: None,
             ctx: ctx.clone(),
         }
+    }
+
+    /// Start or stop recording how long each background decode takes.
+    /// Starting drops anything recorded so far.
+    pub fn record_decode_times(&mut self, on: bool) {
+        self.decode_times_ms = if on { Some(Vec::new()) } else { None };
+    }
+
+    /// Hand over the decode times recorded since recording started (or
+    /// since the last call) and keep recording.
+    pub fn take_decode_times(&mut self) -> Vec<f64> {
+        match &mut self.decode_times_ms {
+            Some(v) => std::mem::take(v),
+            None => Vec::new(),
+        }
+    }
+
+    /// True when nothing is decoding, queued to decode, or waiting for GPU
+    /// upload: every slot the window wants is either loaded or failed.
+    pub fn is_settled(&self) -> bool {
+        self.running_decodes.is_empty()
+            && self.pending_decodes.is_empty()
+            && self.pending_uploads.is_empty()
     }
 
     fn cache_size(&self) -> usize {
@@ -311,6 +367,9 @@ impl SlidingWindowCache {
                     file_index,
                     result.decode_ms,
                 );
+                if let Some(times) = &mut self.decode_times_ms {
+                    times.push(result.decode_ms);
+                }
                 let name = image_paths
                     .get(file_index)
                     .and_then(|p| p.file_name())
@@ -578,7 +637,9 @@ impl SlidingWindowCache {
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
 
+        let in_flight = InFlightDecode::start();
         std::thread::spawn(move || {
+            let _in_flight = in_flight;
             let start = Instant::now();
             let image = match open_image(&path) {
                 Ok(img) => Some(crate::decode::image_to_color_image(img)),

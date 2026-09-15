@@ -5,6 +5,18 @@ use crate::pane::Pane;
 
 use super::{App, DualPaneMode, SliderResult};
 
+/// What one `step_navigation` call did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NavOutcome {
+    /// At least one active pane moved to the next image.
+    pub advanced: bool,
+    /// A pane could move but its next texture was not in the sliding
+    /// window yet, so nothing moved this frame. A stall.
+    pub blocked: bool,
+    /// No active pane can move further in this direction.
+    pub at_end: bool,
+}
+
 impl App {
     pub(super) fn set_single_pane(&mut self) {
         if self.panes.len() >= 2 {
@@ -139,11 +151,14 @@ impl App {
     }
 
     /// Apply slider result to all panes (synced mode).
-    pub(super) fn apply_slider_result_all(&mut self, result: SliderResult, ctx: &egui::Context) {
+    /// Returns true if any pane put a new image on screen this frame.
+    pub(super) fn apply_slider_result_all(&mut self, result: SliderResult, ctx: &egui::Context) -> bool {
+        let mut shown = false;
         if let Some(idx) = result.target {
             for pane in &mut self.panes {
                 if pane.apply_slider_target(idx, ctx) {
                     self.perf.record_image_load();
+                    shown = true;
                 }
             }
             ctx.request_repaint();
@@ -154,6 +169,7 @@ impl App {
                 pane.apply_slider_release(ctx);
             }
         }
+        shown
     }
 
     /// Apply slider result to a single pane (independent mode).
@@ -362,37 +378,9 @@ impl App {
             }
             self.perf.record_image_load();
         } else if nav_right {
-            let all_ready = self.panes.iter().all(|p| {
-                !is_active(p) || p.image_paths.is_empty() || p.is_next_cached(1)
-            });
-            if all_ready {
-                let any_advanced = self.panes.iter_mut().fold(false, |acc, p| {
-                    if is_active(p) { p.navigate(1, ctx) || acc } else { acc }
-                });
-                if any_advanced {
-                    self.perf.record_image_load();
-                }
-            }
-            let any_can = self.panes.iter().any(|p| is_active(p) && p.can_navigate_forward());
-            if any_can {
-                ctx.request_repaint();
-            }
+            self.step_navigation(1, ctx);
         } else if nav_left {
-            let all_ready = self.panes.iter().all(|p| {
-                !is_active(p) || p.image_paths.is_empty() || p.is_next_cached(-1)
-            });
-            if all_ready {
-                let any_advanced = self.panes.iter_mut().fold(false, |acc, p| {
-                    if is_active(p) { p.navigate(-1, ctx) || acc } else { acc }
-                });
-                if any_advanced {
-                    self.perf.record_image_load();
-                }
-            }
-            let any_can = self.panes.iter().any(|p| is_active(p) && p.can_navigate_backward());
-            if any_can {
-                ctx.request_repaint();
-            }
+            self.step_navigation(-1, ctx);
         }
 
         if !self.settings.mouse_wheel_zoom && !command_held && scroll_delta != 0.0 {
@@ -410,6 +398,40 @@ impl App {
             }
             ctx.request_repaint();
         }
+    }
+
+    /// One keyboard navigation step in direction `dir` (+1 right, -1 left)
+    /// for every active pane, the way a held key does it: move only when
+    /// every active pane already has the next texture in its sliding
+    /// window, otherwise draw another frame and try again. `--bench-nav`
+    /// calls this directly in place of the key state, so the benchmark
+    /// runs the same code as a person holding the key.
+    pub(crate) fn step_navigation(&mut self, dir: isize, ctx: &egui::Context) -> NavOutcome {
+        let use_selection = self.dual_pane_mode == DualPaneMode::Independent;
+        let is_active = |p: &Pane| !use_selection || p.selected;
+
+        let any_can = self.panes.iter().any(|p| {
+            is_active(p)
+                && if dir > 0 { p.can_navigate_forward() } else { p.can_navigate_backward() }
+        });
+        if !any_can {
+            return NavOutcome { advanced: false, blocked: false, at_end: true };
+        }
+
+        let all_ready = self.panes.iter().all(|p| {
+            !is_active(p) || p.image_paths.is_empty() || p.is_next_cached(dir)
+        });
+        let mut advanced = false;
+        if all_ready {
+            advanced = self.panes.iter_mut().fold(false, |acc, p| {
+                if is_active(p) { p.navigate(dir, ctx) || acc } else { acc }
+            });
+            if advanced {
+                self.perf.record_image_load();
+            }
+        }
+        ctx.request_repaint();
+        NavOutcome { advanced, blocked: !all_ready, at_end: false }
     }
 
     /// Drain any paths forwarded from the platform layer (e.g. macOS Finder
@@ -469,7 +491,7 @@ impl App {
         }
     }
 
-    fn current_discovery_options(&self) -> ImageDiscoveryOptions {
+    pub(super) fn current_discovery_options(&self) -> ImageDiscoveryOptions {
         let mut opts = self.settings.image_discovery_options;
         opts.sort_order = self.current_sort;
         opts
