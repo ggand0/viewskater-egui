@@ -27,3 +27,6 @@ CLAUDE.md
 
 # Benchmark reports written by --bench-out
 benchmarks/
+
+# Internal working notes (local only)
+docs/internal/
