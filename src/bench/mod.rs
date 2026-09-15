@@ -42,8 +42,8 @@ pub(crate) struct BenchArgs {
     pub bench_preview: bool,
 
     /// Run the keyboard navigation benchmark on the given folder and exit:
-    /// skate to the end and back, then tap through at a human pace.
-    /// Combines with --bench-preview (nav runs first).
+    /// skate to the end of the folder and back. Combines with --bench-slider
+    /// and --bench-preview (nav runs first).
     #[arg(long)]
     pub bench_nav: bool,
 
