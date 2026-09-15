@@ -319,6 +319,12 @@ impl Pane {
         self.cache.as_mut().map_or_else(Vec::new, |c| c.take_decode_samples())
     }
 
+    /// Empty the decode LRU so the next benchmark phase starts from the
+    /// same state as the previous one, whatever it loaded.
+    pub(crate) fn clear_decode_lru(&mut self) {
+        self.decode_cache.clear();
+    }
+
     pub(crate) fn set_sync_sampling(&mut self, on: bool) {
         self.sync_samples = if on { Some((Vec::new(), 0)) } else { None };
     }

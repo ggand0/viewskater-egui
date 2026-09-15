@@ -85,8 +85,10 @@ impl App {
         );
         self.panes[0].set_sync_sampling(true);
         // Background decodes from the nav bench's last phase are not
-        // this bench's; start the sink clean.
+        // this bench's; start the sink clean. The LRU is emptied too so
+        // the sweep does not hit images the keyboard bench loaded.
         let _ = self.panes[0].take_decode_samples();
+        self.panes[0].clear_decode_lru();
         self.slider_bench = Some(SliderBench::new(
             n,
             self.bench_opts.sweep_secs,
@@ -202,6 +204,9 @@ impl App {
             if let Some(bench) = self.slider_bench.as_mut() {
                 bench.set_samples(end.0, sync, lru_hits, bg);
             }
+            // Each phase starts from the same state: nothing the previous
+            // phase loaded stays in the LRU to turn its loads into hits.
+            self.panes[0].clear_decode_lru();
         }
         if self.slider_bench.as_ref().is_some_and(SliderBench::is_done) {
             let bench = self.slider_bench.take().expect("slider bench");
