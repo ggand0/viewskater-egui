@@ -39,7 +39,9 @@ pub enum ExifData {
     None,
     /// The file carries an EXIF block that could not be parsed.
     Unreadable,
-    Present(ExifSummary),
+    /// Boxed: the summary is a few hundred bytes of Options and the other
+    /// variants carry nothing.
+    Present(Box<ExifSummary>),
 }
 
 /// The curated values the panel sections show, plus every tag for the
@@ -141,7 +143,7 @@ pub fn parse_exif(bytes: Vec<u8>) -> ExifData {
         })
     });
     match parsed {
-        Ok(exif) => ExifData::Present(summarize(&exif)),
+        Ok(exif) => ExifData::Present(Box::new(summarize(&exif))),
         Err(e) => {
             log::debug!("EXIF unreadable: {e}");
             ExifData::Unreadable
@@ -636,17 +638,17 @@ mod tests {
     #[test]
     fn bounded_writer_stops_the_formatter() {
         let mut out = Bounded::new(10);
-        let result = write!(out, "{}", "abcdefghijklmnop");
+        let result = write!(out, "abcdefghijklmnop");
         assert!(result.is_err());
         assert_eq!(out.finish(), "abcdefghij…");
 
         let mut out = Bounded::new(10);
-        write!(out, "{}", "short").unwrap();
+        write!(out, "short").unwrap();
         assert_eq!(out.finish(), "short");
 
         // Cuts on a character boundary.
         let mut out = Bounded::new(4);
-        let _ = write!(out, "{}", "ééé");
+        let _ = write!(out, "ééé");
         assert_eq!(out.finish(), "éé…");
     }
 
@@ -680,7 +682,7 @@ mod tests {
 
     fn summary(fields: &[Field]) -> ExifSummary {
         match parse_exif(exif_block(fields)) {
-            ExifData::Present(s) => s,
+            ExifData::Present(s) => *s,
             other => panic!("expected parsed EXIF, got {other:?}"),
         }
     }
