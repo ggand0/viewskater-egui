@@ -7,9 +7,10 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, Once};
 use std::time::SystemTime;
 
-use image::{AnimationDecoder, DynamicImage, ImageFormat, ImageReader, ImageResult};
+use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat, ImageReader, ImageResult};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
+use crate::metadata::{self, ExifData, MetadataRecord};
 use crate::settings::{ImageDiscoveryOptions, ImageSortKey, SortDirection};
 
 const APP_NAME: &str = "viewskater-egui";
@@ -164,10 +165,76 @@ fn ensure_image_decoders_registered() {
     });
 }
 
-/// Convenience wrapper around ImageReader::open().with_guessed_format().decode()
-pub fn open_image(path: &Path) -> ImageResult<DynamicImage> {
+/// A file opened for display: the decoded pixels, or the error, and the
+/// facts about the file either way.
+pub struct LoadedImage {
+    pub image: ImageResult<DynamicImage>,
+    pub record: Arc<MetadataRecord>,
+}
+
+/// Open the file, read its facts and its EXIF block, then decode the
+/// pixels. Every place that decodes an image for display goes through
+/// here, so the record exists for anything that can be on screen, and
+/// it exists when the pixels fail too.
+///
+/// The EXIF bytes come from the decoder that is about to decode the
+/// pixels: for JPEG the file is already in memory, for PNG the chunk was
+/// read with the header, for WebP it is one small read, for JXL the
+/// container is read for decoding anyway. There is no second pass over
+/// the file.
+pub fn load_image(path: &Path) -> LoadedImage {
     ensure_image_decoders_registered();
-    ImageReader::open(path)?.with_guessed_format()?.decode()
+    let mut record = MetadataRecord::default();
+    if let Ok(meta) = std::fs::metadata(path) {
+        record.file_size = Some(meta.len());
+        record.modified = meta.modified().ok().map(local_time_text);
+    }
+    let image = decode_into(path, &mut record);
+    LoadedImage { image, record: Arc::new(record) }
+}
+
+fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<DynamicImage> {
+    let reader = ImageReader::open(path)?.with_guessed_format()?;
+    record.format = format_name(reader.format(), path);
+    let mut decoder = reader.into_decoder()?;
+    match decoder.exif_metadata() {
+        Ok(Some(bytes)) => record.exif = metadata::parse_exif(bytes),
+        Ok(None) => {}
+        Err(e) => {
+            log::debug!("EXIF read failed for {}: {e}", path.display());
+            record.exif = ExifData::Unreadable;
+        }
+    }
+    // The allocation check `ImageReader::decode` makes before decoding;
+    // `into_decoder` leaves it to the caller.
+    let mut limits = image::Limits::default();
+    limits.reserve(decoder.total_bytes())?;
+    decoder.set_limits(limits)?;
+    DynamicImage::from_decoder(decoder)
+}
+
+/// The container format for the File section. Formats decoded through a
+/// hook (JXL) have no `ImageFormat`, so the extension names them.
+fn format_name(format: Option<ImageFormat>, path: &Path) -> Option<String> {
+    let name = match format {
+        Some(ImageFormat::Jpeg) => "JPEG",
+        Some(ImageFormat::Png) => "PNG",
+        Some(ImageFormat::WebP) => "WebP",
+        Some(ImageFormat::Gif) => "GIF",
+        Some(ImageFormat::Tiff) => "TIFF",
+        Some(ImageFormat::Bmp) => "BMP",
+        Some(ImageFormat::Qoi) => "QOI",
+        Some(ImageFormat::Tga) => "TGA",
+        Some(other) => return Some(format!("{other:?}").to_uppercase()),
+        None => return path.extension().map(|e| e.to_string_lossy().to_uppercase()),
+    };
+    Some(name.to_string())
+}
+
+fn local_time_text(time: SystemTime) -> String {
+    chrono::DateTime::<chrono::Local>::from(time)
+        .format("%Y-%m-%d %H:%M")
+        .to_string()
 }
 
 pub fn open_animation_frames(path: &Path) -> ImageResult<Option<image::Frames<'static>>> {

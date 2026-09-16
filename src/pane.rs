@@ -6,7 +6,7 @@ use eframe::egui;
 use crate::animation::{AnimationPlayer, AnimationPoll};
 use crate::cache;
 use crate::decode::image_to_color_image;
-use crate::file_io::{self, open_image};
+use crate::file_io;
 use crate::settings::{ImageDiscoveryOptions};
 use crate::view_animation::{Easing, ViewAnimation, ViewTransform};
 
@@ -162,7 +162,7 @@ impl Pane {
         }
 
         let t0 = Instant::now();
-        match open_image(&path) {
+        match file_io::load_image(&path).image {
             Ok(img) => {
                 let decode_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
