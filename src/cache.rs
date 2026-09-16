@@ -1,11 +1,13 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Instant;
 
 use eframe::egui;
 
 use crate::file_io::load_image;
+use crate::metadata::MetadataRecord;
 
 #[cfg(test)]
 mod preview_sim_bench;
@@ -187,6 +189,35 @@ pub struct DecodeResult {
     pub path: PathBuf,
     pub image: Option<egui::ColorImage>,
     pub decode_ms: f64,
+    /// File facts and EXIF, read by the same thread before the pixels.
+    /// Present when the pixels failed too.
+    pub record: Arc<MetadataRecord>,
+}
+
+/// A decoded image on the GPU together with the record of the file it
+/// came from. The record lives exactly as long as the texture: in a
+/// sliding window slot, in a slider LRU entry, and on the pane while the
+/// image is on screen. Both fields are handles, so cloning is cheap.
+#[derive(Clone)]
+pub struct Loaded {
+    pub texture: egui::TextureHandle,
+    pub record: Arc<MetadataRecord>,
+}
+
+impl Loaded {
+    /// Bytes of the texture as egui uploaded it (RGBA).
+    fn bytes(&self) -> usize {
+        let size = self.texture.size();
+        size[0] * size[1] * 4
+    }
+}
+
+/// A finished background decode waiting for its GPU upload in `poll`.
+struct PendingUpload {
+    file_index: usize,
+    image: egui::ColorImage,
+    name: String,
+    record: Arc<MetadataRecord>,
 }
 
 /// Sliding window cache that preloads neighboring images in background threads.
@@ -196,7 +227,7 @@ pub struct DecodeResult {
 /// `current_index - first_file_index`, ideally at the center (`cache_count`),
 /// but off-center near directory boundaries.
 pub struct SlidingWindowCache {
-    slots: VecDeque<Option<egui::TextureHandle>>,
+    slots: VecDeque<Option<Loaded>>,
     first_file_index: usize,
     cache_count: usize,
 
@@ -210,7 +241,7 @@ pub struct SlidingWindowCache {
 
     /// Completed decodes waiting for GPU upload. `poll()` drains `rx` into
     /// this queue and uploads up to `UPLOADS_PER_FRAME` per frame.
-    pending_uploads: VecDeque<(usize, egui::ColorImage, String)>,
+    pending_uploads: VecDeque<PendingUpload>,
 
     /// Decode requests waiting for a thread slot. `request_decode` pushes here
     /// when the concurrent limit is reached; `poll` spawns the next one
@@ -307,11 +338,13 @@ impl SlidingWindowCache {
     }
 
     /// Initialize the cache centered on `center_index`.
-    /// Synchronously decodes the center image, spawns background loads for neighbors.
-    pub fn initialize(&mut self, center_index: usize, image_paths: &[PathBuf]) {
+    /// Synchronously decodes the center image, spawns background loads for
+    /// neighbors. Returns the centre image's record, which exists even
+    /// when its pixels failed to decode; None for an empty list.
+    pub fn initialize(&mut self, center_index: usize, image_paths: &[PathBuf]) -> Option<Arc<MetadataRecord>> {
         let num_files = image_paths.len();
         if num_files == 0 {
-            return;
+            return None;
         }
 
         // Drain any pending results from previous window
@@ -333,8 +366,9 @@ impl SlidingWindowCache {
 
         // Synchronously decode the center image
         let center_slot = center_index - self.first_file_index;
-        if let Some(tex) = Self::decode_sync(&image_paths[center_index], &self.ctx) {
-            self.slots[center_slot] = Some(tex);
+        let (texture, record) = Self::decode_sync(&image_paths[center_index], &self.ctx);
+        if let Some(texture) = texture {
+            self.slots[center_slot] = Some(Loaded { texture, record: record.clone() });
         }
 
         // Spawn background loads for all other valid slots
@@ -347,6 +381,7 @@ impl SlidingWindowCache {
                 self.request_decode(file_index, &image_paths[file_index]);
             }
         }
+        Some(record)
     }
 
     /// Poll for completed background decodes and upload textures.
@@ -375,8 +410,12 @@ impl SlidingWindowCache {
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                self.pending_uploads
-                    .push_back((file_index, color_image, name));
+                self.pending_uploads.push_back(PendingUpload {
+                    file_index,
+                    image: color_image,
+                    name,
+                    record: result.record,
+                });
             }
 
             // A decode slot freed up — spawn the next queued decode if any.
@@ -394,17 +433,17 @@ impl SlidingWindowCache {
 
         // Phase 2: upload at most UPLOADS_PER_FRAME.
         for _ in 0..UPLOADS_PER_FRAME {
-            let Some((file_index, color_image, name)) = self.pending_uploads.pop_front() else {
+            let Some(upload) = self.pending_uploads.pop_front() else {
                 break;
             };
-            if let Some(slot_idx) = self.slot_index_for(file_index) {
+            if let Some(slot_idx) = self.slot_index_for(upload.file_index) {
                 if self.slots[slot_idx].is_none() {
                     let texture = self.ctx.load_texture(
-                        &name,
-                        color_image,
+                        &upload.name,
+                        upload.image,
                         egui::TextureOptions::LINEAR,
                     );
-                    self.slots[slot_idx] = Some(texture);
+                    self.slots[slot_idx] = Some(Loaded { texture, record: upload.record });
                 }
             }
         }
@@ -415,12 +454,12 @@ impl SlidingWindowCache {
     }
 
     /// Shift the cache window for forward navigation.
-    /// Returns the TextureHandle for the new current image, or None on cache miss.
+    /// Returns the new current image, or None on cache miss.
     pub fn navigate_forward(
         &mut self,
         new_index: usize,
         image_paths: &[PathBuf],
-    ) -> Option<egui::TextureHandle> {
+    ) -> Option<Loaded> {
         let num_files = image_paths.len();
         let current_slot = new_index - self.first_file_index;
 
@@ -437,16 +476,16 @@ impl SlidingWindowCache {
             }
         }
 
-        self.current_texture_for(new_index)
+        self.loaded_for(new_index)
     }
 
     /// Shift the cache window for backward navigation.
-    /// Returns the TextureHandle for the new current image, or None on cache miss.
+    /// Returns the new current image, or None on cache miss.
     pub fn navigate_backward(
         &mut self,
         new_index: usize,
         image_paths: &[PathBuf],
-    ) -> Option<egui::TextureHandle> {
+    ) -> Option<Loaded> {
         let current_slot = new_index - self.first_file_index;
 
         if current_slot < self.cache_count && self.first_file_index > 0 {
@@ -459,12 +498,13 @@ impl SlidingWindowCache {
             self.request_decode(self.first_file_index, &image_paths[self.first_file_index]);
         }
 
-        self.current_texture_for(new_index)
+        self.loaded_for(new_index)
     }
 
     /// Rebuild cache around a new position (slider release, Home/End).
-    pub fn jump_to(&mut self, new_index: usize, image_paths: &[PathBuf]) {
-        self.initialize(new_index, image_paths);
+    /// Returns the new centre image's record like `initialize`.
+    pub fn jump_to(&mut self, new_index: usize, image_paths: &[PathBuf]) -> Option<Arc<MetadataRecord>> {
+        self.initialize(new_index, image_paths)
     }
 
     /// The file at `removed` was moved to the trash. `image_paths` is the
@@ -514,9 +554,9 @@ impl SlidingWindowCache {
             }
             None => false,
         });
-        self.pending_uploads.retain_mut(|(idx, _, _)| match shift_index(*idx, removed) {
+        self.pending_uploads.retain_mut(|upload| match shift_index(upload.file_index, removed) {
             Some(new_idx) => {
-                *idx = new_idx;
+                upload.file_index = new_idx;
                 true
             }
             None => false,
@@ -577,10 +617,7 @@ impl SlidingWindowCache {
 
     /// Total bytes of loaded textures in the sliding window.
     pub fn total_bytes(&self) -> usize {
-        self.slots.iter().filter_map(|s| s.as_ref()).map(|tex| {
-            let size = tex.size();
-            size[0] * size[1] * 4
-        }).sum()
+        self.slots.iter().filter_map(|s| s.as_ref()).map(Loaded::bytes).sum()
     }
 
     pub fn total_mb(&self) -> f64 {
@@ -592,8 +629,8 @@ impl SlidingWindowCache {
         self.first_file_index
     }
 
-    /// Get the TextureHandle for a given file index, if cached.
-    pub fn current_texture_for(&self, file_index: usize) -> Option<egui::TextureHandle> {
+    /// The loaded image for a file index, if its slot is filled.
+    pub fn loaded_for(&self, file_index: usize) -> Option<Loaded> {
         let slot_idx = file_index.checked_sub(self.first_file_index)?;
         self.slots.get(slot_idx).and_then(|opt| opt.clone())
     }
@@ -641,7 +678,8 @@ impl SlidingWindowCache {
         std::thread::spawn(move || {
             let _in_flight = in_flight;
             let start = Instant::now();
-            let image = match load_image(&path).image {
+            let loaded = load_image(&path);
+            let image = match loaded.image {
                 Ok(img) => Some(crate::decode::image_to_color_image(img)),
                 Err(e) => {
                     log::warn!("Background decode failed for {}: {}", path.display(), e);
@@ -653,6 +691,7 @@ impl SlidingWindowCache {
                 path,
                 image,
                 decode_ms,
+                record: loaded.record,
             });
             ctx.request_repaint();
         });
@@ -770,9 +809,14 @@ impl SlidingWindowCache {
             });
     }
 
-    /// Synchronously decode an image and upload as a texture.
-    fn decode_sync(path: &Path, ctx: &egui::Context) -> Option<egui::TextureHandle> {
-        match load_image(path).image {
+    /// Synchronously decode an image and upload it as a texture. The
+    /// record comes back either way.
+    fn decode_sync(
+        path: &Path,
+        ctx: &egui::Context,
+    ) -> (Option<egui::TextureHandle>, Arc<MetadataRecord>) {
+        let loaded = load_image(path);
+        let texture = match loaded.image {
             Ok(img) => {
                 let color_image = crate::decode::image_to_color_image(img);
                 let name = path
@@ -785,7 +829,8 @@ impl SlidingWindowCache {
                 log::error!("Failed to decode {}: {}", path.display(), e);
                 None
             }
-        }
+        };
+        (texture, loaded.record)
     }
 
 }
@@ -829,9 +874,10 @@ impl SliderLoader {
 
 }
 
-/// LRU cache of uploaded GPU textures, keyed by file index.
+/// LRU cache of uploaded GPU textures, keyed by file index, each with
+/// the record of its file.
 ///
-/// On a hit, returns the existing `TextureHandle` directly — no CPU→GPU
+/// On a hit, returns the existing `Loaded` directly — no CPU→GPU
 /// upload needed. On a miss, uploads the decoded pixels once and stores
 /// the resulting handle. LRU eviction drops the handle, which drops the
 /// GPU allocation on the next `TextureDelta::Free` tick.
@@ -842,8 +888,8 @@ impl SliderLoader {
 /// computed as `width × height × 4` (RGBA), matching how egui sizes
 /// uploaded textures.
 pub struct DecodeLruCache {
-    /// Map from file_index → uploaded texture handle.
-    entries: HashMap<usize, egui::TextureHandle>,
+    /// Map from file_index → uploaded texture and its record.
+    entries: HashMap<usize, Loaded>,
     /// Access order for LRU eviction — most recently used at the back.
     order: VecDeque<usize>,
     /// Maximum total bytes for cached textures.
@@ -865,14 +911,8 @@ impl DecodeLruCache {
         }
     }
 
-    /// Byte size of a handle's underlying texture (width × height × 4).
-    fn handle_bytes(handle: &egui::TextureHandle) -> usize {
-        let size = handle.size();
-        size[0] * size[1] * 4
-    }
-
-    /// Get the cached texture for `file_index`, if any. Marks MRU.
-    pub fn get(&mut self, file_index: usize) -> Option<egui::TextureHandle> {
+    /// Get the cached image for `file_index`, if any. Marks MRU.
+    pub fn get(&mut self, file_index: usize) -> Option<Loaded> {
         if self.entries.contains_key(&file_index) {
             self.order.retain(|&i| i != file_index);
             self.order.push_back(file_index);
@@ -882,19 +922,21 @@ impl DecodeLruCache {
         }
     }
 
-    /// Upload a decoded image as a new GPU texture, store as MRU, and
-    /// evict LRU entries until within budget. Returns the new handle.
+    /// Upload a decoded image as a new GPU texture, store it with its
+    /// record as MRU, and evict LRU entries until within budget. Returns
+    /// the new entry.
     pub fn insert(
         &mut self,
         file_index: usize,
         name: impl Into<String>,
         image: egui::ColorImage,
-    ) -> egui::TextureHandle {
+        record: Arc<MetadataRecord>,
+    ) -> Loaded {
         let new_bytes = image.size[0] * image.size[1] * 4;
 
         // If replacing an existing entry, drop its bytes first.
         if let Some(old) = self.entries.remove(&file_index) {
-            self.total_bytes -= Self::handle_bytes(&old);
+            self.total_bytes -= old.bytes();
             self.order.retain(|&i| i != file_index);
         }
 
@@ -905,18 +947,19 @@ impl DecodeLruCache {
         while self.total_bytes + new_bytes > self.budget_bytes {
             if let Some(evicted) = self.order.pop_front() {
                 if let Some(h) = self.entries.remove(&evicted) {
-                    self.total_bytes -= Self::handle_bytes(&h);
+                    self.total_bytes -= h.bytes();
                 }
             } else {
                 break;
             }
         }
 
-        let handle = self.ctx.load_texture(name, image, egui::TextureOptions::LINEAR);
+        let texture = self.ctx.load_texture(name, image, egui::TextureOptions::LINEAR);
+        let loaded = Loaded { texture, record };
         self.total_bytes += new_bytes;
-        self.entries.insert(file_index, handle.clone());
+        self.entries.insert(file_index, loaded.clone());
         self.order.push_back(file_index);
-        handle
+        loaded
     }
 
     pub fn len(&self) -> usize {
@@ -931,7 +974,7 @@ impl DecodeLruCache {
     /// every higher key down by one. LRU order is preserved.
     pub fn remove_index(&mut self, removed: usize) {
         if let Some(handle) = self.entries.remove(&removed) {
-            self.total_bytes -= Self::handle_bytes(&handle);
+            self.total_bytes -= handle.bytes();
         }
         let mut shifted = HashMap::with_capacity(self.entries.len());
         for (idx, handle) in self.entries.drain() {
@@ -959,7 +1002,7 @@ impl DecodeLruCache {
         while self.total_bytes > self.budget_bytes {
             if let Some(evicted) = self.order.pop_front() {
                 if let Some(h) = self.entries.remove(&evicted) {
-                    self.total_bytes -= Self::handle_bytes(&h);
+                    self.total_bytes -= h.bytes();
                 }
             } else {
                 break;
