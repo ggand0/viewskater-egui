@@ -678,20 +678,37 @@ impl SlidingWindowCache {
         std::thread::spawn(move || {
             let _in_flight = in_flight;
             let start = Instant::now();
-            let loaded = load_image(&path);
-            let image = match loaded.image {
-                Ok(img) => Some(crate::decode::image_to_color_image(img)),
-                Err(e) => {
-                    log::warn!("Background decode failed for {}: {}", path.display(), e);
-                    None
-                }
-            };
+            // The whole body runs inside catch_unwind so a panic anywhere,
+            // in a decoder or in the metadata formatters, still sends a
+            // result. Without it the sender is dropped unsent, `poll`
+            // never removes the path from `running_decodes`, the image is
+            // never requested again and one decode slot stays busy until
+            // the window is rebuilt.
+            let outcome = std::panic::catch_unwind(|| {
+                let loaded = load_image(&path);
+                let image = match loaded.image {
+                    Ok(img) => Some(crate::decode::image_to_color_image(img)),
+                    Err(e) => {
+                        log::warn!("Background decode failed for {}: {}", path.display(), e);
+                        None
+                    }
+                };
+                (image, loaded.record)
+            });
+            let (image, record) = outcome.unwrap_or_else(|payload| {
+                log::error!(
+                    "Decode thread panicked for {}: {}",
+                    path.display(),
+                    panic_message(&*payload)
+                );
+                (None, Arc::new(MetadataRecord::default()))
+            });
             let decode_ms = start.elapsed().as_secs_f64() * 1000.0;
             let _ = tx.send(DecodeResult {
                 path,
                 image,
                 decode_ms,
-                record: loaded.record,
+                record,
             });
             ctx.request_repaint();
         });
@@ -1009,6 +1026,15 @@ impl DecodeLruCache {
             }
         }
     }
+}
+
+/// The text of a panic payload, for the log.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("unknown panic")
 }
 
 fn legend_swatch(ui: &mut egui::Ui, color: egui::Color32, label: &str) {
