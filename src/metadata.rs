@@ -103,27 +103,6 @@ impl Location {
     }
 }
 
-impl ExifSummary {
-    pub fn has_camera_section(&self) -> bool {
-        self.camera.is_some()
-            || self.lens.is_some()
-            || self.focal_length.is_some()
-            || self.aperture.is_some()
-            || self.shutter.is_some()
-            || self.iso.is_some()
-            || self.exposure_bias.is_some()
-    }
-
-    pub fn has_capture_section(&self) -> bool {
-        self.date_taken.is_some()
-            || self.exposure_program.is_some()
-            || self.metering.is_some()
-            || self.white_balance.is_some()
-            || self.flash.is_some()
-            || self.orientation.is_some()
-    }
-}
-
 /// Parse an EXIF block as the decoder handed it over and format it.
 ///
 /// `bytes` starts at the TIFF header, or at an "Exif\0\0" prefix some
@@ -721,8 +700,6 @@ mod tests {
         assert_eq!(s.orientation.as_deref(), Some("Rotate 90° CW"));
         assert_eq!(s.date_taken.as_deref(), Some("2026-03-27 14:05:12 +08:00"));
         assert_eq!(s.location, None);
-        assert!(s.has_camera_section());
-        assert!(s.has_capture_section());
         assert!(s.tags.iter().any(|(n, v)| n == "Model" && v == "\"NIKON D750\""));
         assert!(s.tags.iter().any(|(n, v)| n == "FNumber" && v == "f/2.8"));
     }
@@ -734,7 +711,7 @@ mod tests {
             ascii(Tag::OffsetTime, "-05:00"),
         ]);
         assert_eq!(s.date_taken.as_deref(), Some("2025-12-31 23:59:59 -05:00"));
-        assert!(!s.has_camera_section());
+        assert_eq!(s.camera, None);
     }
 
     #[test]

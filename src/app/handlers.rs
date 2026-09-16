@@ -255,10 +255,17 @@ impl App {
     }
 
     pub(super) fn handle_keyboard(&mut self, ctx: &egui::Context) {
+        // A text field has focus (the metadata panel's filter box): the
+        // keys are text now, not shortcuts. A and D would move six images
+        // while someone types "camera" otherwise.
+        if ctx.wants_keyboard_input() {
+            return;
+        }
+
         let (home, end, shift, nav_right_pressed, nav_left_pressed,
              nav_right_held, nav_left_held, set_single, set_dual,
              set_independent, select_pane1, select_pane2,
-             toggle_footer, open_folder, open_file, close, quit,
+             toggle_footer, toggle_metadata_panel, open_folder, open_file, close, quit,
              toggle_fullscreen, escape, scroll_delta, command_held) =
             ctx.input(|i| {
                 (
@@ -275,6 +282,7 @@ impl App {
                     i.key_pressed(egui::Key::Num1) && !i.modifiers.command,
                     i.key_pressed(egui::Key::Num2) && !i.modifiers.command,
                     i.key_pressed(egui::Key::Tab),
+                    i.key_pressed(egui::Key::I) && i.modifiers.command,
                     i.key_pressed(egui::Key::O) && i.modifiers.command && i.modifiers.shift,
                     i.key_pressed(egui::Key::O) && i.modifiers.command && !i.modifiers.shift,
                     i.key_pressed(egui::Key::W) && i.modifiers.command,
@@ -312,6 +320,11 @@ impl App {
         }
         if toggle_footer {
             self.settings.show_footer = !self.settings.show_footer;
+            self.settings.save();
+            return;
+        }
+        if toggle_metadata_panel {
+            self.settings.show_metadata_panel = !self.settings.show_metadata_panel;
             self.settings.save();
             return;
         }

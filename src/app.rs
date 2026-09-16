@@ -24,6 +24,7 @@ const DEFAULT_WINDOW_HEIGHT: f32 = 720.0;
 /// Cursor proximity zones for revealing UI in fullscreen mode (logical pixels).
 const FULLSCREEN_TOP_ZONE: f32 = 50.0;
 const FULLSCREEN_BOTTOM_ZONE: f32 = 100.0;
+const FULLSCREEN_RIGHT_ZONE: f32 = 50.0;
 
 /// Preview UI screen size ratio
 const SCREEN_PREVIEW_UI_RATIO: f32 = 5.0;
@@ -326,6 +327,11 @@ pub struct App {
     /// Files waiting for the user to confirm a permanent delete (Windows
     /// locations without a Recycle Bin).
     pending_permanent_delete: Option<Vec<PathBuf>>,
+    /// The metadata side panel's state between frames.
+    metadata_panel: crate::metadata_panel::PanelState,
+    /// Where the metadata panel was drawn last frame, so the fullscreen
+    /// reveal keeps it open while the pointer is over it.
+    metadata_panel_rect: Option<egui::Rect>,
 }
 
 impl App {
@@ -369,6 +375,8 @@ impl App {
             bench: bench::BenchState::new(bench_opts, app_start),
             toast: None,
             pending_permanent_delete: None,
+            metadata_panel: Default::default(),
+            metadata_panel_rect: None,
         };
 
         if !paths.is_empty() {
@@ -816,20 +824,23 @@ impl eframe::App for App {
         self.update_title(ctx);
 
         // Detect cursor proximity to screen edges for fullscreen UI reveal
-        let (cursor_near_top, cursor_near_bottom) = if self.is_fullscreen {
+        let (cursor_near_top, cursor_near_bottom, cursor_near_right) = if self.is_fullscreen {
             let screen = ctx.screen_rect();
+            let panel_rect = self.metadata_panel_rect;
             ctx.input(|i| {
                 if let Some(pos) = i.pointer.hover_pos() {
                     (
                         pos.y - screen.min.y < FULLSCREEN_TOP_ZONE,
                         screen.max.y - pos.y < FULLSCREEN_BOTTOM_ZONE,
+                        screen.max.x - pos.x < FULLSCREEN_RIGHT_ZONE
+                            || panel_rect.is_some_and(|rect| rect.contains(pos)),
                     )
                 } else {
-                    (false, false)
+                    (false, false, false)
                 }
             })
         } else {
-            (false, false)
+            (false, false, false)
         };
 
         // Compute cache memory breakdown for FPS overlay
@@ -876,6 +887,40 @@ impl eframe::App for App {
             self.menu_open = false;
         }
 
+        // Metadata panel (right) — in fullscreen, revealed when the cursor
+        // is near the right edge or over the panel. Added before the footer
+        // and the slider so they shrink with it.
+        if self.settings.show_metadata_panel && (!self.is_fullscreen || cursor_near_right) {
+            let out = crate::metadata_panel::show_metadata_panel(
+                ctx,
+                &self.panes,
+                &mut self.metadata_panel,
+                self.settings.metadata_panel_width,
+                self.settings.metadata_all_exif_open,
+                &self.theme,
+            );
+            self.metadata_panel_rect = Some(out.rect);
+            if let Some(pane_idx) = out.trash_clicked {
+                self.trash_pane_image(pane_idx, ctx);
+            }
+            let mut settings_changed = false;
+            if let Some(width) = out.resized_to {
+                if (width - self.settings.metadata_panel_width).abs() >= 0.5 {
+                    self.settings.metadata_panel_width = width;
+                    settings_changed = true;
+                }
+            }
+            if let Some(open) = out.all_exif_toggled {
+                self.settings.metadata_all_exif_open = open;
+                settings_changed = true;
+            }
+            if settings_changed {
+                self.settings.save();
+            }
+        } else {
+            self.metadata_panel_rect = None;
+        }
+
         // Footer — in fullscreen, revealed when cursor near bottom edge
         if self.settings.show_footer && (!self.is_fullscreen || cursor_near_bottom) {
             let clicked = menu::show_footer(
@@ -897,6 +942,13 @@ impl eframe::App for App {
 
         // Central panel (must be last — fills remaining space)
         self.show_central_panel(ctx);
+
+        // The metadata panel follows the pane whose image was clicked.
+        for (i, pane) in self.panes.iter_mut().enumerate() {
+            if pane.take_image_click() {
+                self.metadata_panel.active_pane = i;
+            }
+        }
 
         // FPS overlay in fullscreen (painted over central panel, top-right corner)
         if self.is_fullscreen && self.settings.show_fps {

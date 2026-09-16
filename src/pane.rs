@@ -52,6 +52,8 @@ pub(crate) struct Pane {
     pub(crate) reset_zoom_pan_on_navigation: bool,
     pub(crate) preview_budget_mb: usize,
     last_image_click: Option<ImageClick>,
+    /// A primary click on the image since `take_image_click` last ran.
+    image_clicked: bool,
     view_animation: Option<ViewAnimation>,
     /// How long each synchronous load in `load_sync` took, plus the LRU hit
     /// count, recorded only while `--bench-slider` asks
@@ -90,6 +92,7 @@ impl Pane {
             reset_zoom_pan_on_navigation,
             preview_budget_mb,
             last_image_click: None,
+            image_clicked: false,
             view_animation: None,
             sync_load_times: None,
         }
@@ -586,6 +589,12 @@ impl Pane {
         }
     }
 
+    /// True once per primary click on the image since the last call. The
+    /// metadata panel follows clicks between panes.
+    pub(crate) fn take_image_click(&mut self) -> bool {
+        std::mem::take(&mut self.image_clicked)
+    }
+
     pub(crate) fn poll_animation(&mut self) {
         let Some(animation) = &mut self.animation else {
             return;
@@ -673,6 +682,9 @@ impl Pane {
 
         let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
         let scale = (available.width() / tex_size.x).min(available.height() / tex_size.y);
+        if response.clicked_by(egui::PointerButton::Primary) {
+            self.image_clicked = true;
+        }
 
         // 2. Direct input: applies immediately and cancels any running animation.
         //    Zoom: scroll wheel (when enabled) or Ctrl/Cmd+scroll, plus pinch.
