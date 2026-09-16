@@ -182,7 +182,7 @@ impl App {
                 let max_width = (screen.width() * 0.8).min(460.0);
                 egui::Frame::default()
                     .fill(card_bg)
-                    .stroke(egui::Stroke::new(1.0, card_stroke))
+                    .stroke(egui::Stroke::new(1.0_f32, card_stroke))
                     .corner_radius(8.0)
                     .inner_margin(20.0)
                     .show(ui, |ui| {

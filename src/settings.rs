@@ -152,7 +152,7 @@ fn tab_bar(ui: &mut egui::Ui, active: &mut SettingsTab, theme: &UiTheme) {
                 ui.painter().hline(
                     (rect.min.x + padding.x)..=(rect.max.x - padding.x),
                     rect.max.y - 1.0,
-                    egui::Stroke::new(2.0, theme.accent),
+                    egui::Stroke::new(2.0_f32, theme.accent),
                 );
             }
 
@@ -187,7 +187,7 @@ fn radio_row<T: PartialEq + Copy>(
         ui.painter().circle_stroke(
             center,
             radius,
-            egui::Stroke::new(1.5, egui::Color32::from_gray(140)),
+            egui::Stroke::new(1.5_f32, egui::Color32::from_gray(140)),
         );
         if selected {
             ui.painter()
@@ -500,7 +500,7 @@ pub fn show_settings_modal(
         .show(ctx, |ui| {
             egui::Frame::default()
                 .fill(theme.card_bg)
-                .stroke(egui::Stroke::new(1.0, theme.card_stroke))
+                .stroke(egui::Stroke::new(1.0_f32, theme.card_stroke))
                 .corner_radius(8.0)
                 .inner_margin(20.0)
                 .show(ui, |ui| {
