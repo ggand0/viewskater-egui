@@ -363,7 +363,8 @@ fn all_exif_section(
 
 /// Two columns, name and value, one line each, drawn only for the rows
 /// inside the scroll viewport. The space above and below stands in for
-/// the rest so the scrollbar is right.
+/// the rest, so the list is always `n * row_h` tall and the scrollbar is
+/// right whatever part is visible.
 fn tag_rows(ui: &mut egui::Ui, rows: &[&(String, String)], f: &Frame) {
     let font = egui::FontId::monospace(TAG_FONT_SIZE);
     let row_h = ui.fonts(|fonts| fonts.row_height(&font)) + 6.0;
@@ -376,29 +377,36 @@ fn tag_rows(ui: &mut egui::Ui, rows: &[&(String, String)], f: &Frame) {
     let last = (((f.viewport.max.y - list_top) / row_h).ceil().max(0.0) as usize + 1).min(n);
     let first = first.min(last);
 
-    if first > 0 {
-        ui.add_space(first as f32 * row_h);
-    }
-    for (name, val) in &rows[first..last] {
-        let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(width, row_h), egui::Sense::hover());
-        let name_galley = ui.fonts(|fonts| {
-            fonts.layout_job(truncated(name, &font, f.theme.muted, name_w - 6.0))
-        });
-        let value_galley = ui.fonts(|fonts| {
-            fonts.layout_job(truncated(val, &font, VALUE_COLOR, width - name_w))
-        });
-        let y = rect.center().y - name_galley.size().y / 2.0;
-        let painter = ui.painter();
-        painter.galley(egui::pos2(rect.left(), y), name_galley.clone(), f.theme.muted);
-        painter.galley(egui::pos2(rect.left() + name_w, y), value_galley.clone(), VALUE_COLOR);
-        if name_galley.elided || value_galley.elided {
-            response.on_hover_text(format!("{name}\n{val}"));
+    ui.scope(|ui| {
+        // No spacing between rows: the drawn rows must be exactly as tall
+        // as the space standing in for the undrawn ones, or the list's
+        // height would change with the scroll offset and the panel would
+        // twitch at the end.
+        ui.spacing_mut().item_spacing.y = 0.0;
+        if first > 0 {
+            ui.add_space(first as f32 * row_h);
         }
-    }
-    if last < n {
-        ui.add_space((n - last) as f32 * row_h);
-    }
+        for (name, val) in &rows[first..last] {
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(width, row_h), egui::Sense::hover());
+            let name_galley = ui.fonts(|fonts| {
+                fonts.layout_job(truncated(name, &font, f.theme.muted, name_w - 6.0))
+            });
+            let value_galley = ui.fonts(|fonts| {
+                fonts.layout_job(truncated(val, &font, VALUE_COLOR, width - name_w))
+            });
+            let y = rect.center().y - name_galley.size().y / 2.0;
+            let painter = ui.painter();
+            painter.galley(egui::pos2(rect.left(), y), name_galley.clone(), f.theme.muted);
+            painter.galley(egui::pos2(rect.left() + name_w, y), value_galley.clone(), VALUE_COLOR);
+            if name_galley.elided || value_galley.elided {
+                response.on_hover_text(format!("{name}\n{val}"));
+            }
+        }
+        if last < n {
+            ui.add_space((n - last) as f32 * row_h);
+        }
+    });
 }
 
 fn truncated(
@@ -543,6 +551,51 @@ mod tests {
             (button_right - card.right()).abs() <= 0.5,
             "button ends at {button_right}, card at {}, content at {content_right}",
             card.right()
+        );
+    }
+
+    /// The tag list stands in for the rows outside the viewport with empty
+    /// space, so its height must be the same whatever part is visible.
+    /// If it is not, the scroll area's content shrinks as you scroll
+    /// towards the end, the offset gets clamped, and the panel twitches.
+    #[test]
+    fn tag_list_height_does_not_depend_on_scroll_offset() {
+        let ctx = egui::Context::default();
+        let theme = UiTheme::teal_dark();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(260.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let rows: Vec<(String, String)> = (0..200)
+            .map(|i| (format!("Tag{i}"), format!("value {i}")))
+            .collect();
+        let refs: Vec<&(String, String)> = rows.iter().collect();
+        let mut heights = Vec::new();
+        for offset in [0.0_f32, 300.0, 1500.0, 3500.0, 4200.0, 9000.0] {
+            let _ = ctx.run(input.clone(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let top = ui.cursor().top();
+                    let frame = Frame {
+                        theme: &theme,
+                        viewport: egui::Rect::from_min_size(
+                            egui::pos2(0.0, offset),
+                            egui::vec2(260.0, 600.0),
+                        ),
+                        content_top: top,
+                        all_exif_open: true,
+                    };
+                    tag_rows(ui, &refs, &frame);
+                    heights.push(ui.cursor().top() - top);
+                });
+            });
+        }
+        let first = heights[0];
+        assert!(
+            heights.iter().all(|h| (h - first).abs() < 0.5),
+            "list height changes with the scroll offset: {heights:?}"
         );
     }
 }
