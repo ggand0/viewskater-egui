@@ -440,3 +440,55 @@ pub fn open_in_file_explorer(path: &str) {
         let _ = Command::new("xdg-open").arg(path).spawn();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reads real photos and prints their records, to compare with
+    /// exiftool or `identify -format '%[EXIF:*]'`:
+    ///
+    ///     VIEWSKATER_EXIF_FILES=a.jpg:b.jpg cargo test real_photos -- --ignored --nocapture
+    ///
+    /// Set VIEWSKATER_EXIF_TAGS=1 to print every tag as the panel lists it.
+    #[test]
+    #[ignore]
+    fn real_photos_have_camera_fields() {
+        let Ok(list) = std::env::var("VIEWSKATER_EXIF_FILES") else {
+            eprintln!("VIEWSKATER_EXIF_FILES is not set");
+            return;
+        };
+        let print_tags = std::env::var("VIEWSKATER_EXIF_TAGS").is_ok();
+        for path in list.split(':').filter(|p| !p.is_empty()) {
+            let loaded = load_image(Path::new(path));
+            assert!(loaded.image.is_ok(), "{path}: {:?}", loaded.image.err());
+            let record = &loaded.record;
+            eprintln!("{path}");
+            eprintln!("  file: {:?} bytes, modified {:?}, {:?}", record.file_size, record.modified, record.format);
+            let ExifData::Present(exif) = &record.exif else {
+                panic!("{path}: {:?}", record.exif);
+            };
+            eprintln!("  camera:      {:?}", exif.camera);
+            eprintln!("  lens:        {:?}", exif.lens);
+            eprintln!("  focal:       {:?}", exif.focal_length);
+            eprintln!("  aperture:    {:?}", exif.aperture);
+            eprintln!("  shutter:     {:?}", exif.shutter);
+            eprintln!("  iso:         {:?}", exif.iso);
+            eprintln!("  bias:        {:?}", exif.exposure_bias);
+            eprintln!("  date:        {:?}", exif.date_taken);
+            eprintln!("  program:     {:?}", exif.exposure_program);
+            eprintln!("  metering:    {:?}", exif.metering);
+            eprintln!("  wb:          {:?}", exif.white_balance);
+            eprintln!("  flash:       {:?}", exif.flash);
+            eprintln!("  orientation: {:?}", exif.orientation);
+            eprintln!("  location:    {:?}", exif.location);
+            eprintln!("  tags:        {}", exif.tags.len());
+            if print_tags {
+                for (name, value) in &exif.tags {
+                    eprintln!("    {name} = {value}");
+                }
+            }
+            assert!(exif.camera.is_some(), "{path}: no camera");
+        }
+    }
+}
