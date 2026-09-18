@@ -72,6 +72,7 @@ On macOS, use **Cmd** instead of **Ctrl**.
 | Scroll wheel | Zoom (centered on cursor) |
 | Click + drag | Pan |
 | Double-click | Reset zoom and pan |
+| I | Show or hide the metadata panel |
 | F11 | Toggle fullscreen |
 | Escape | Exit fullscreen |
 
