@@ -568,6 +568,9 @@ mod tests {
     ///
     ///     VIEWSKATER_EXIF_FILES=a.jpg:b.jpg cargo test real_photos -- --ignored --nocapture
     ///
+    /// The list uses the platform's path list separator, `:` or `;` on
+    /// Windows.
+    ///
     /// Set VIEWSKATER_EXIF_TAGS=1 to print every tag as the panel lists it.
     #[test]
     #[ignore]
@@ -577,8 +580,9 @@ mod tests {
             return;
         };
         let print_tags = std::env::var("VIEWSKATER_EXIF_TAGS").is_ok();
-        for path in list.split(':').filter(|p| !p.is_empty()) {
-            let loaded = load_image(Path::new(path));
+        for path in std::env::split_paths(&list) {
+            let loaded = load_image(&path);
+            let path = path.display();
             assert!(loaded.image.is_ok(), "{path}: {:?}", loaded.image.err());
             let record = &loaded.record;
             eprintln!("{path}");
