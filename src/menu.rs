@@ -306,7 +306,7 @@ pub(crate) fn show_menu_bar(
                         toggle_switch(
                             ui,
                             &mut settings.show_metadata_panel,
-                            "Metadata Panel  Ctrl+I",
+                            "Metadata Panel  I",
                             theme,
                         );
                     });

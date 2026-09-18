@@ -282,7 +282,7 @@ impl App {
                     i.key_pressed(egui::Key::Num1) && !i.modifiers.command,
                     i.key_pressed(egui::Key::Num2) && !i.modifiers.command,
                     i.key_pressed(egui::Key::Tab),
-                    i.key_pressed(egui::Key::I) && i.modifiers.command,
+                    i.key_pressed(egui::Key::I),
                     i.key_pressed(egui::Key::O) && i.modifiers.command && i.modifiers.shift,
                     i.key_pressed(egui::Key::O) && i.modifiers.command && !i.modifiers.shift,
                     i.key_pressed(egui::Key::W) && i.modifiers.command,

@@ -24,7 +24,6 @@ const DEFAULT_WINDOW_HEIGHT: f32 = 720.0;
 /// Cursor proximity zones for revealing UI in fullscreen mode (logical pixels).
 const FULLSCREEN_TOP_ZONE: f32 = 50.0;
 const FULLSCREEN_BOTTOM_ZONE: f32 = 100.0;
-const FULLSCREEN_RIGHT_ZONE: f32 = 50.0;
 
 /// Preview UI screen size ratio
 const SCREEN_PREVIEW_UI_RATIO: f32 = 5.0;
@@ -329,8 +328,8 @@ pub struct App {
     pending_permanent_delete: Option<Vec<PathBuf>>,
     /// The metadata side panel's state between frames.
     metadata_panel: crate::metadata_panel::PanelState,
-    /// Where the metadata panel was drawn last frame, so the fullscreen
-    /// reveal keeps it open while the pointer is over it.
+    /// Where the metadata panel is this frame, so the fullscreen FPS
+    /// overlay stays left of it.
     metadata_panel_rect: Option<egui::Rect>,
 }
 
@@ -824,23 +823,20 @@ impl eframe::App for App {
         self.update_title(ctx);
 
         // Detect cursor proximity to screen edges for fullscreen UI reveal
-        let (cursor_near_top, cursor_near_bottom, cursor_near_right) = if self.is_fullscreen {
+        let (cursor_near_top, cursor_near_bottom) = if self.is_fullscreen {
             let screen = ctx.screen_rect();
-            let panel_rect = self.metadata_panel_rect;
             ctx.input(|i| {
                 if let Some(pos) = i.pointer.hover_pos() {
                     (
                         pos.y - screen.min.y < FULLSCREEN_TOP_ZONE,
                         screen.max.y - pos.y < FULLSCREEN_BOTTOM_ZONE,
-                        screen.max.x - pos.x < FULLSCREEN_RIGHT_ZONE
-                            || panel_rect.is_some_and(|rect| rect.contains(pos)),
                     )
                 } else {
-                    (false, false, false)
+                    (false, false)
                 }
             })
         } else {
-            (false, false, false)
+            (false, false)
         };
 
         // Compute cache memory breakdown for FPS overlay
@@ -887,10 +883,10 @@ impl eframe::App for App {
             self.menu_open = false;
         }
 
-        // Metadata panel (right) — in fullscreen, revealed when the cursor
-        // is near the right edge or over the panel. Added before the footer
-        // and the slider so they shrink with it.
-        if self.settings.show_metadata_panel && (!self.is_fullscreen || cursor_near_right) {
+        // Metadata panel (right). The I key shows and hides it, in
+        // fullscreen too. Added before the footer and the slider so they
+        // shrink with it.
+        if self.settings.show_metadata_panel {
             let out = crate::metadata_panel::show_metadata_panel(
                 ctx,
                 &self.panes,
@@ -950,10 +946,12 @@ impl eframe::App for App {
             }
         }
 
-        // FPS overlay in fullscreen (painted over central panel, top-right corner)
+        // FPS overlay in fullscreen (painted over the central panel, top
+        // right corner, left of the metadata panel when that is open)
         if self.is_fullscreen && self.settings.show_fps {
             let fps = self.perf.fps_text(cache_mb);
             let screen = ctx.screen_rect();
+            let right = self.metadata_panel_rect.map_or(screen.max.x, |rect| rect.min.x);
             let font = egui::FontId::monospace(14.0);
             let color = egui::Color32::from_rgba_unmultiplied(220, 220, 220, 200);
             let bg = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140);
@@ -961,7 +959,7 @@ impl eframe::App for App {
             let text_size = galley.size();
             let margin = 8.0;
             let pos = egui::pos2(
-                screen.max.x - text_size.x - margin * 2.0,
+                right - text_size.x - margin * 2.0,
                 screen.min.y + margin,
             );
             let bg_rect = egui::Rect::from_min_size(
