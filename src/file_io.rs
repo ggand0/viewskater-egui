@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::fs::{DirEntry, File, OpenOptions};
-use std::io::{BufReader, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, Once};
@@ -195,7 +195,8 @@ pub fn load_image(path: &Path) -> LoadedImage {
 
 fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<DynamicImage> {
     let reader = ImageReader::open(path)?.with_guessed_format()?;
-    record.format = format_name(reader.format(), path);
+    let format = reader.format();
+    record.format = format_name(format, path);
     let mut decoder = reader.into_decoder()?;
     match decoder.exif_metadata() {
         Ok(Some(bytes)) => record.exif = metadata::parse_exif(bytes),
@@ -210,7 +211,73 @@ fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<DynamicI
     let mut limits = image::Limits::default();
     limits.reserve(decoder.total_bytes())?;
     decoder.set_limits(limits)?;
-    DynamicImage::from_decoder(decoder)
+    let image = DynamicImage::from_decoder(decoder);
+
+    // A PNG may carry its eXIf chunk after the pixel data; ImageMagick
+    // writes it there. The decoder only knew the chunks before the first
+    // IDAT when it was asked above. Looked for after the decode, when the
+    // file is in the OS cache, so it costs one read of the file's tail.
+    if format == Some(ImageFormat::Png) && record.exif == ExifData::None {
+        if let Some(bytes) = png_trailing_exif(path) {
+            record.exif = metadata::parse_exif(bytes);
+        }
+    }
+    image
+}
+
+/// How much of a PNG's end is searched for a trailing eXIf chunk. EXIF
+/// blocks are at most a few tens of kilobytes and only text chunks and
+/// IEND follow them.
+const PNG_TAIL_BYTES: u64 = 128 * 1024;
+
+fn png_trailing_exif(path: &Path) -> Option<Vec<u8>> {
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(PNG_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut tail = Vec::with_capacity((len - start) as usize);
+    file.read_to_end(&mut tail).ok()?;
+    find_trailing_exif(&tail).map(<[u8]>::to_vec)
+}
+
+/// The payload of an eXIf chunk in the tail of a PNG file. Chunks can only
+/// be walked forwards, and the tail may start in the middle of compressed
+/// pixel data that happens to contain the letters "eXIf". So a candidate
+/// is accepted only when the chunks after it, walked by their length
+/// fields, arrive at an empty IEND chunk.
+fn find_trailing_exif(tail: &[u8]) -> Option<&[u8]> {
+    let mut search_end = tail.len();
+    while let Some(pos) = tail[..search_end].windows(4).rposition(|w| w == b"eXIf") {
+        if let Some(payload) = pos.checked_sub(4).and_then(|start| exif_if_chunks_reach_iend(tail, start)) {
+            return Some(payload);
+        }
+        search_end = pos;
+    }
+    None
+}
+
+/// Walk chunks from `first`, which claims to be an eXIf chunk. Returns its
+/// payload if the walk ends at an empty IEND inside `tail`.
+fn exif_if_chunks_reach_iend(tail: &[u8], first: usize) -> Option<&[u8]> {
+    let mut at = first;
+    let mut payload = None;
+    loop {
+        let header = tail.get(at..at.checked_add(8)?)?;
+        let len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        let kind = &header[4..8];
+        let data_end = at.checked_add(8)?.checked_add(len)?;
+        let next = data_end.checked_add(4)?; // the CRC
+        if next > tail.len() {
+            return None;
+        }
+        if at == first {
+            payload = Some(&tail[at + 8..data_end]);
+        }
+        if kind == b"IEND" {
+            return if len == 0 { payload } else { None };
+        }
+        at = next;
+    }
 }
 
 /// The container format for the File section. Formats decoded through a
@@ -444,6 +511,57 @@ pub fn open_in_file_explorer(path: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file whose pixels cannot be decoded still gets its file facts,
+    /// so the panel and the footer have something to show next to
+    /// "Failed to load image".
+    #[test]
+    fn record_exists_when_the_pixels_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.jpg");
+        std::fs::write(&path, b"this is not a jpeg").unwrap();
+
+        let loaded = load_image(&path);
+
+        assert!(loaded.image.is_err());
+        assert_eq!(loaded.record.file_size, Some(18));
+        assert!(loaded.record.modified.is_some());
+        assert_eq!(loaded.record.exif, ExifData::None);
+    }
+
+    fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut out = (data.len() as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        out.extend_from_slice(&[0, 0, 0, 0]); // CRC, not checked
+        out
+    }
+
+    #[test]
+    fn trailing_exif_is_found_behind_the_pixel_data() {
+        // The end of some IDAT data that happens to contain "eXIf", then
+        // the real chunk, a text chunk and IEND, as ImageMagick writes.
+        let mut tail = b"\x9c\x00\x00\x10\x00eXIf compressed bytes that are not a chunk".to_vec();
+        tail.extend(chunk(b"eXIf", b"MM\0*real exif"));
+        tail.extend(chunk(b"tEXt", b"exif:Make\0Apple"));
+        tail.extend(chunk(b"IEND", b""));
+        assert_eq!(find_trailing_exif(&tail), Some(&b"MM\0*real exif"[..]));
+
+        // Only the decoy: nothing.
+        let mut decoy = b"\x00\x00\x00\x05eXIfabcde".to_vec();
+        decoy.extend(chunk(b"IDAT", b"more pixels"));
+        assert_eq!(find_trailing_exif(&decoy), None);
+
+        // No eXIf at all.
+        let mut plain = chunk(b"IDAT", b"pixels");
+        plain.extend(chunk(b"IEND", b""));
+        assert_eq!(find_trailing_exif(&plain), None);
+
+        // A chunk whose length runs past the end is refused.
+        let mut cut = (1000u32).to_be_bytes().to_vec();
+        cut.extend_from_slice(b"eXIfshort");
+        assert_eq!(find_trailing_exif(&cut), None);
+    }
 
     /// Reads real photos and prints their records, to compare with
     /// exiftool or `identify -format '%[EXIF:*]'`:
