@@ -485,23 +485,17 @@ fn row_with(
     );
 }
 
-/// A label cut with an ellipsis at `cell_w`, the full text on hover when
-/// it was cut. Takes exactly `cell_w` so what follows lines up.
+/// A label cut with an ellipsis at `cell_w`. egui shows the full text on
+/// hover when it cut a label, so nothing is added here. Takes exactly
+/// `cell_w` so what follows lines up.
 fn text_cell(ui: &mut egui::Ui, text: &str, cell_w: f32, color: egui::Color32) {
     let font = egui::FontId::proportional(TEXT_SIZE);
-    let text_w = ui.fonts(|fonts| {
-        fonts.layout_no_wrap(text.to_string(), font.clone(), color).size().x
-    });
     ui.allocate_ui_with_layout(
         egui::vec2(cell_w, ROW_H),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ui.set_min_width(cell_w);
-            let response =
-                ui.add(egui::Label::new(egui::RichText::new(text).font(font).color(color)).truncate());
-            if text_w > cell_w {
-                response.on_hover_text(text);
-            }
+            ui.add(egui::Label::new(egui::RichText::new(text).font(font).color(color)).truncate());
         },
     );
 }
@@ -516,8 +510,10 @@ fn folder_cell(ui: &mut egui::Ui, folder: &str, cell_w: f32) {
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ui.set_min_width(cell_w);
+            // Already cut to fit, from the left; egui must not cut it again
+            // from the right and add a tooltip of its own.
             let response = ui.add(
-                egui::Label::new(egui::RichText::new(shown).font(font).color(VALUE_COLOR)).truncate(),
+                egui::Label::new(egui::RichText::new(shown).font(font).color(VALUE_COLOR)).extend(),
             );
             if cut {
                 response.on_hover_text(folder);
