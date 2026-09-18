@@ -237,20 +237,25 @@ fn show_pane(ui: &mut egui::Ui, pane: &Pane, filter: &mut String, f: &Frame) -> 
     out
 }
 
+/// A value with the name of what it is, shown on hover: the cards show
+/// values only, and "Pattern" alone does not say it is the metering mode.
+type Cell<'a> = (&'a str, &'static str);
+
 /// One line of a section: a value, or two side by side.
 enum Row<'a> {
-    One(&'a str),
-    Two(&'a str, &'a str),
+    One(Cell<'a>),
+    Two(Cell<'a>, Cell<'a>),
 }
 
-fn one(text: Option<&str>) -> Option<Row<'_>> {
-    text.map(Row::One)
+fn one<'a>(text: Option<&'a str>, label: &'static str) -> Option<Row<'a>> {
+    text.map(|t| Row::One((t, label)))
 }
 
-fn pair<'a>(a: Option<&'a str>, b: Option<&'a str>) -> Option<Row<'a>> {
+fn pair<'a>(a: Option<&'a str>, la: &'static str, b: Option<&'a str>, lb: &'static str) -> Option<Row<'a>> {
     match (a, b) {
-        (Some(a), Some(b)) => Some(Row::Two(a, b)),
-        (Some(a), None) | (None, Some(a)) => Some(Row::One(a)),
+        (Some(a), Some(b)) => Some(Row::Two((a, la), (b, lb))),
+        (Some(a), None) => Some(Row::One((a, la))),
+        (None, Some(b)) => Some(Row::One((b, lb))),
         (None, None) => None,
     }
 }
@@ -263,8 +268,14 @@ fn rows_section(ui: &mut egui::Ui, title: &str, rows: &[Option<Row>], theme: &Ui
     section(ui, title, theme, |_| {}, |ui| {
         for row in rows.iter().flatten() {
             match row {
-                Row::One(a) => value(ui, a),
-                Row::Two(a, b) => two_values(ui, a, b),
+                Row::One(a) => labeled_value(ui, a),
+                Row::Two(a, b) => {
+                    ui.horizontal(|ui| {
+                        labeled_value(ui, a);
+                        ui.add_space(10.0);
+                        labeled_value(ui, b);
+                    });
+                }
             }
         }
     });
@@ -275,11 +286,11 @@ fn camera_section(ui: &mut egui::Ui, exif: &ExifSummary, theme: &UiTheme) {
         ui,
         "Camera",
         &[
-            one(exif.camera.as_deref()),
-            one(exif.lens.as_deref()),
-            one(exif.focal_length.as_deref()),
-            pair(exif.aperture.as_deref(), exif.shutter.as_deref()),
-            pair(exif.iso.as_deref(), exif.exposure_bias.as_deref()),
+            one(exif.camera.as_deref(), "Camera"),
+            one(exif.lens.as_deref(), "Lens"),
+            one(exif.focal_length.as_deref(), "Focal length"),
+            pair(exif.aperture.as_deref(), "Aperture", exif.shutter.as_deref(), "Shutter speed"),
+            pair(exif.iso.as_deref(), "ISO", exif.exposure_bias.as_deref(), "Exposure compensation"),
         ],
         theme,
     );
@@ -290,12 +301,12 @@ fn capture_section(ui: &mut egui::Ui, exif: &ExifSummary, theme: &UiTheme) {
         ui,
         "Capture",
         &[
-            one(exif.date_taken.as_deref()),
-            one(exif.exposure_program.as_deref()),
-            pair(exif.metering.as_deref(), exif.white_balance.as_deref()),
-            one(exif.flash.as_deref()),
+            one(exif.date_taken.as_deref(), "Date taken"),
+            one(exif.exposure_program.as_deref(), "Exposure program"),
+            pair(exif.metering.as_deref(), "Metering mode", exif.white_balance.as_deref(), "White balance"),
+            one(exif.flash.as_deref(), "Flash"),
             // Only a turned picture is worth a line.
-            one(exif.orientation.as_deref().filter(|o| *o != "Normal")),
+            one(exif.orientation.as_deref().filter(|o| *o != "Normal"), "Orientation"),
         ],
         theme,
     );
@@ -364,7 +375,8 @@ fn all_exif_section(
 /// Two columns, name and value, one line each, drawn only for the rows
 /// inside the scroll viewport. The space above and below stands in for
 /// the rest, so the list is always `n * row_h` tall and the scrollbar is
-/// right whatever part is visible.
+/// right whatever part is visible. The cells are labels, so the text can
+/// be selected by dragging and copied like the cards above.
 fn tag_rows(ui: &mut egui::Ui, rows: &[&(String, String)], f: &Frame) {
     let font = egui::FontId::monospace(TAG_FONT_SIZE);
     let row_h = ui.fonts(|fonts| fonts.row_height(&font)) + 6.0;
@@ -387,21 +399,16 @@ fn tag_rows(ui: &mut egui::Ui, rows: &[&(String, String)], f: &Frame) {
             ui.add_space(first as f32 * row_h);
         }
         for (name, val) in &rows[first..last] {
-            let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(width, row_h), egui::Sense::hover());
-            let name_galley = ui.fonts(|fonts| {
-                fonts.layout_job(truncated(name, &font, f.theme.muted, name_w - 6.0))
-            });
-            let value_galley = ui.fonts(|fonts| {
-                fonts.layout_job(truncated(val, &font, VALUE_COLOR, width - name_w))
-            });
-            let y = rect.center().y - name_galley.size().y / 2.0;
-            let painter = ui.painter();
-            painter.galley(egui::pos2(rect.left(), y), name_galley.clone(), f.theme.muted);
-            painter.galley(egui::pos2(rect.left() + name_w, y), value_galley.clone(), VALUE_COLOR);
-            if name_galley.elided || value_galley.elided {
-                response.on_hover_text(format!("{name}\n{val}"));
-            }
+            ui.allocate_ui_with_layout(
+                egui::vec2(width, row_h),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_min_size(egui::vec2(width, row_h));
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    tag_cell(ui, name, name_w, f.theme.muted, &font);
+                    tag_cell(ui, val, width - name_w, VALUE_COLOR, &font);
+                },
+            );
         }
         if last < n {
             ui.add_space((n - last) as f32 * row_h);
@@ -409,15 +416,28 @@ fn tag_rows(ui: &mut egui::Ui, rows: &[&(String, String)], f: &Frame) {
     });
 }
 
-fn truncated(
-    text: &str,
-    font: &egui::FontId,
-    color: egui::Color32,
-    max_width: f32,
-) -> egui::text::LayoutJob {
-    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font.clone(), color);
-    job.wrap = egui::text::TextWrapping::truncate_at_width(max_width.max(10.0));
-    job
+/// One cell of a tag row: a label cut with an ellipsis at `cell_w`, the
+/// full text on hover when it was cut. Takes exactly `cell_w` so the
+/// value column lines up.
+fn tag_cell(ui: &mut egui::Ui, text: &str, cell_w: f32, color: egui::Color32, font: &egui::FontId) {
+    let text_w = ui.fonts(|fonts| {
+        fonts.layout_no_wrap(text.to_string(), font.clone(), color).size().x
+    });
+    ui.allocate_ui_with_layout(
+        egui::vec2(cell_w, ui.available_height()),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(cell_w);
+            ui.set_max_width(cell_w - 6.0);
+            let response = ui.add(
+                egui::Label::new(egui::RichText::new(text).font(font.clone()).color(color))
+                    .truncate(),
+            );
+            if text_w > cell_w - 6.0 {
+                response.on_hover_text(text);
+            }
+        },
+    );
 }
 
 /// Heading row with optional controls at the right, then a card.
@@ -459,7 +479,7 @@ fn note(ui: &mut egui::Ui, text: &str, theme: &UiTheme) {
 }
 
 /// One value on its own line, cut with an ellipsis when too long.
-fn value(ui: &mut egui::Ui, text: &str) {
+fn value(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(
         egui::Label::new(
             egui::RichText::new(text)
@@ -468,7 +488,13 @@ fn value(ui: &mut egui::Ui, text: &str) {
                 .color(VALUE_COLOR),
         )
         .truncate(),
-    );
+    )
+}
+
+/// A value whose name shows on hover.
+fn labeled_value(ui: &mut egui::Ui, cell: &Cell) {
+    let (text, label) = *cell;
+    value(ui, text).on_hover_text(label);
 }
 
 /// A value that wraps onto several lines (the full path).
@@ -477,14 +503,6 @@ fn wrapped_value(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
         egui::Label::new(egui::RichText::new(text).monospace().size(VALUE_SIZE).color(color))
             .wrap(),
     );
-}
-
-fn two_values(ui: &mut egui::Ui, a: &str, b: &str) {
-    ui.horizontal(|ui| {
-        value(ui, a);
-        ui.add_space(10.0);
-        value(ui, b);
-    });
 }
 
 fn megapixels(w: usize, h: usize) -> String {
@@ -537,7 +555,9 @@ mod tests {
                                         button_right = ui.small_button("copy path").rect.right();
                                         let _ = ui.small_button("copy name");
                                     },
-                                    |ui| value(ui, "46.jpg"),
+                                    |ui| {
+                                        value(ui, "46.jpg");
+                                    },
                                 );
                                 // Enough rows to need a vertical scrollbar.
                                 for i in 0..80 {

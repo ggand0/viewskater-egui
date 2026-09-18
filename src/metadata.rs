@@ -51,15 +51,16 @@ pub struct ExifSummary {
     /// Make and model, deduplicated: "NIKON D750", "Apple iPhone 15".
     pub camera: Option<String>,
     pub lens: Option<String>,
-    /// "50 mm", or "50 mm (75 mm eq.)" when the 35 mm equivalent differs.
+    /// "50 mm", "6.86 mm (24 mm eq.)" when the 35 mm equivalent differs.
     pub focal_length: Option<String>,
-    /// "f/2.8"
+    /// The f-number as stored, "f/2.8", "f/1.78".
     pub aperture: Option<String>,
     /// "1/250 s" under 0.3 s, "0.5 s", "2 s" above.
     pub shutter: Option<String>,
     /// "ISO 400"
     pub iso: Option<String>,
-    /// Always signed: "+0.3 EV", "-1.7 EV", "0 EV".
+    /// Exposure compensation, signed: "+0.3 EV", "-1.7 EV". None when
+    /// it is zero, which is most photos.
     pub exposure_bias: Option<String>,
     /// "2026-03-27 14:05:12", with " +08:00" when the offset tag exists.
     pub date_taken: Option<String>,
@@ -252,24 +253,22 @@ pub(crate) fn shutter_text(r: Rational) -> Option<String> {
     }
 }
 
-/// "f/2.8", "f/11", "f/0.95".
+/// The f-number as the camera wrote it: "f/2.8", "f/11", "f/1.78".
 pub(crate) fn aperture_text(r: Rational) -> Option<String> {
     if r.num == 0 || r.denom == 0 {
         return None;
     }
-    let f = r.to_f64();
-    let decimals = if f < 1.0 { 2 } else { 1 };
-    Some(format!("f/{}", trim_decimal(f, decimals)))
+    Some(format!("f/{}", trim_decimal(r.to_f64(), 2)))
 }
 
-/// "50 mm", "4.2 mm", and "50 mm (75 mm eq.)" when the 35 mm equivalent
+/// "50 mm", "6.86 mm", and "50 mm (75 mm eq.)" when the 35 mm equivalent
 /// tag exists and differs.
 pub(crate) fn focal_text(r: Rational, equivalent_35mm: Option<u32>) -> Option<String> {
     if r.num == 0 || r.denom == 0 {
         return None;
     }
     let mm = r.to_f64();
-    let text = format!("{} mm", trim_decimal(mm, 1));
+    let text = format!("{} mm", trim_decimal(mm, 2));
     match equivalent_35mm {
         Some(eq) if eq > 0 && (eq as f64 - mm).abs() >= 0.5 => Some(format!("{text} ({eq} mm eq.)")),
         _ => Some(text),
@@ -280,23 +279,26 @@ pub(crate) fn iso_text(iso: u32) -> String {
     format!("ISO {iso}")
 }
 
-/// Exposure bias, always signed: "+0.3 EV", "-1.7 EV", "0 EV".
+/// Exposure compensation, signed: "+0.3 EV", "-1.7 EV". None at zero,
+/// so the line only appears when the photographer dialled something in.
 pub(crate) fn ev_text(r: SRational) -> Option<String> {
     if r.denom == 0 {
         return None;
     }
     let ev = r.to_f64();
     if ev.abs() < 0.05 {
-        return Some("0 EV".to_string());
+        return None;
     }
     let sign = if ev < 0.0 { '-' } else { '+' };
     Some(format!("{sign}{} EV", trim_decimal(ev.abs(), 1)))
 }
 
+/// The exposure program by the names cameras and exiftool use. 2 is the
+/// camera choosing both aperture and shutter, "P" on a mode dial.
 pub(crate) fn exposure_program_text(v: u32) -> Option<String> {
     let s = match v {
         1 => "Manual",
-        2 => "Program",
+        2 => "Program AE",
         3 => "Aperture priority",
         4 => "Shutter priority",
         5 => "Creative",
@@ -537,6 +539,7 @@ mod tests {
         assert_eq!(aperture_text(r(56, 10)).unwrap(), "f/5.6");
         assert_eq!(aperture_text(r(11, 1)).unwrap(), "f/11");
         assert_eq!(aperture_text(r(95, 100)).unwrap(), "f/0.95");
+        assert_eq!(aperture_text(r(89, 50)).unwrap(), "f/1.78");
         assert_eq!(aperture_text(r(0, 10)), None);
     }
 
@@ -547,13 +550,14 @@ mod tests {
         assert_eq!(focal_text(r(50, 1), Some(50)).unwrap(), "50 mm");
         assert_eq!(focal_text(r(50, 1), Some(0)).unwrap(), "50 mm");
         assert_eq!(focal_text(r(42, 10), Some(26)).unwrap(), "4.2 mm (26 mm eq.)");
+        assert_eq!(focal_text(r(343, 50), Some(24)).unwrap(), "6.86 mm (24 mm eq.)");
         assert_eq!(focal_text(r(0, 1), None), None);
     }
 
     #[test]
-    fn exposure_bias_is_always_signed() {
-        assert_eq!(ev_text(sr(0, 1)).unwrap(), "0 EV");
-        assert_eq!(ev_text(sr(0, 3)).unwrap(), "0 EV");
+    fn exposure_bias_is_signed_and_hidden_at_zero() {
+        assert_eq!(ev_text(sr(0, 1)), None);
+        assert_eq!(ev_text(sr(0, 3)), None);
         assert_eq!(ev_text(sr(1, 3)).unwrap(), "+0.3 EV");
         assert_eq!(ev_text(sr(-5, 3)).unwrap(), "-1.7 EV");
         assert_eq!(ev_text(sr(1, 1)).unwrap(), "+1 EV");
@@ -574,6 +578,13 @@ mod tests {
         assert_eq!(camera_text(None, Some(" X100V")).unwrap(), "X100V");
         assert_eq!(camera_text(Some(""), Some("")), None);
         assert_eq!(camera_text(None, None), None);
+    }
+
+    #[test]
+    fn exposure_program_names() {
+        assert_eq!(exposure_program_text(2).unwrap(), "Program AE");
+        assert_eq!(exposure_program_text(3).unwrap(), "Aperture priority");
+        assert_eq!(exposure_program_text(0), None);
     }
 
     #[test]
