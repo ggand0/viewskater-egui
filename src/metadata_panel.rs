@@ -693,6 +693,18 @@ mod tests {
         assert!(long.0.starts_with("…/"), "{}", long.0);
         assert!(long.0.ends_with("/day-3/raw") || long.0.ends_with("/raw"), "{}", long.0);
         assert!(path.ends_with(long.0.trim_start_matches('…')), "{}", long.0);
+
+        // Windows separators are cut at too.
+        let windows = r"C:\Users\someone\Pictures\2026\bali\day-3\raw";
+        let mut cut = (String::new(), false);
+        let _ = ctx.run(input(400.0, 300.0), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                cut = elide_start(ui, windows, 120.0, &font);
+            });
+        });
+        assert!(cut.1);
+        assert!(cut.0.starts_with("…\\"), "{}", cut.0);
+        assert!(windows.ends_with(cut.0.trim_start_matches('…')), "{}", cut.0);
     }
 
     #[test]
