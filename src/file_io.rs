@@ -476,10 +476,6 @@ mod tests {
             eprintln!("  iso:         {:?}", exif.iso);
             eprintln!("  bias:        {:?}", exif.exposure_bias);
             eprintln!("  date:        {:?}", exif.date_taken);
-            eprintln!("  program:     {:?}", exif.exposure_program);
-            eprintln!("  metering:    {:?}", exif.metering);
-            eprintln!("  wb:          {:?}", exif.white_balance);
-            eprintln!("  flash:       {:?}", exif.flash);
             eprintln!("  orientation: {:?}", exif.orientation);
             eprintln!("  location:    {:?}", exif.location);
             eprintln!("  tags:        {}", exif.tags.len());

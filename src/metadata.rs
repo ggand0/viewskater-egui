@@ -51,7 +51,8 @@ pub struct ExifSummary {
     /// Make and model, deduplicated: "NIKON D750", "Apple iPhone 15".
     pub camera: Option<String>,
     pub lens: Option<String>,
-    /// "50 mm", "6.86 mm (24 mm eq.)" when the 35 mm equivalent differs.
+    /// "50 mm", or "24 mm (6.86 mm)" when the 35 mm equivalent exists
+    /// and differs: the equivalent first, the real length in brackets.
     pub focal_length: Option<String>,
     /// The f-number as stored, "f/2.8", "f/1.78".
     pub aperture: Option<String>,
@@ -64,10 +65,6 @@ pub struct ExifSummary {
     pub exposure_bias: Option<String>,
     /// "2026-03-27 14:05:12", with " +08:00" when the offset tag exists.
     pub date_taken: Option<String>,
-    pub exposure_program: Option<String>,
-    pub metering: Option<String>,
-    pub white_balance: Option<String>,
-    pub flash: Option<String>,
     /// The orientation tag as text, "Rotate 90° CW". The app does not
     /// apply it yet, so this says how the picture on screen is turned.
     pub orientation: Option<String>,
@@ -155,10 +152,6 @@ fn summarize(exif: &Exif) -> ExifSummary {
         iso: uint(Tag::PhotographicSensitivity).map(iso_text),
         exposure_bias: srational(Tag::ExposureBiasValue).and_then(ev_text),
         date_taken: date_text(exif),
-        exposure_program: uint(Tag::ExposureProgram).and_then(exposure_program_text),
-        metering: uint(Tag::MeteringMode).and_then(metering_text),
-        white_balance: uint(Tag::WhiteBalance).and_then(white_balance_text),
-        flash: uint(Tag::Flash).map(flash_text),
         orientation: uint(Tag::Orientation).and_then(orientation_text),
         location: location(exif),
         tags: exif
@@ -261,17 +254,19 @@ pub(crate) fn aperture_text(r: Rational) -> Option<String> {
     Some(format!("f/{}", trim_decimal(r.to_f64(), 2)))
 }
 
-/// "50 mm", "6.86 mm", and "50 mm (75 mm eq.)" when the 35 mm equivalent
-/// tag exists and differs.
+/// "50 mm", or "24 mm (6.86 mm)" when the 35 mm equivalent tag exists and
+/// differs. The equivalent comes first because it is the number that
+/// compares across cameras and the one Photos shows for a phone; the real
+/// length follows in brackets.
 pub(crate) fn focal_text(r: Rational, equivalent_35mm: Option<u32>) -> Option<String> {
     if r.num == 0 || r.denom == 0 {
         return None;
     }
     let mm = r.to_f64();
-    let text = format!("{} mm", trim_decimal(mm, 2));
+    let real = format!("{} mm", trim_decimal(mm, 2));
     match equivalent_35mm {
-        Some(eq) if eq > 0 && (eq as f64 - mm).abs() >= 0.5 => Some(format!("{text} ({eq} mm eq.)")),
-        _ => Some(text),
+        Some(eq) if eq > 0 && (eq as f64 - mm).abs() >= 0.5 => Some(format!("{eq} mm ({real})")),
+        _ => Some(real),
     }
 }
 
@@ -291,61 +286,6 @@ pub(crate) fn ev_text(r: SRational) -> Option<String> {
     }
     let sign = if ev < 0.0 { '-' } else { '+' };
     Some(format!("{sign}{} EV", trim_decimal(ev.abs(), 1)))
-}
-
-/// The exposure program by the names cameras and exiftool use. 2 is the
-/// camera choosing both aperture and shutter, "P" on a mode dial.
-pub(crate) fn exposure_program_text(v: u32) -> Option<String> {
-    let s = match v {
-        1 => "Manual",
-        2 => "Program AE",
-        3 => "Aperture priority",
-        4 => "Shutter priority",
-        5 => "Creative",
-        6 => "Action",
-        7 => "Portrait",
-        8 => "Landscape",
-        _ => return None,
-    };
-    Some(s.to_string())
-}
-
-pub(crate) fn metering_text(v: u32) -> Option<String> {
-    let s = match v {
-        1 => "Average",
-        2 => "Center-weighted",
-        3 => "Spot",
-        4 => "Multi-spot",
-        5 => "Pattern",
-        6 => "Partial",
-        255 => "Other",
-        _ => return None,
-    };
-    Some(s.to_string())
-}
-
-pub(crate) fn white_balance_text(v: u32) -> Option<String> {
-    match v {
-        0 => Some("Auto WB".to_string()),
-        1 => Some("Manual WB".to_string()),
-        _ => None,
-    }
-}
-
-/// The Flash tag is a bit field: bit 0 fired, bits 3-4 the mode (3 =
-/// auto), bit 5 no flash function, bit 6 red-eye reduction.
-pub(crate) fn flash_text(v: u32) -> String {
-    if v & 0x20 != 0 {
-        return "No flash".to_string();
-    }
-    let mut s = if v & 1 != 0 { "Flash fired" } else { "Flash off" }.to_string();
-    if (v >> 3) & 3 == 3 {
-        s.push_str(" (auto)");
-    }
-    if v & 0x40 != 0 {
-        s.push_str(", red-eye reduction");
-    }
-    s
 }
 
 /// The orientation tag as the turn that would show the picture upright.
@@ -546,11 +486,11 @@ mod tests {
     #[test]
     fn focal_length_with_and_without_equivalent() {
         assert_eq!(focal_text(r(50, 1), None).unwrap(), "50 mm");
-        assert_eq!(focal_text(r(50, 1), Some(75)).unwrap(), "50 mm (75 mm eq.)");
+        assert_eq!(focal_text(r(50, 1), Some(75)).unwrap(), "75 mm (50 mm)");
         assert_eq!(focal_text(r(50, 1), Some(50)).unwrap(), "50 mm");
         assert_eq!(focal_text(r(50, 1), Some(0)).unwrap(), "50 mm");
-        assert_eq!(focal_text(r(42, 10), Some(26)).unwrap(), "4.2 mm (26 mm eq.)");
-        assert_eq!(focal_text(r(343, 50), Some(24)).unwrap(), "6.86 mm (24 mm eq.)");
+        assert_eq!(focal_text(r(42, 10), Some(26)).unwrap(), "26 mm (4.2 mm)");
+        assert_eq!(focal_text(r(343, 50), Some(24)).unwrap(), "24 mm (6.86 mm)");
         assert_eq!(focal_text(r(0, 1), None), None);
     }
 
@@ -581,29 +521,12 @@ mod tests {
     }
 
     #[test]
-    fn exposure_program_names() {
-        assert_eq!(exposure_program_text(2).unwrap(), "Program AE");
-        assert_eq!(exposure_program_text(3).unwrap(), "Aperture priority");
-        assert_eq!(exposure_program_text(0), None);
-    }
-
-    #[test]
     fn orientation_as_a_turn() {
         assert_eq!(orientation_text(1).unwrap(), "Normal");
         assert_eq!(orientation_text(6).unwrap(), "Rotate 90° CW");
         assert_eq!(orientation_text(8).unwrap(), "Rotate 90° CCW");
         assert_eq!(orientation_text(3).unwrap(), "Rotate 180°");
         assert_eq!(orientation_text(9), None);
-    }
-
-    #[test]
-    fn flash_bits() {
-        assert_eq!(flash_text(0), "Flash off");
-        assert_eq!(flash_text(1), "Flash fired");
-        assert_eq!(flash_text(0x19), "Flash fired (auto)");
-        assert_eq!(flash_text(0x18), "Flash off (auto)");
-        assert_eq!(flash_text(0x41), "Flash fired, red-eye reduction");
-        assert_eq!(flash_text(0x20), "No flash");
     }
 
     #[test]
@@ -704,10 +627,12 @@ mod tests {
         assert_eq!(s.iso.as_deref(), Some("ISO 400"));
         assert_eq!(s.focal_length.as_deref(), Some("50 mm"));
         assert_eq!(s.exposure_bias.as_deref(), Some("+0.3 EV"));
-        assert_eq!(s.exposure_program.as_deref(), Some("Aperture priority"));
-        assert_eq!(s.metering.as_deref(), Some("Pattern"));
-        assert_eq!(s.white_balance.as_deref(), Some("Auto WB"));
-        assert_eq!(s.flash.as_deref(), Some("Flash off"));
+        // Program, metering, white balance and flash are not curated;
+        // they stay reachable in the tag list.
+        assert!(s.tags.iter().any(|(n, v)| n == "ExposureProgram" && v == "aperture priority"));
+        assert!(s.tags.iter().any(|(n, _)| n == "MeteringMode"));
+        assert!(s.tags.iter().any(|(n, _)| n == "WhiteBalance"));
+        assert!(s.tags.iter().any(|(n, _)| n == "Flash"));
         assert_eq!(s.orientation.as_deref(), Some("Rotate 90° CW"));
         assert_eq!(s.date_taken.as_deref(), Some("2026-03-27 14:05:12 +08:00"));
         assert_eq!(s.location, None);
