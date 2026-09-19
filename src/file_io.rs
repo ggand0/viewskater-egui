@@ -7,6 +7,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, Once};
 use std::time::SystemTime;
 
+use image::metadata::Orientation;
 use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat, ImageReader, ImageResult};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
@@ -171,6 +172,10 @@ fn ensure_image_decoders_registered() {
 /// texture with the same record.
 pub struct LoadedImage {
     pub image: ImageResult<DynamicImage>,
+    /// The turn the file's EXIF orientation tag asks for. `image` has the
+    /// pixels as the file stores them. `decode::image_to_color_image`
+    /// and `decode::image_to_thumbnail` apply it.
+    pub orientation: Orientation,
     pub record: Arc<MetadataRecord>,
 }
 
@@ -191,11 +196,14 @@ pub fn load_image(path: &Path) -> LoadedImage {
         record.file_size = Some(meta.len());
         record.modified = meta.modified().ok().map(local_time_text);
     }
-    let image = decode_into(path, &mut record);
-    LoadedImage { image, record: Arc::new(record) }
+    let (image, orientation) = match decode_into(path, &mut record) {
+        Ok((image, orientation)) => (Ok(image), orientation),
+        Err(e) => (Err(e), Orientation::NoTransforms),
+    };
+    LoadedImage { image, orientation, record: Arc::new(record) }
 }
 
-fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<DynamicImage> {
+fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<(DynamicImage, Orientation)> {
     let reader = ImageReader::open(path)?.with_guessed_format()?;
     let format = reader.format();
     record.format = format_name(format, path);
@@ -208,6 +216,7 @@ fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<DynamicI
             record.exif = ExifData::Unreadable;
         }
     }
+    let mut orientation = exif_orientation(&mut decoder, format);
     // The allocation check `ImageReader::decode` makes before decoding.
     // `into_decoder` leaves it to the caller.
     let mut limits = image::Limits::default();
@@ -221,10 +230,24 @@ fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<DynamicI
     // file is in the OS cache, so it costs one read of the file's tail.
     if format == Some(ImageFormat::Png) && record.exif == ExifData::None {
         if let Some(bytes) = png_trailing_exif(path) {
+            orientation = Orientation::from_exif_chunk(&bytes).unwrap_or(orientation);
             record.exif = metadata::parse_exif(bytes);
         }
     }
-    image
+    image.map(|image| (image, orientation))
+}
+
+/// The turn the file's EXIF orientation tag asks for. The built-in
+/// decoders return the pixels as the file stores them. A format without
+/// an `ImageFormat` is decoded by jxl-oxide, which has already turned the
+/// pixels by the orientation in the JXL codestream. In a JXL file that
+/// one counts and the tag in the Exif box does not, so the tag is not
+/// applied on top.
+fn exif_orientation(decoder: &mut impl ImageDecoder, format: Option<ImageFormat>) -> Orientation {
+    if format.is_none() {
+        return Orientation::NoTransforms;
+    }
+    decoder.orientation().unwrap_or(Orientation::NoTransforms)
 }
 
 /// How much of a PNG's end is searched for a trailing eXIf chunk. EXIF
@@ -306,7 +329,9 @@ fn local_time_text(time: SystemTime) -> String {
         .to_string()
 }
 
-pub fn open_animation_frames(path: &Path) -> ImageResult<Option<image::Frames<'static>>> {
+/// The frames of an animated file and the turn its EXIF orientation tag
+/// asks for, the same turn `load_image` reports for the still image.
+pub fn open_animation_frames(path: &Path) -> ImageResult<Option<(image::Frames<'static>, Orientation)>> {
     let format = ImageReader::open(path)?.with_guessed_format()?.format();
     let file = || {
         File::open(path)
@@ -317,20 +342,26 @@ pub fn open_animation_frames(path: &Path) -> ImageResult<Option<image::Frames<'s
     match format {
         Some(ImageFormat::Gif) => {
             let decoder = image::codecs::gif::GifDecoder::new(file()?)?;
-            Ok(Some(decoder.into_frames()))
+            Ok(Some((decoder.into_frames(), Orientation::NoTransforms)))
         }
         Some(ImageFormat::Png) => {
-            let decoder = image::codecs::png::PngDecoder::new(file()?)?;
+            let mut decoder = image::codecs::png::PngDecoder::new(file()?)?;
             if decoder.is_apng()? {
-                Ok(Some(decoder.apng()?.into_frames()))
+                let orientation = match decoder.exif_metadata() {
+                    Ok(Some(bytes)) => Orientation::from_exif_chunk(&bytes),
+                    _ => png_trailing_exif(path).and_then(|bytes| Orientation::from_exif_chunk(&bytes)),
+                };
+                let orientation = orientation.unwrap_or(Orientation::NoTransforms);
+                Ok(Some((decoder.apng()?.into_frames(), orientation)))
             } else {
                 Ok(None)
             }
         }
         Some(ImageFormat::WebP) => {
-            let decoder = image::codecs::webp::WebPDecoder::new(file()?)?;
+            let mut decoder = image::codecs::webp::WebPDecoder::new(file()?)?;
             if decoder.has_animation() {
-                Ok(Some(decoder.into_frames()))
+                let orientation = exif_orientation(&mut decoder, format);
+                Ok(Some((decoder.into_frames(), orientation)))
             } else {
                 Ok(None)
             }
@@ -531,6 +562,81 @@ mod tests {
         assert_eq!(loaded.record.exif, ExifData::None);
     }
 
+    /// An EXIF block with the orientation tag and nothing else.
+    fn exif_with_orientation(value: u8) -> Vec<u8> {
+        let mut exif = b"MM\0*\0\0\0\x08\0\x01".to_vec(); // big-endian, IFD at 8, one entry
+        exif.extend_from_slice(&[0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, value, 0, 0]); // Orientation, SHORT, count 1
+        exif.extend_from_slice(&[0, 0, 0, 0]); // no next IFD
+        exif
+    }
+
+    /// The same PNG with its eXIf chunk moved behind the pixel data, where
+    /// ImageMagick writes it.
+    fn with_trailing_exif(png: &[u8]) -> Vec<u8> {
+        let mut out = png[..8].to_vec();
+        let mut exif = Vec::new();
+        let mut at = 8;
+        while at < png.len() {
+            let len = u32::from_be_bytes([png[at], png[at + 1], png[at + 2], png[at + 3]]) as usize;
+            let chunk = &png[at..at + 12 + len];
+            match &chunk[4..8] {
+                b"eXIf" => exif = chunk.to_vec(),
+                b"IEND" => {
+                    out.extend_from_slice(&exif);
+                    out.extend_from_slice(chunk);
+                }
+                _ => out.extend_from_slice(chunk),
+            }
+            at += 12 + len;
+        }
+        out
+    }
+
+    /// A 3x2 file with orientation 6 reports a quarter turn and converts
+    /// to 2x3, as a JPEG, as a PNG with the eXIf chunk before the pixel
+    /// data and as a PNG with the chunk after it.
+    #[test]
+    fn orientation_comes_from_the_exif_tag() {
+        use image::codecs::jpeg::JpegEncoder;
+        use image::codecs::png::PngEncoder;
+        use image::{ExtendedColorType, ImageEncoder};
+
+        let dir = tempfile::tempdir().unwrap();
+        let pixels = [0u8; 3 * 2 * 3];
+
+        let jpeg = dir.path().join("turned.jpg");
+        let mut encoder = JpegEncoder::new(File::create(&jpeg).unwrap());
+        encoder.set_exif_metadata(exif_with_orientation(6)).unwrap();
+        encoder.write_image(&pixels, 3, 2, ExtendedColorType::Rgb8).unwrap();
+
+        let png = dir.path().join("turned.png");
+        let mut encoder = PngEncoder::new(File::create(&png).unwrap());
+        encoder.set_exif_metadata(exif_with_orientation(6)).unwrap();
+        encoder.write_image(&pixels, 3, 2, ExtendedColorType::Rgb8).unwrap();
+
+        let trailing = dir.path().join("trailing.png");
+        let moved = with_trailing_exif(&std::fs::read(&png).unwrap());
+        assert!(find_trailing_exif(&moved).is_some());
+        std::fs::write(&trailing, moved).unwrap();
+
+        for path in [&jpeg, &png, &trailing] {
+            let loaded = load_image(path);
+            assert_eq!(loaded.orientation, Orientation::Rotate90, "{}", path.display());
+            assert!(matches!(loaded.record.exif, ExifData::Present(_)), "{}", path.display());
+            let shown = crate::decode::image_to_color_image(loaded.image.unwrap(), loaded.orientation);
+            assert_eq!(shown.size, [2, 3], "{}", path.display());
+        }
+
+        let plain = dir.path().join("plain.png");
+        PngEncoder::new(File::create(&plain).unwrap())
+            .write_image(&pixels, 3, 2, ExtendedColorType::Rgb8)
+            .unwrap();
+        let loaded = load_image(&plain);
+        assert_eq!(loaded.orientation, Orientation::NoTransforms);
+        let shown = crate::decode::image_to_color_image(loaded.image.unwrap(), loaded.orientation);
+        assert_eq!(shown.size, [3, 2]);
+    }
+
     fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
         let mut out = (data.len() as u32).to_be_bytes().to_vec();
         out.extend_from_slice(kind);
@@ -600,7 +706,7 @@ mod tests {
             eprintln!("  iso:         {:?}", exif.iso);
             eprintln!("  bias:        {:?}", exif.exposure_bias);
             eprintln!("  date:        {:?}", exif.date_taken);
-            eprintln!("  orientation: {:?}", exif.orientation);
+            eprintln!("  orientation: {:?}", loaded.orientation);
             eprintln!("  location:    {:?}", exif.location);
             eprintln!("  tags:        {}", exif.tags.len());
             if print_tags {

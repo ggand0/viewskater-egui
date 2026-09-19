@@ -65,9 +65,6 @@ pub struct ExifSummary {
     pub exposure_bias: Option<String>,
     /// "2026-03-27 14:05:12", with " +08:00" when the offset tag exists.
     pub date_taken: Option<String>,
-    /// The orientation tag as text, "Rotate 90° CW". The app does not
-    /// apply it yet, so this says how the picture on screen is turned.
-    pub orientation: Option<String>,
     pub location: Option<Location>,
     /// Every tag as (name, value) in file order.
     pub tags: Vec<(String, String)>,
@@ -152,7 +149,6 @@ fn summarize(exif: &Exif) -> ExifSummary {
         iso: uint(Tag::PhotographicSensitivity).map(iso_text),
         exposure_bias: srational(Tag::ExposureBiasValue).and_then(ev_text),
         date_taken: date_text(exif),
-        orientation: uint(Tag::Orientation).and_then(orientation_text),
         location: location(exif),
         tags: exif
             .fields()
@@ -286,22 +282,6 @@ pub(crate) fn ev_text(r: SRational) -> Option<String> {
     }
     let sign = if ev < 0.0 { '-' } else { '+' };
     Some(format!("{sign}{} EV", trim_decimal(ev.abs(), 1)))
-}
-
-/// The orientation tag as the turn that would show the picture upright.
-pub(crate) fn orientation_text(v: u32) -> Option<String> {
-    let s = match v {
-        1 => "Normal",
-        2 => "Mirror horizontal",
-        3 => "Rotate 180°",
-        4 => "Mirror vertical",
-        5 => "Mirror horizontal, rotate 270° CW",
-        6 => "Rotate 90° CW",
-        7 => "Mirror horizontal, rotate 90° CW",
-        8 => "Rotate 90° CCW",
-        _ => return None,
-    };
-    Some(s.to_string())
 }
 
 /// DateTimeOriginal with OffsetTimeOriginal, else DateTime with
@@ -521,15 +501,6 @@ mod tests {
     }
 
     #[test]
-    fn orientation_as_a_turn() {
-        assert_eq!(orientation_text(1).unwrap(), "Normal");
-        assert_eq!(orientation_text(6).unwrap(), "Rotate 90° CW");
-        assert_eq!(orientation_text(8).unwrap(), "Rotate 90° CCW");
-        assert_eq!(orientation_text(3).unwrap(), "Rotate 180°");
-        assert_eq!(orientation_text(9), None);
-    }
-
-    #[test]
     fn dms_to_decimal_degrees() {
         // 8° 24' 34.2"
         let d = dms_to_decimal(&[r(8, 1), r(24, 1), r(342, 10)]).unwrap();
@@ -633,7 +604,6 @@ mod tests {
         assert!(s.tags.iter().any(|(n, _)| n == "MeteringMode"));
         assert!(s.tags.iter().any(|(n, _)| n == "WhiteBalance"));
         assert!(s.tags.iter().any(|(n, _)| n == "Flash"));
-        assert_eq!(s.orientation.as_deref(), Some("Rotate 90° CW"));
         assert_eq!(s.date_taken.as_deref(), Some("2026-03-27 14:05:12 +08:00"));
         assert_eq!(s.location, None);
         assert!(s.tags.iter().any(|(n, v)| n == "Model" && v == "\"NIKON D750\""));

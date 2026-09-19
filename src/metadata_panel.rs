@@ -32,7 +32,7 @@ const ROW_H: f32 = 18.0;
 /// Size of the section headings and the buttons next to them.
 const HEADING_SIZE: f32 = 10.5;
 /// Width of the right-aligned label column in the File, Camera and
-/// Location sections. "Orientation" is the longest label.
+/// Location sections.
 const LABEL_W: f32 = 68.0;
 /// Gap between a label and its value.
 const LABEL_GAP: f32 = 8.0;
@@ -215,7 +215,7 @@ fn show_pane(ui: &mut egui::Ui, pane: &Pane, filter: &mut String, f: &Frame) -> 
     ui.scope(|ui| {
         // Rows sit exactly ROW_H apart. Headings bring their own space.
         ui.spacing_mut().item_spacing.y = 0.0;
-        file_section(ui, path, pane, record, exif, f.theme);
+        file_section(ui, path, pane, record, f.theme);
         match record.map(|r| &r.exif) {
             Some(ExifData::Present(exif)) => {
                 camera_section(ui, exif, f.theme);
@@ -238,7 +238,6 @@ fn file_section(
     path: &Path,
     pane: &Pane,
     record: Option<&MetadataRecord>,
-    exif: Option<&ExifSummary>,
     theme: &UiTheme,
 ) {
     let name = path
@@ -276,11 +275,6 @@ fn file_section(
     if let Some(texture) = &pane.current_texture {
         let [w, h] = texture.size();
         row(ui, "Dims", &format!("{w}x{h} · {}", megapixels(w, h)), theme);
-    }
-    // The app shows the pixels as stored, so a turned picture gets a line
-    // saying which turn would show it upright.
-    if let Some(turn) = exif.and_then(|e| e.orientation.as_deref()).filter(|o| *o != "Normal") {
-        row(ui, "Orientation", turn, theme);
     }
     if let Some(modified) = record.and_then(|r| r.modified.as_deref()) {
         row(ui, "Modified", modified, theme);
