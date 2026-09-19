@@ -104,8 +104,8 @@ impl Location {
 /// Parse an EXIF block as the decoder handed it over and format it.
 ///
 /// `bytes` starts at the TIFF header, or at an "Exif\0\0" prefix some
-/// WebP encoders keep; the prefix is removed. Tags that kamadak cannot
-/// parse are skipped and the rest is kept; a block that cannot be parsed
+/// WebP encoders keep. The prefix is removed. Tags that kamadak cannot
+/// parse are skipped and the rest is kept. A block that cannot be parsed
 /// at all is `Unreadable`.
 pub fn parse_exif(bytes: Vec<u8>) -> ExifData {
     let bytes = strip_exif_prefix(bytes);
@@ -170,7 +170,7 @@ fn ascii_bytes(f: &Field) -> Option<&[u8]> {
     }
 }
 
-/// The first ASCII string of a field, trimmed of blanks and NULs; None
+/// The first ASCII string of a field, trimmed of blanks and NULs. None
 /// when empty.
 fn ascii_value(f: &Field) -> Option<String> {
     let bytes = ascii_bytes(f)?;
@@ -256,7 +256,7 @@ pub(crate) fn aperture_text(r: Rational) -> Option<String> {
 
 /// "50 mm", or "24 mm (6.86 mm)" when the 35 mm equivalent tag exists and
 /// differs. The equivalent comes first because it is the number that
-/// compares across cameras and the one Photos shows for a phone; the real
+/// compares across cameras and the one Photos shows for a phone. The real
 /// length follows in brackets.
 pub(crate) fn focal_text(r: Rational, equivalent_35mm: Option<u32>) -> Option<String> {
     if r.num == 0 || r.denom == 0 {
@@ -627,8 +627,8 @@ mod tests {
         assert_eq!(s.iso.as_deref(), Some("ISO 400"));
         assert_eq!(s.focal_length.as_deref(), Some("50 mm"));
         assert_eq!(s.exposure_bias.as_deref(), Some("+0.3 EV"));
-        // Program, metering, white balance and flash are not curated;
-        // they stay reachable in the tag list.
+        // Program, metering, white balance and flash are not curated.
+        // They stay reachable in the tag list.
         assert!(s.tags.iter().any(|(n, v)| n == "ExposureProgram" && v == "aperture priority"));
         assert!(s.tags.iter().any(|(n, _)| n == "MeteringMode"));
         assert!(s.tags.iter().any(|(n, _)| n == "WhiteBalance"));

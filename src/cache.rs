@@ -340,7 +340,7 @@ impl SlidingWindowCache {
     /// Initialize the cache centered on `center_index`.
     /// Synchronously decodes the center image, spawns background loads for
     /// neighbors. Returns the centre image's record, which exists even
-    /// when its pixels failed to decode; None for an empty list.
+    /// when its pixels failed to decode. None for an empty list.
     pub fn initialize(&mut self, center_index: usize, image_paths: &[PathBuf]) -> Option<Arc<MetadataRecord>> {
         let num_files = image_paths.len();
         if num_files == 0 {

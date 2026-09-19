@@ -166,7 +166,9 @@ fn ensure_image_decoders_registered() {
 }
 
 /// A file opened for display: the decoded pixels, or the error, and the
-/// facts about the file either way.
+/// facts about the file either way. This is what a decode returns, before
+/// any GPU upload. `cache::Loaded` is the cache entry after the upload, a
+/// texture with the same record.
 pub struct LoadedImage {
     pub image: ImageResult<DynamicImage>,
     pub record: Arc<MetadataRecord>,
@@ -206,14 +208,14 @@ fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<DynamicI
             record.exif = ExifData::Unreadable;
         }
     }
-    // The allocation check `ImageReader::decode` makes before decoding;
+    // The allocation check `ImageReader::decode` makes before decoding.
     // `into_decoder` leaves it to the caller.
     let mut limits = image::Limits::default();
     limits.reserve(decoder.total_bytes())?;
     decoder.set_limits(limits)?;
     let image = DynamicImage::from_decoder(decoder);
 
-    // A PNG may carry its eXIf chunk after the pixel data; ImageMagick
+    // A PNG may carry its eXIf chunk after the pixel data. ImageMagick
     // writes it there. The decoder only knew the chunks before the first
     // IDAT when it was asked above. Looked for after the decode, when the
     // file is in the OS cache, so it costs one read of the file's tail.

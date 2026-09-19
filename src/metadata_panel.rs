@@ -51,9 +51,9 @@ pub(crate) struct PanelOutput {
     pub rect: egui::Rect,
     /// The action row's trash button was clicked, for this pane index.
     pub trash_clicked: Option<usize>,
-    /// The resize drag ended this frame; the panel is now this wide.
+    /// The resize drag ended this frame. The panel is now this wide.
     pub resized_to: Option<f32>,
-    /// The All EXIF header was clicked; the list is now open (true) or
+    /// The All EXIF header was clicked. The list is now open (true) or
     /// closed.
     pub all_exif_toggled: Option<bool>,
 }
@@ -118,7 +118,7 @@ pub(crate) fn show_metadata_panel(
                 });
         });
 
-    // The resize handle is egui's own widget under the panel id; its
+    // The resize handle is egui's own widget under the panel id. Its
     // release is the moment to store the width, not every drag frame.
     let resized_to = ctx
         .read_response(panel_id.with("__resize"))
@@ -201,7 +201,7 @@ fn show_pane(ui: &mut egui::Ui, pane: &Pane, filter: &mut String, f: &Frame) -> 
     });
 
     ui.scope(|ui| {
-        // Rows sit exactly ROW_H apart; headings bring their own space.
+        // Rows sit exactly ROW_H apart. Headings bring their own space.
         ui.spacing_mut().item_spacing.y = 0.0;
         file_section(ui, path, pane, record, exif, f.theme);
         match record.map(|r| &r.exif) {
@@ -510,8 +510,8 @@ fn folder_cell(ui: &mut egui::Ui, folder: &str, cell_w: f32) {
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ui.set_min_width(cell_w);
-            // Already cut to fit, from the left; egui must not cut it again
-            // from the right and add a tooltip of its own.
+            // Already cut to fit, from the left. Letting egui cut it again from
+            // the right would add a tooltip of its own.
             let response = ui.add(
                 egui::Label::new(egui::RichText::new(shown).font(font).color(VALUE_COLOR)).extend(),
             );

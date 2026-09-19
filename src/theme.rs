@@ -65,7 +65,7 @@ impl UiTheme {
         let mut style = (*ctx.style()).clone();
         style.visuals = egui::Visuals::dark();
 
-        // Text selection is its own colour; the accent goes to active
+        // Text selection is its own colour. The accent goes to active
         // widgets and hyperlinks.
         style.visuals.selection.bg_fill = self.text_selection;
         style.visuals.selection.stroke.color = egui::Color32::from_gray(240);
