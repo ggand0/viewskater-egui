@@ -915,6 +915,7 @@ impl eframe::App for App {
             }
         } else {
             self.metadata_panel_rect = None;
+            self.metadata_panel.filter_has_focus = false;
         }
 
         // Footer — in fullscreen, revealed when cursor near bottom edge

@@ -368,7 +368,7 @@ pub struct AppSettings {
     pub accent_preset: AccentPreset,
     /// Accent used when `accent_preset` is `Custom`, as sRGB bytes.
     pub custom_accent: [u8; 3],
-    /// The metadata side panel (Ctrl+I). Off until someone turns it on.
+    /// The metadata side panel (the I key). Off until someone turns it on.
     pub show_metadata_panel: bool,
     /// Width of the metadata panel in points, stored when a resize drag
     /// ends.

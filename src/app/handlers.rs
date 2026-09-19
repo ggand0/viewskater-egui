@@ -255,10 +255,13 @@ impl App {
     }
 
     pub(super) fn handle_keyboard(&mut self, ctx: &egui::Context) {
-        // A text field has focus (the metadata panel's filter box): the
-        // keys are text now, not shortcuts. A and D would move six images
-        // while someone types "camera" otherwise.
-        if ctx.wants_keyboard_input() {
+        // The metadata panel's filter box has focus: the keys are text
+        // now, not shortcuts. A and D would move six images while someone
+        // types "camera" otherwise. The panel reports this itself.
+        // `ctx.wants_keyboard_input()` is true for any focused widget, and
+        // Tab, the footer toggle, also moves egui's focus onto a button,
+        // which would leave every shortcut dead after one Tab press.
+        if self.metadata_panel.filter_has_focus {
             return;
         }
 

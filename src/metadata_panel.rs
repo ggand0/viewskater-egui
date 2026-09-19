@@ -22,6 +22,7 @@ pub(crate) const DEFAULT_WIDTH: f32 = 260.0;
 const MIN_WIDTH: f32 = 200.0;
 const MAX_WIDTH: f32 = 480.0;
 const PANEL_ID: &str = "metadata_panel";
+const FILTER_ID: &str = "metadata_panel_filter";
 
 const VALUE_COLOR: egui::Color32 = egui::Color32::from_gray(220);
 /// Text size of every row.
@@ -43,6 +44,9 @@ pub(crate) struct PanelState {
     pub active_pane: usize,
     /// Text in the All EXIF filter box.
     pub filter: String,
+    /// The filter box had keyboard focus last frame, so key presses are
+    /// text for it and not shortcuts.
+    pub filter_has_focus: bool,
 }
 
 /// What the panel reports to the app after a frame.
@@ -72,6 +76,7 @@ struct Frame<'a> {
 struct PaneOutput {
     trash_clicked: bool,
     all_exif_toggled: Option<bool>,
+    filter_has_focus: bool,
 }
 
 pub(crate) fn show_metadata_panel(
@@ -85,6 +90,7 @@ pub(crate) fn show_metadata_panel(
     let panel_id = egui::Id::new(PANEL_ID);
     let mut trash_clicked = None;
     let mut all_exif_toggled = None;
+    let mut filter_has_focus = false;
     let response = egui::SidePanel::right(panel_id)
         .resizable(true)
         .default_width(width)
@@ -115,8 +121,10 @@ pub(crate) fn show_metadata_panel(
                         trash_clicked = Some(pane_index);
                     }
                     all_exif_toggled = out.all_exif_toggled;
+                    filter_has_focus = out.filter_has_focus;
                 });
         });
+    state.filter_has_focus = filter_has_focus;
 
     // The resize handle is egui's own widget under the panel id. Its
     // release is the moment to store the width, not every drag frame.
@@ -178,7 +186,11 @@ fn tab_strip(ui: &mut egui::Ui, count: usize, active: &mut usize, theme: &UiThem
 }
 
 fn show_pane(ui: &mut egui::Ui, pane: &Pane, filter: &mut String, f: &Frame) -> PaneOutput {
-    let mut out = PaneOutput { trash_clicked: false, all_exif_toggled: None };
+    let mut out = PaneOutput {
+        trash_clicked: false,
+        all_exif_toggled: None,
+        filter_has_focus: false,
+    };
     let Some(path) = pane.image_paths.get(pane.current_index) else {
         ui.add_space(12.0);
         ui.vertical_centered(|ui| {
@@ -214,7 +226,9 @@ fn show_pane(ui: &mut egui::Ui, pane: &Pane, filter: &mut String, f: &Frame) -> 
         }
     });
     if let Some(exif) = exif {
-        out.all_exif_toggled = all_exif_section(ui, exif, filter, f);
+        let all_exif = all_exif_section(ui, exif, filter, f);
+        out.all_exif_toggled = all_exif.toggled;
+        out.filter_has_focus = all_exif.filter_has_focus;
     }
     out
 }
@@ -330,14 +344,19 @@ fn location_section(ui: &mut egui::Ui, exif: &ExifSummary, theme: &UiTheme) {
     });
 }
 
-/// Every tag behind a collapsing header with a filter box. Returns the
-/// new open state when the header was clicked.
+struct AllExifOutput {
+    /// The new open state when the header was clicked.
+    toggled: Option<bool>,
+    filter_has_focus: bool,
+}
+
+/// Every tag behind a collapsing header with a filter box.
 fn all_exif_section(
     ui: &mut egui::Ui,
     exif: &ExifSummary,
     filter: &mut String,
     f: &Frame,
-) -> Option<bool> {
+) -> AllExifOutput {
     let needle = filter.trim().to_lowercase();
     let rows: Vec<&(String, String)> = if needle.is_empty() {
         exif.tags.iter().collect()
@@ -362,19 +381,21 @@ fn all_exif_section(
     .id_salt("all_exif")
     .open(Some(f.all_exif_open))
     .show_unindented(ui, |ui| {
-        ui.add(
+        let filter_box = ui.add(
             egui::TextEdit::singleline(filter)
+                .id(egui::Id::new(FILTER_ID))
                 .hint_text("Filter")
                 .font(egui::FontId::proportional(TEXT_SIZE))
                 .desired_width(f32::INFINITY),
         );
         ui.add_space(4.0);
         tag_rows(ui, &rows, f);
+        filter_box.has_focus()
     });
-    header
-        .header_response
-        .clicked()
-        .then_some(!f.all_exif_open)
+    AllExifOutput {
+        toggled: header.header_response.clicked().then_some(!f.all_exif_open),
+        filter_has_focus: header.body_returned.unwrap_or(false),
+    }
 }
 
 /// Tag name and value, one line each, drawn only for the rows inside the
@@ -673,6 +694,50 @@ mod tests {
         );
         // 200 rows of ROW_H, plus the parent's item spacing after the list.
         assert!((first - 200.0 * ROW_H).abs() <= 4.0, "{first}");
+    }
+
+    /// Shortcuts are blocked only while the filter box has focus. egui's
+    /// own `wants_keyboard_input` is also true when Tab, the footer
+    /// toggle, has moved focus onto a button, and blocking on that left
+    /// every shortcut dead after one Tab press.
+    #[test]
+    fn only_the_filter_box_counts_as_typing() {
+        let theme = UiTheme::teal_dark();
+        let exif = ExifSummary {
+            tags: vec![("Make".to_string(), "Canon".to_string())],
+            ..Default::default()
+        };
+        let run = |focus_filter: bool| -> (bool, bool) {
+            let ctx = egui::Context::default();
+            let mut filter = String::new();
+            let mut reported = false;
+            for _ in 0..3 {
+                let _ = ctx.run(input(260.0, 600.0), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let button = ui.button("some other widget");
+                        if focus_filter {
+                            ui.memory_mut(|m| m.request_focus(egui::Id::new(FILTER_ID)));
+                        } else {
+                            button.request_focus();
+                        }
+                        let frame = Frame {
+                            theme: &theme,
+                            viewport: egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(260.0, 600.0),
+                            ),
+                            content_top: ui.cursor().top(),
+                            all_exif_open: true,
+                        };
+                        reported = all_exif_section(ui, &exif, &mut filter, &frame).filter_has_focus;
+                    });
+                });
+            }
+            (reported, ctx.wants_keyboard_input())
+        };
+
+        assert_eq!(run(true), (true, true), "filter box focused");
+        assert_eq!(run(false), (false, true), "a button focused: egui's flag is set, ours is not");
     }
 
     #[test]
