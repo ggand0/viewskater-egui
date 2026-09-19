@@ -326,6 +326,11 @@ pub struct App {
     /// Files waiting for the user to confirm a permanent delete (Windows
     /// locations without a Recycle Bin).
     pending_permanent_delete: Option<Vec<PathBuf>>,
+    /// The metadata side panel's state between frames.
+    metadata_panel: crate::metadata_panel::PanelState,
+    /// Where the metadata panel is this frame, so the fullscreen FPS
+    /// overlay stays left of it.
+    metadata_panel_rect: Option<egui::Rect>,
 }
 
 impl App {
@@ -369,6 +374,8 @@ impl App {
             bench: bench::BenchState::new(bench_opts, app_start),
             toast: None,
             pending_permanent_delete: None,
+            metadata_panel: Default::default(),
+            metadata_panel_rect: None,
         };
 
         if !paths.is_empty() {
@@ -876,6 +883,41 @@ impl eframe::App for App {
             self.menu_open = false;
         }
 
+        // Metadata panel (right). The I key shows and hides it, in
+        // fullscreen too. Added before the footer and the slider so they
+        // shrink with it.
+        if self.settings.show_metadata_panel {
+            let out = crate::metadata_panel::show_metadata_panel(
+                ctx,
+                &self.panes,
+                &mut self.metadata_panel,
+                self.settings.metadata_panel_width,
+                self.settings.metadata_all_exif_open,
+                &self.theme,
+            );
+            self.metadata_panel_rect = Some(out.rect);
+            if let Some(pane_idx) = out.trash_clicked {
+                self.trash_pane_image(pane_idx, ctx);
+            }
+            let mut settings_changed = false;
+            if let Some(width) = out.resized_to {
+                if (width - self.settings.metadata_panel_width).abs() >= 0.5 {
+                    self.settings.metadata_panel_width = width;
+                    settings_changed = true;
+                }
+            }
+            if let Some(open) = out.all_exif_toggled {
+                self.settings.metadata_all_exif_open = open;
+                settings_changed = true;
+            }
+            if settings_changed {
+                self.settings.save();
+            }
+        } else {
+            self.metadata_panel_rect = None;
+            self.metadata_panel.filter_has_focus = false;
+        }
+
         // Footer — in fullscreen, revealed when cursor near bottom edge
         if self.settings.show_footer && (!self.is_fullscreen || cursor_near_bottom) {
             let clicked = menu::show_footer(
@@ -898,10 +940,19 @@ impl eframe::App for App {
         // Central panel (must be last — fills remaining space)
         self.show_central_panel(ctx);
 
-        // FPS overlay in fullscreen (painted over central panel, top-right corner)
+        // The metadata panel follows the pane whose image was clicked.
+        for (i, pane) in self.panes.iter_mut().enumerate() {
+            if pane.take_image_click() {
+                self.metadata_panel.active_pane = i;
+            }
+        }
+
+        // FPS overlay in fullscreen (painted over the central panel, top
+        // right corner, left of the metadata panel when that is open)
         if self.is_fullscreen && self.settings.show_fps {
             let fps = self.perf.fps_text(cache_mb);
             let screen = ctx.screen_rect();
+            let right = self.metadata_panel_rect.map_or(screen.max.x, |rect| rect.min.x);
             let font = egui::FontId::monospace(14.0);
             let color = egui::Color32::from_rgba_unmultiplied(220, 220, 220, 200);
             let bg = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140);
@@ -909,7 +960,7 @@ impl eframe::App for App {
             let text_size = galley.size();
             let margin = 8.0;
             let pos = egui::pos2(
-                screen.max.x - text_size.x - margin * 2.0,
+                right - text_size.x - margin * 2.0,
                 screen.min.y + margin,
             );
             let bg_rect = egui::Rect::from_min_size(

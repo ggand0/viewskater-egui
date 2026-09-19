@@ -1,15 +1,16 @@
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::fs::{DirEntry, File, OpenOptions};
-use std::io::{BufReader, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, Once};
 use std::time::SystemTime;
 
-use image::{AnimationDecoder, DynamicImage, ImageFormat, ImageReader, ImageResult};
+use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat, ImageReader, ImageResult};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
+use crate::metadata::{self, ExifData, MetadataRecord};
 use crate::settings::{ImageDiscoveryOptions, ImageSortKey, SortDirection};
 
 const APP_NAME: &str = "viewskater-egui";
@@ -164,10 +165,145 @@ fn ensure_image_decoders_registered() {
     });
 }
 
-/// Convenience wrapper around ImageReader::open().with_guessed_format().decode()
-pub fn open_image(path: &Path) -> ImageResult<DynamicImage> {
+/// A file opened for display: the decoded pixels, or the error, and the
+/// facts about the file either way. This is what a decode returns, before
+/// any GPU upload. `cache::Loaded` is the cache entry after the upload, a
+/// texture with the same record.
+pub struct LoadedImage {
+    pub image: ImageResult<DynamicImage>,
+    pub record: Arc<MetadataRecord>,
+}
+
+/// Open the file, read its facts and its EXIF block, then decode the
+/// pixels. Every place that decodes an image for display goes through
+/// here, so the record exists for anything that can be on screen, and
+/// it exists when the pixels fail too.
+///
+/// The EXIF bytes come from the decoder that is about to decode the
+/// pixels: for JPEG the file is already in memory, for PNG the chunk was
+/// read with the header, for WebP it is one small read, for JXL the
+/// container is read for decoding anyway. There is no second pass over
+/// the file.
+pub fn load_image(path: &Path) -> LoadedImage {
     ensure_image_decoders_registered();
-    ImageReader::open(path)?.with_guessed_format()?.decode()
+    let mut record = MetadataRecord::default();
+    if let Ok(meta) = std::fs::metadata(path) {
+        record.file_size = Some(meta.len());
+        record.modified = meta.modified().ok().map(local_time_text);
+    }
+    let image = decode_into(path, &mut record);
+    LoadedImage { image, record: Arc::new(record) }
+}
+
+fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<DynamicImage> {
+    let reader = ImageReader::open(path)?.with_guessed_format()?;
+    let format = reader.format();
+    record.format = format_name(format, path);
+    let mut decoder = reader.into_decoder()?;
+    match decoder.exif_metadata() {
+        Ok(Some(bytes)) => record.exif = metadata::parse_exif(bytes),
+        Ok(None) => {}
+        Err(e) => {
+            log::debug!("EXIF read failed for {}: {e}", path.display());
+            record.exif = ExifData::Unreadable;
+        }
+    }
+    // The allocation check `ImageReader::decode` makes before decoding.
+    // `into_decoder` leaves it to the caller.
+    let mut limits = image::Limits::default();
+    limits.reserve(decoder.total_bytes())?;
+    decoder.set_limits(limits)?;
+    let image = DynamicImage::from_decoder(decoder);
+
+    // A PNG may carry its eXIf chunk after the pixel data. ImageMagick
+    // writes it there. The decoder only knew the chunks before the first
+    // IDAT when it was asked above. Looked for after the decode, when the
+    // file is in the OS cache, so it costs one read of the file's tail.
+    if format == Some(ImageFormat::Png) && record.exif == ExifData::None {
+        if let Some(bytes) = png_trailing_exif(path) {
+            record.exif = metadata::parse_exif(bytes);
+        }
+    }
+    image
+}
+
+/// How much of a PNG's end is searched for a trailing eXIf chunk. EXIF
+/// blocks are at most a few tens of kilobytes and only text chunks and
+/// IEND follow them.
+const PNG_TAIL_BYTES: u64 = 128 * 1024;
+
+fn png_trailing_exif(path: &Path) -> Option<Vec<u8>> {
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(PNG_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut tail = Vec::with_capacity((len - start) as usize);
+    file.read_to_end(&mut tail).ok()?;
+    find_trailing_exif(&tail).map(<[u8]>::to_vec)
+}
+
+/// The payload of an eXIf chunk in the tail of a PNG file. Chunks can only
+/// be walked forwards, and the tail may start in the middle of compressed
+/// pixel data that happens to contain the letters "eXIf". So a candidate
+/// is accepted only when the chunks after it, walked by their length
+/// fields, arrive at an empty IEND chunk.
+fn find_trailing_exif(tail: &[u8]) -> Option<&[u8]> {
+    let mut search_end = tail.len();
+    while let Some(pos) = tail[..search_end].windows(4).rposition(|w| w == b"eXIf") {
+        if let Some(payload) = pos.checked_sub(4).and_then(|start| exif_if_chunks_reach_iend(tail, start)) {
+            return Some(payload);
+        }
+        search_end = pos;
+    }
+    None
+}
+
+/// Walk chunks from `first`, which claims to be an eXIf chunk. Returns its
+/// payload if the walk ends at an empty IEND inside `tail`.
+fn exif_if_chunks_reach_iend(tail: &[u8], first: usize) -> Option<&[u8]> {
+    let mut at = first;
+    let mut payload = None;
+    loop {
+        let header = tail.get(at..at.checked_add(8)?)?;
+        let len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        let kind = &header[4..8];
+        let data_end = at.checked_add(8)?.checked_add(len)?;
+        let next = data_end.checked_add(4)?; // the CRC
+        if next > tail.len() {
+            return None;
+        }
+        if at == first {
+            payload = Some(&tail[at + 8..data_end]);
+        }
+        if kind == b"IEND" {
+            return if len == 0 { payload } else { None };
+        }
+        at = next;
+    }
+}
+
+/// The container format for the File section. Formats decoded through a
+/// hook (JXL) have no `ImageFormat`, so the extension names them.
+fn format_name(format: Option<ImageFormat>, path: &Path) -> Option<String> {
+    let name = match format {
+        Some(ImageFormat::Jpeg) => "JPEG",
+        Some(ImageFormat::Png) => "PNG",
+        Some(ImageFormat::WebP) => "WebP",
+        Some(ImageFormat::Gif) => "GIF",
+        Some(ImageFormat::Tiff) => "TIFF",
+        Some(ImageFormat::Bmp) => "BMP",
+        Some(ImageFormat::Qoi) => "QOI",
+        Some(ImageFormat::Tga) => "TGA",
+        Some(other) => return Some(format!("{other:?}").to_uppercase()),
+        None => return path.extension().map(|e| e.to_string_lossy().to_uppercase()),
+    };
+    Some(name.to_string())
+}
+
+fn local_time_text(time: SystemTime) -> String {
+    chrono::DateTime::<chrono::Local>::from(time)
+        .format("%Y-%m-%d %H:%M")
+        .to_string()
 }
 
 pub fn open_animation_frames(path: &Path) -> ImageResult<Option<image::Frames<'static>>> {
@@ -371,5 +507,108 @@ pub fn open_in_file_explorer(path: &str) {
         let _ = Command::new("open").arg(path).spawn();
     } else if cfg!(target_os = "linux") {
         let _ = Command::new("xdg-open").arg(path).spawn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A file whose pixels cannot be decoded still gets its file facts,
+    /// so the panel and the footer have something to show next to
+    /// "Failed to load image".
+    #[test]
+    fn record_exists_when_the_pixels_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.jpg");
+        std::fs::write(&path, b"this is not a jpeg").unwrap();
+
+        let loaded = load_image(&path);
+
+        assert!(loaded.image.is_err());
+        assert_eq!(loaded.record.file_size, Some(18));
+        assert!(loaded.record.modified.is_some());
+        assert_eq!(loaded.record.exif, ExifData::None);
+    }
+
+    fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut out = (data.len() as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        out.extend_from_slice(&[0, 0, 0, 0]); // CRC, not checked
+        out
+    }
+
+    #[test]
+    fn trailing_exif_is_found_behind_the_pixel_data() {
+        // The end of some IDAT data that happens to contain "eXIf", then
+        // the real chunk, a text chunk and IEND, as ImageMagick writes.
+        let mut tail = b"\x9c\x00\x00\x10\x00eXIf compressed bytes that are not a chunk".to_vec();
+        tail.extend(chunk(b"eXIf", b"MM\0*real exif"));
+        tail.extend(chunk(b"tEXt", b"exif:Make\0Apple"));
+        tail.extend(chunk(b"IEND", b""));
+        assert_eq!(find_trailing_exif(&tail), Some(&b"MM\0*real exif"[..]));
+
+        // Only the decoy: nothing.
+        let mut decoy = b"\x00\x00\x00\x05eXIfabcde".to_vec();
+        decoy.extend(chunk(b"IDAT", b"more pixels"));
+        assert_eq!(find_trailing_exif(&decoy), None);
+
+        // No eXIf at all.
+        let mut plain = chunk(b"IDAT", b"pixels");
+        plain.extend(chunk(b"IEND", b""));
+        assert_eq!(find_trailing_exif(&plain), None);
+
+        // A chunk whose length runs past the end is refused.
+        let mut cut = (1000u32).to_be_bytes().to_vec();
+        cut.extend_from_slice(b"eXIfshort");
+        assert_eq!(find_trailing_exif(&cut), None);
+    }
+
+    /// Reads real photos and prints their records, to compare with
+    /// exiftool or `identify -format '%[EXIF:*]'`:
+    ///
+    ///     VIEWSKATER_EXIF_FILES=a.jpg:b.jpg cargo test real_photos -- --ignored --nocapture
+    ///
+    /// The list uses the platform's path list separator, `:` or `;` on
+    /// Windows.
+    ///
+    /// Set VIEWSKATER_EXIF_TAGS=1 to print every tag as the panel lists it.
+    #[test]
+    #[ignore]
+    fn real_photos_have_camera_fields() {
+        let Ok(list) = std::env::var("VIEWSKATER_EXIF_FILES") else {
+            eprintln!("VIEWSKATER_EXIF_FILES is not set");
+            return;
+        };
+        let print_tags = std::env::var("VIEWSKATER_EXIF_TAGS").is_ok();
+        for path in std::env::split_paths(&list) {
+            let loaded = load_image(&path);
+            let path = path.display();
+            assert!(loaded.image.is_ok(), "{path}: {:?}", loaded.image.err());
+            let record = &loaded.record;
+            eprintln!("{path}");
+            eprintln!("  file: {:?} bytes, modified {:?}, {:?}", record.file_size, record.modified, record.format);
+            let ExifData::Present(exif) = &record.exif else {
+                panic!("{path}: {:?}", record.exif);
+            };
+            eprintln!("  camera:      {:?}", exif.camera);
+            eprintln!("  lens:        {:?}", exif.lens);
+            eprintln!("  focal:       {:?}", exif.focal_length);
+            eprintln!("  aperture:    {:?}", exif.aperture);
+            eprintln!("  shutter:     {:?}", exif.shutter);
+            eprintln!("  iso:         {:?}", exif.iso);
+            eprintln!("  bias:        {:?}", exif.exposure_bias);
+            eprintln!("  date:        {:?}", exif.date_taken);
+            eprintln!("  orientation: {:?}", exif.orientation);
+            eprintln!("  location:    {:?}", exif.location);
+            eprintln!("  tags:        {}", exif.tags.len());
+            if print_tags {
+                for (name, value) in &exif.tags {
+                    eprintln!("    {name} = {value}");
+                }
+            }
+            assert!(exif.camera.is_some(), "{path}: no camera");
+        }
     }
 }

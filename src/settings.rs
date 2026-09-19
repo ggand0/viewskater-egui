@@ -368,6 +368,13 @@ pub struct AppSettings {
     pub accent_preset: AccentPreset,
     /// Accent used when `accent_preset` is `Custom`, as sRGB bytes.
     pub custom_accent: [u8; 3],
+    /// The metadata side panel (the I key). Off until someone turns it on.
+    pub show_metadata_panel: bool,
+    /// Width of the metadata panel in points, stored when a resize drag
+    /// ends.
+    pub metadata_panel_width: f32,
+    /// Whether the panel's All EXIF list is expanded.
+    pub metadata_all_exif_open: bool,
 }
 
 impl Default for AppSettings {
@@ -389,6 +396,9 @@ impl Default for AppSettings {
             image_discovery_options: ImageDiscoveryOptions::default(),
             accent_preset: AccentPreset::default(),
             custom_accent: crate::theme::DEFAULT_ACCENT,
+            show_metadata_panel: false,
+            metadata_panel_width: crate::metadata_panel::DEFAULT_WIDTH,
+            metadata_all_exif_open: false,
         }
     }
 }
@@ -700,6 +710,9 @@ fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiT
         });
         ui.horizontal(|ui| {
             toggle_switch(ui, &mut settings.show_footer_buttons, "Footer Buttons", theme);
+        });
+        ui.horizontal(|ui| {
+            toggle_switch(ui, &mut settings.show_metadata_panel, "Metadata Panel", theme);
         });
         ui.horizontal(|ui| {
             toggle_switch(ui, &mut settings.show_fps, "FPS Overlay", theme);

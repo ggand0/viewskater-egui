@@ -303,6 +303,16 @@ pub(crate) fn show_menu_bar(
                 });
                 hover_row(ui, theme, ml, mw, |ui| {
                     ui.horizontal(|ui| {
+                        toggle_switch(
+                            ui,
+                            &mut settings.show_metadata_panel,
+                            "Metadata Panel  I",
+                            theme,
+                        );
+                    });
+                });
+                hover_row(ui, theme, ml, mw, |ui| {
+                    ui.horizontal(|ui| {
                         toggle_switch(ui, &mut settings.show_fps, "FPS Overlay", theme);
                     });
                 });
@@ -470,7 +480,11 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool, theme: 
             .current_texture
             .as_ref()
             .map(|tex| format!("{}x{}", tex.size()[0], tex.size()[1]));
-        let file_size = std::fs::metadata(path).ok().map(|m| format_file_size(m.len()));
+        let file_size = pane
+            .current_record
+            .as_ref()
+            .and_then(|record| record.file_size)
+            .map(format_file_size);
 
         // Measure all widths upfront to decide what fits
         let total = ui.available_width();
@@ -564,7 +578,7 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool, theme: 
 /// The footer's Move to Trash button: a wastebasket glyph from egui's
 /// bundled emoji font, dim at rest and accent on hover like every other
 /// control.
-fn trash_button(ui: &mut egui::Ui, theme: &UiTheme) -> egui::Response {
+pub(crate) fn trash_button(ui: &mut egui::Ui, theme: &UiTheme) -> egui::Response {
     let size = egui::vec2(20.0, 18.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let color = if response.hovered() {
@@ -583,7 +597,7 @@ fn trash_button(ui: &mut egui::Ui, theme: &UiTheme) -> egui::Response {
     response.on_hover_text(format!("Move to Trash ({shortcut})"))
 }
 
-fn format_file_size(bytes: u64) -> String {
+pub(crate) fn format_file_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{} B", bytes)
     } else if bytes < 1024 * 1024 {

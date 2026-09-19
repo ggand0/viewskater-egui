@@ -21,6 +21,8 @@ mod cache;
 mod decode;
 mod file_io;
 mod menu;
+mod metadata;
+mod metadata_panel;
 mod pane;
 mod perf;
 mod platform;

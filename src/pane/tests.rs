@@ -167,7 +167,7 @@ fn settle(p: &mut Pane) {
         p.poll_cache();
         let all_loaded = p.cache.as_ref().is_some_and(|c| {
             (0..p.image_paths.len()).all(|i| {
-                c.current_texture_for(i).is_some()
+                c.loaded_for(i).is_some()
                     || c.summary().is_empty()
                     || !(c.first_file_index_for_test()..c.first_file_index_for_test() + 5).contains(&i)
             })

@@ -30,6 +30,10 @@ pub struct UiTheme {
     pub toggle_knob: egui::Color32,
     /// Menu item hover background
     pub menu_hover: egui::Color32,
+    /// Background of selected text and of the selected item in a list.
+    /// Independent of the accent: an accent-coloured selection over text is
+    /// hard on the eyes. VS Code's dark-theme selection blue.
+    pub text_selection: egui::Color32,
 }
 
 /// Default accent, the teal from the iced ViewSkater version, as sRGB bytes.
@@ -49,6 +53,7 @@ impl UiTheme {
             toggle_off: egui::Color32::from_gray(50),
             toggle_knob: egui::Color32::from_gray(240),
             menu_hover: egui::Color32::from_gray(60),
+            text_selection: egui::Color32::from_rgb(38, 79, 120),
         }
     }
 
@@ -60,9 +65,10 @@ impl UiTheme {
         let mut style = (*ctx.style()).clone();
         style.visuals = egui::Visuals::dark();
 
-        // Accent colors for selection, active widgets, hyperlinks
-        style.visuals.selection.bg_fill = self.accent;
-        style.visuals.selection.stroke.color = egui::Color32::from_gray(30);
+        // Text selection is its own colour. The accent goes to active
+        // widgets and hyperlinks.
+        style.visuals.selection.bg_fill = self.text_selection;
+        style.visuals.selection.stroke.color = egui::Color32::from_gray(240);
         style.visuals.hyperlink_color = self.accent;
         style.visuals.widgets.active.bg_fill = self.accent;
 
