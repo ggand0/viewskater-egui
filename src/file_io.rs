@@ -706,7 +706,7 @@ mod tests {
             eprintln!("  iso:         {:?}", exif.iso);
             eprintln!("  bias:        {:?}", exif.exposure_bias);
             eprintln!("  date:        {:?}", exif.date_taken);
-            eprintln!("  orientation: {:?}", loaded.orientation);
+            eprintln!("  orientation: {:?}, applied {:?}", exif.orientation, loaded.orientation);
             eprintln!("  location:    {:?}", exif.location);
             eprintln!("  tags:        {}", exif.tags.len());
             if print_tags {
