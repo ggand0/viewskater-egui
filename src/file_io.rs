@@ -265,6 +265,9 @@ fn decode_raw_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<(Dyn
         record.exif = metadata::parse_exif(bytes);
     }
     let Some(jpeg) = contents.jpeg else {
+        // An expected case with its own message in the pane, so the
+        // callers do not log it as a failure.
+        log::debug!("No embedded JPEG in {}", path.display());
         record.no_embedded_preview = true;
         return Err(ImageError::Unsupported(UnsupportedError::from_format_and_kind(
             ImageFormatHint::PathExtension(path.extension().unwrap_or_default().into()),
