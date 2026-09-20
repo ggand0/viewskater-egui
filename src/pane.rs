@@ -523,8 +523,9 @@ impl Pane {
                 });
             }
         } else {
+            let no_preview = self.current_record.as_ref().is_some_and(|record| record.no_embedded_preview);
             ui.centered_and_justified(|ui| {
-                ui.label("Failed to load image");
+                ui.label(if no_preview { "No embedded preview in this RAW file" } else { "Failed to load image" });
             });
         }
         false

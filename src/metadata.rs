@@ -29,6 +29,9 @@ pub struct MetadataRecord {
     /// Container format as the content sniffer saw it: "JPEG", "PNG", "JXL".
     pub format: Option<String>,
     pub exif: ExifData,
+    /// A camera RAW file with no JPEG inside it, so there is nothing to
+    /// show. The pane has its own message for this.
+    pub no_embedded_preview: bool,
 }
 
 /// The EXIF part of a record.
