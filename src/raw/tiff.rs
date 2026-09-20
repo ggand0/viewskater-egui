@@ -446,11 +446,12 @@ mod tests {
     }
 
     /// Sony ARW: the JPEG offset and length tags in IFD0, a thumbnail in
-    /// IFD1, a full-size JPEG in IFD2. The 1616 wide one is shown.
+    /// IFD1, a full-size JPEG in IFD2. The 1616x1080 one is shown.
     #[test]
     fn arw_shows_the_mid_size_jpeg() {
-        let (thumb, preview, full) = (jpeg(160, 120), jpeg(1616, 8), jpeg(6000, 8));
+        let (thumb, preview, full) = (jpeg(160, 120), jpeg(1616, 1080), jpeg(3000, 2000));
         assert!(preview.len() < full.len());
+        let full_at = 8000 + preview.len() as u32 + 100;
         let mut tiff = TiffBuilder::new(ByteOrder::Little, TIFF_MAGIC, 8);
         tiff.ifd(8, &[
             (TAG_COMPRESSION, TYPE_SHORT, 1, 6),
@@ -464,15 +465,31 @@ mod tests {
             (TAG_JPEG_LENGTH, TYPE_LONG, 1, thumb.len() as u32),
         ], 200);
         tiff.ifd(200, &[
-            (TAG_JPEG_OFFSET, TYPE_LONG, 1, 20_000),
+            (TAG_JPEG_OFFSET, TYPE_LONG, 1, full_at),
             (TAG_JPEG_LENGTH, TYPE_LONG, 1, full.len() as u32),
         ], 0);
-        assert!(thumb.len() < 7000 && preview.len() < 12_000);
+        assert!(thumb.len() < 7000);
         tiff.place(300, &thumb);
         tiff.place(8000, &preview);
-        tiff.place(20_000, &full);
+        tiff.place(full_at as usize, &full);
 
-        assert_eq!(shown(tiff.finish()), Some((1616, 8, Orientation::Rotate90)));
+        assert_eq!(shown(tiff.finish()), Some((1616, 1080, Orientation::Rotate90)));
+
+        // A 4:3 camera's 1440x1080 is shown too, and not the full-size JPEG.
+        let (preview, full) = (jpeg(1440, 1080), jpeg(3000, 2250));
+        let full_at = 1000 + preview.len() as u32 + 100;
+        let mut tiff = TiffBuilder::new(ByteOrder::Little, TIFF_MAGIC, 8);
+        tiff.ifd(8, &[
+            (TAG_JPEG_OFFSET, TYPE_LONG, 1, 1000),
+            (TAG_JPEG_LENGTH, TYPE_LONG, 1, preview.len() as u32),
+        ], 100);
+        tiff.ifd(100, &[
+            (TAG_JPEG_OFFSET, TYPE_LONG, 1, full_at),
+            (TAG_JPEG_LENGTH, TYPE_LONG, 1, full.len() as u32),
+        ], 0);
+        tiff.place(1000, &preview);
+        tiff.place(full_at as usize, &full);
+        assert_eq!(shown(tiff.finish()), Some((1440, 1080, Orientation::NoTransforms)));
     }
 
     /// Nikon NEF, big-endian here: IFD0 is an uncompressed thumbnail and

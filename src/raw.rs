@@ -21,10 +21,14 @@ pub(crate) use tiff::test_files;
 pub const EXTENSIONS: &[&str] = &["arw", "cr2", "dng", "nef", "rw2"];
 
 /// The JPEG shown for a RAW file is the smallest embedded one with at
-/// least this many pixels on its long side, or the largest when none has.
-/// Sony's 1616x1080 and Panasonic's 1920 wide JPEGs pass. The 160x120
-/// thumbnails do not.
-const MIN_LONG_SIDE: u32 = 1600;
+/// least this many pixels on its short side, or the largest when none
+/// has. Cameras store a JPEG of about 1080 lines for their own screen:
+/// 1616x1080 from Sony, 1620x1080 from Nikon and Canon, 1440x1080 from a
+/// Canon with a 4:3 sensor, 1920 wide from Panasonic. Those pass, and the
+/// 160x120 thumbnails do not. The long side would not do as the measure,
+/// because 1440 is less than 1600 and that file's other JPEG is full
+/// size.
+const MIN_SHORT_SIDE: u32 = 1000;
 
 /// The file is untrusted input, so the walk over a JPEG's segments has a
 /// limit like the walks over the containers.
@@ -125,7 +129,7 @@ impl<R: Read + Seek> Source<R> {
     }
 }
 
-/// The smallest JPEG with `MIN_LONG_SIDE` pixels on its long side, or
+/// The smallest JPEG with `MIN_SHORT_SIDE` pixels on its short side, or
 /// the one with the most pixels when none is that large. Candidates are
 /// tried from the fewest bytes up, so a file with a mid-size JPEG never
 /// has the header of its full-size one read.
@@ -137,7 +141,7 @@ fn pick_for_display<R: Read + Seek>(source: &mut Source<R>, jpegs: &[Span]) -> i
         let Some((width, height)) = lossy_jpeg_size(source, span)? else {
             continue;
         };
-        if width.max(height) >= MIN_LONG_SIDE {
+        if width.min(height) >= MIN_SHORT_SIDE {
             return Ok(Some(span));
         }
         let pixels = width as u64 * height as u64;
