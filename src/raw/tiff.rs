@@ -8,6 +8,7 @@
 //! - CR2: IFD0, as a single strip with JPEG compression.
 //! - DNG: a child IFD, as a single strip with JPEG compression.
 //! - RW2: IFD0, in Panasonic's tag 0x002E.
+//! - ORF: inside the maker note, see `olympus_jpegs`.
 //!
 //! KDC, NRW, PEF, RWL, SR2, SRF and SRW files have theirs in one of these
 //! places too.
@@ -35,6 +36,8 @@ const MAX_EXIF_VALUE: u64 = 128 * 1024;
 
 const TIFF_MAGIC: u16 = 42;
 const RW2_MAGIC: u16 = 0x55;
+/// An ORF has the letters "RO" or "RS" where a TIFF file has 42.
+const ORF_MAGICS: [u16; 2] = [0x4F52, 0x5352];
 
 const TAG_PANASONIC_JPEG: u16 = 0x002E;
 const TAG_COMPRESSION: u16 = 0x0103;
@@ -48,6 +51,12 @@ const TAG_JPEG_LENGTH: u16 = 0x0202;
 pub(super) const TAG_EXIF_IFD: u16 = 0x8769;
 pub(super) const TAG_GPS_IFD: u16 = 0x8825;
 pub(super) const TAG_INTEROP_IFD: u16 = 0xA005;
+const TAG_MAKER_NOTE: u16 = 0x927C;
+/// Tags of the Olympus maker note and of its camera settings IFD.
+const TAG_OLYMPUS_THUMBNAIL: u16 = 0x0100;
+const TAG_OLYMPUS_CAMERA_SETTINGS: u16 = 0x2020;
+const TAG_OLYMPUS_PREVIEW_START: u16 = 0x0101;
+const TAG_OLYMPUS_PREVIEW_LENGTH: u16 = 0x0102;
 
 const TYPE_SHORT: u16 = 3;
 pub(super) const TYPE_LONG: u16 = 4;
@@ -179,6 +188,9 @@ pub(super) fn find<R: Read + Seek>(source: &mut Source<R>) -> io::Result<Option<
     let Some(tiff) = tiff else {
         return Ok(None);
     };
+    if ORF_MAGICS.contains(&tiff.magic) {
+        found.jpegs.extend(olympus_jpegs(source, tiff)?);
+    }
     found.exif = Some(exif_block(source, tiff)?);
     Ok(Some(found))
 }
@@ -220,7 +232,7 @@ fn walk<R: Read + Seek>(source: &mut Source<R>) -> io::Result<(Found, Option<Tif
         _ => return Ok((found, None)),
     };
     let magic = order.u16(&header[2..4]);
-    if magic != TIFF_MAGIC && magic != RW2_MAGIC {
+    if magic != TIFF_MAGIC && magic != RW2_MAGIC && !ORF_MAGICS.contains(&magic) {
         return Ok((found, None));
     }
 
@@ -289,8 +301,8 @@ fn walk<R: Read + Seek>(source: &mut Source<R>) -> io::Result<(Found, Option<Tif
 /// The start of the file, long enough to hold IFD0, the Exif, GPS and
 /// interoperability IFDs and every value their entries point to. Offsets
 /// in a TIFF file count from the start of the file, so this prefix is a
-/// TIFF block that an EXIF parser reads as it is. An RW2 gets the TIFF
-/// magic number in place of Panasonic's.
+/// TIFF block that an EXIF parser reads as it is. An RW2 and an ORF get
+/// the TIFF magic number in place of their own.
 ///
 /// Values may lie behind image data, so the prefix can contain a
 /// thumbnail. It stops at `MAX_EXIF_PREFIX`, and the parser skips a value
@@ -321,7 +333,7 @@ fn exif_block<R: Read + Seek>(source: &mut Source<R>, tiff: TiffHeader) -> io::R
     }
     let mut block = vec![0; end.min(MAX_EXIF_PREFIX).min(source.len) as usize];
     source.read_at(0, &mut block)?;
-    if tiff.magic == RW2_MAGIC && block.len() >= 4 {
+    if tiff.magic != TIFF_MAGIC && block.len() >= 4 {
         let magic = match tiff.order {
             ByteOrder::Little => TIFF_MAGIC.to_le_bytes(),
             ByteOrder::Big => TIFF_MAGIC.to_be_bytes(),
@@ -329,6 +341,79 @@ fn exif_block<R: Read + Seek>(source: &mut Source<R>, tiff: TiffHeader) -> io::R
         block[2..4].copy_from_slice(&magic);
     }
     Ok(block)
+}
+
+/// The JPEGs of an Olympus or OM System ORF. They are inside the maker
+/// note, which the Exif IFD points to. The maker note is a header and an
+/// IFD:
+///
+/// - Tag 0x0100 is a 160x120 JPEG.
+/// - Tag 0x2020 points to the camera settings IFD, where tags 0x0101 and
+///   0x0102 are the offset and the length of a 1600x1200 or 3200x2400
+///   JPEG.
+///
+/// The header is "OLYMPUS\0" and four more bytes, or "OM SYSTEM\0\0\0" and
+/// four more bytes on bodies from 2022 on, and the offsets in the maker
+/// note count from its start. Bodies up to about 2007 have "OLYMP\0"
+/// and two more bytes, offsets that count from the start of the file, and
+/// only the small JPEG.
+fn olympus_jpegs<R: Read + Seek>(source: &mut Source<R>, tiff: TiffHeader) -> io::Result<Vec<Span>> {
+    let mut jpegs = Vec::new();
+    let order = tiff.order;
+    let find = |ifd: &[u8], tag: u16| -> Option<(u32, u32, bool)> {
+        ifd[..ifd.len() - 4]
+            .chunks_exact(12)
+            .map(|bytes| Entry { order, bytes })
+            .find(|entry| entry.tag() == tag)
+            .map(|entry| (entry.value_or_offset(), entry.count(), entry.single().is_some()))
+    };
+
+    let Some(ifd0) = read_ifd(source, order, tiff.ifd0)? else {
+        return Ok(jpegs);
+    };
+    let Some((exif_at, _, true)) = find(&ifd0, TAG_EXIF_IFD) else {
+        return Ok(jpegs);
+    };
+    let Some(exif) = read_ifd(source, order, exif_at as u64)? else {
+        return Ok(jpegs);
+    };
+    let Some((note, _, false)) = find(&exif, TAG_MAKER_NOTE) else {
+        return Ok(jpegs);
+    };
+    let note = note as u64;
+
+    let mut header = [0; 12];
+    if !source.contains(note, header.len() as u64) {
+        return Ok(jpegs);
+    }
+    source.read_at(note, &mut header)?;
+    // Where the maker note's IFD starts, and what its offsets count from.
+    let (ifd_at, base) = if header.starts_with(b"OLYMPUS\0") {
+        (note + 12, note)
+    } else if header.starts_with(b"OM SYSTEM\0") {
+        (note + 16, note)
+    } else if header.starts_with(b"OLYMP\0") {
+        (note + 8, 0)
+    } else {
+        return Ok(jpegs);
+    };
+    let Some(note_ifd) = read_ifd(source, order, ifd_at)? else {
+        return Ok(jpegs);
+    };
+
+    if let Some((offset, len, false)) = find(&note_ifd, TAG_OLYMPUS_THUMBNAIL) {
+        jpegs.push(Span { offset: base + offset as u64, len: len as u64 });
+    }
+    if let Some((settings_at, _, true)) = find(&note_ifd, TAG_OLYMPUS_CAMERA_SETTINGS) {
+        if let Some(settings) = read_ifd(source, order, base + settings_at as u64)? {
+            let start = find(&settings, TAG_OLYMPUS_PREVIEW_START);
+            let len = find(&settings, TAG_OLYMPUS_PREVIEW_LENGTH);
+            if let (Some((start, _, true)), Some((len, _, true))) = (start, len) {
+                jpegs.push(Span { offset: base + start as u64, len: len as u64 });
+            }
+        }
+    }
+    Ok(jpegs)
 }
 
 /// The offsets in a SubIFDs tag. One offset sits in the entry, more are
@@ -630,6 +715,62 @@ mod tests {
         ], 0);
         tiff.place(1000, &preview);
         assert_eq!(shown(tiff.finish()), Some((1920, 8, Orientation::Rotate180)));
+    }
+
+    /// An ORF with the maker note at 300. `header` is the maker note's
+    /// header, and `base` is what the offsets inside it count from.
+    fn orf(header: &[u8], base: u32, thumbnail: &[u8], preview: Option<&[u8]>) -> Vec<u8> {
+        let note_ifd = 300 + header.len();
+        let mut tiff = TiffBuilder::new(ByteOrder::Little, ORF_MAGICS[0], 8);
+        tiff.ifd(8, &[
+            (TAG_ORIENTATION, TYPE_SHORT, 1, 6),
+            (TAG_EXIF_IFD, TYPE_LONG, 1, 100),
+        ], 0);
+        tiff.ifd(100, &[(TAG_MAKER_NOTE, 7, 200, 300)], 0);
+        tiff.place(300, header);
+        let mut entries = vec![(TAG_OLYMPUS_THUMBNAIL, 7, thumbnail.len() as u32, 1000 - base)];
+        if let Some(preview) = preview {
+            entries.push((TAG_OLYMPUS_CAMERA_SETTINGS, TYPE_IFD, 1, 400 - base));
+            tiff.ifd(400, &[
+                (TAG_OLYMPUS_PREVIEW_START, TYPE_LONG, 1, 20_000 - base),
+                (TAG_OLYMPUS_PREVIEW_LENGTH, TYPE_LONG, 1, preview.len() as u32),
+            ], 0);
+            tiff.place(20_000, preview);
+        }
+        tiff.ifd(note_ifd, &entries, 0);
+        tiff.place(1000, thumbnail);
+        tiff.finish()
+    }
+
+    /// Olympus ORF: the JPEGs are inside the maker note, and its offsets
+    /// count from the maker note's start. OM System bodies have a longer
+    /// header. Old bodies count from the start of the file and only have
+    /// the 160x120 JPEG.
+    #[test]
+    fn orf_jpegs_are_inside_the_maker_note() {
+        let (thumbnail, preview) = (jpeg(160, 120), jpeg(1600, 1200));
+        assert!(thumbnail.len() < 19_000);
+
+        let olympus = orf(b"OLYMPUS\0II\x03\0", 300, &thumbnail, Some(&preview));
+        assert_eq!(shown(olympus), Some((1600, 1200, Orientation::Rotate90)));
+
+        let om_system = orf(b"OM SYSTEM\0\0\0II\x04\0", 300, &thumbnail, Some(&preview));
+        assert_eq!(shown(om_system), Some((1600, 1200, Orientation::Rotate90)));
+
+        let old = orf(b"OLYMP\0\x01\0", 0, &thumbnail, None);
+        assert_eq!(shown(old), Some((160, 120, Orientation::Rotate90)));
+
+        // A maker note from another maker: nothing, and no error.
+        let other = orf(b"Nikon\0\x02\x10\0\0", 300, &thumbnail, Some(&preview));
+        assert_eq!(shown(other), None);
+
+        // The EXIF block of an ORF parses, with 42 written over "RO".
+        let block = contents(Cursor::new(orf(b"OLYMPUS\0II\x03\0", 300, &thumbnail, None))).unwrap().exif.unwrap();
+        assert_eq!(block[..4], *b"II*\0");
+        let ExifData::Present(exif) = parse_exif(block) else {
+            panic!("the block did not parse");
+        };
+        assert_eq!(exif.orientation.as_deref(), Some("Rotate 90° CW"));
     }
 
     const TAG_MAKE: u16 = 0x010F;

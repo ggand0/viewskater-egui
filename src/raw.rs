@@ -28,7 +28,8 @@ pub(crate) mod test_files {
 /// Only formats that were tried on real files. The TIFF walk finds the
 /// JPEG in all of these but `cr3` and `raf`.
 pub const EXTENSIONS: &[&str] = &[
-    "arw", "cr2", "cr3", "dng", "kdc", "nef", "nrw", "pef", "raf", "rw2", "rwl", "sr2", "srf", "srw",
+    "arw", "cr2", "cr3", "dng", "kdc", "nef", "nrw", "orf", "ori", "pef", "raf", "rw2", "rwl", "sr2", "srf",
+    "srw",
 ];
 
 /// The JPEG shown for a RAW file is the smallest embedded one with at
