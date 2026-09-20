@@ -216,6 +216,7 @@ fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<(Dynamic
             record.exif = ExifData::Unreadable;
         }
     }
+    // The image crate scans the same EXIF bytes for this one tag, apart from `parse_exif`, but the cost is well under 1 µs and trivial.
     let mut orientation = exif_orientation(&mut decoder, format);
     // The allocation check `ImageReader::decode` makes before decoding.
     // `into_decoder` leaves it to the caller.
