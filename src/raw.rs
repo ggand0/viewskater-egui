@@ -38,6 +38,11 @@ const MAX_IFDS: usize = 64;
 const MAX_ENTRIES: usize = 1024;
 const MAX_SUB_IFDS: usize = 16;
 const MAX_JPEG_SEGMENTS: usize = 256;
+/// The most that is read from the start of a file for its EXIF.
+const MAX_EXIF_PREFIX: u64 = 4 * 1024 * 1024;
+/// A value larger than this is not worth extending the read for. An RW2
+/// has its embedded JPEG and its sensor data as tag values in IFD0.
+const MAX_EXIF_VALUE: u64 = 128 * 1024;
 
 const TIFF_MAGIC: u16 = 42;
 const RW2_MAGIC: u16 = 0x55;
@@ -51,6 +56,9 @@ const TAG_STRIP_BYTE_COUNTS: u16 = 0x0117;
 const TAG_SUB_IFDS: u16 = 0x014A;
 const TAG_JPEG_OFFSET: u16 = 0x0201;
 const TAG_JPEG_LENGTH: u16 = 0x0202;
+const TAG_EXIF_IFD: u16 = 0x8769;
+const TAG_GPS_IFD: u16 = 0x8825;
+const TAG_INTEROP_IFD: u16 = 0xA005;
 
 const TYPE_SHORT: u16 = 3;
 const TYPE_LONG: u16 = 4;
@@ -61,12 +69,17 @@ const COMPRESSION_JPEG: u32 = 7;
 /// The photometric interpretation of sensor data, a color filter array.
 const PHOTOMETRIC_CFA: u32 = 32803;
 
-/// The JPEG to show for a RAW file.
-pub struct EmbeddedJpeg {
-    pub bytes: Vec<u8>,
+/// What is read from a RAW file.
+pub struct RawContents {
+    /// The JPEG to show, or `None` when the file has none.
+    pub jpeg: Option<Vec<u8>>,
     /// The turn the RAW file's orientation tag asks for. The embedded
     /// JPEG of an ARW, CR2, DNG or NEF has no EXIF block of its own.
     pub orientation: Orientation,
+    /// The start of the file, up to the end of its EXIF values, as a
+    /// TIFF block that `metadata::parse_exif` reads. `None` when the file
+    /// is not TIFF-based.
+    pub exif: Option<Vec<u8>>,
 }
 
 pub fn is_raw(path: &Path) -> bool {
@@ -75,21 +88,26 @@ pub fn is_raw(path: &Path) -> bool {
         .is_some_and(|ext| EXTENSIONS.iter().any(|raw| ext.eq_ignore_ascii_case(raw)))
 }
 
-/// The embedded JPEG of the RAW file at `path`, or `None` when the file
-/// has none.
-pub fn read_embedded_jpeg(path: &Path) -> io::Result<Option<EmbeddedJpeg>> {
-    embedded_jpeg(std::fs::File::open(path)?)
+pub fn read(path: &Path) -> io::Result<RawContents> {
+    contents(std::fs::File::open(path)?)
 }
 
-fn embedded_jpeg(file: impl Read + Seek) -> io::Result<Option<EmbeddedJpeg>> {
+fn contents(file: impl Read + Seek) -> io::Result<RawContents> {
     let mut source = Source::new(file)?;
     let found = walk(&mut source)?;
-    let Some(jpeg) = pick_for_display(&mut source, &found.jpegs)? else {
-        return Ok(None);
+    let exif = match found.tiff {
+        Some(tiff) => Some(exif_block(&mut source, tiff)?),
+        None => None,
     };
-    let mut bytes = vec![0; jpeg.len as usize];
-    source.read_at(jpeg.offset, &mut bytes)?;
-    Ok(Some(EmbeddedJpeg { bytes, orientation: found.orientation }))
+    let jpeg = match pick_for_display(&mut source, &found.jpegs)? {
+        Some(span) => {
+            let mut bytes = vec![0; span.len as usize];
+            source.read_at(span.offset, &mut bytes)?;
+            Some(bytes)
+        }
+        None => None,
+    };
+    Ok(RawContents { jpeg, orientation: found.orientation, exif })
 }
 
 /// Where a JPEG is inside the file.
@@ -102,6 +120,15 @@ struct Span {
 struct Found {
     jpegs: Vec<Span>,
     orientation: Orientation,
+    /// `None` when the file is not TIFF-based.
+    tiff: Option<TiffHeader>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TiffHeader {
+    order: ByteOrder,
+    magic: u16,
+    ifd0: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +211,19 @@ impl Entry<'_> {
         self.order.u32(&self.bytes[8..12])
     }
 
+    /// How many bytes the value takes. More than four means the entry
+    /// holds the value's offset. Zero for a type TIFF does not define.
+    fn value_size(&self) -> u64 {
+        let unit = match self.kind() {
+            1 | 2 | 6 | 7 => 1,
+            3 | 8 => 2,
+            4 | 9 | 11 | 13 => 4,
+            5 | 10 | 12 => 8,
+            _ => 0,
+        };
+        unit * self.count() as u64
+    }
+
     /// A single SHORT or LONG value. A SHORT sits in the first two of the
     /// four value bytes.
     fn single(&self) -> Option<u32> {
@@ -198,12 +238,33 @@ impl Entry<'_> {
     }
 }
 
+/// The entries of the IFD at `offset`, 12 bytes each, followed by the
+/// four bytes with the offset of the next IFD in the chain. `None` when
+/// there is no readable IFD at `offset`.
+fn read_ifd<R: Read + Seek>(source: &mut Source<R>, order: ByteOrder, offset: u64) -> io::Result<Option<Vec<u8>>> {
+    let mut count = [0; 2];
+    if !source.contains(offset, 2) {
+        return Ok(None);
+    }
+    source.read_at(offset, &mut count)?;
+    let count = order.u16(&count) as usize;
+    if count == 0 || count > MAX_ENTRIES {
+        return Ok(None);
+    }
+    let mut body = vec![0; count * 12 + 4];
+    if !source.contains(offset + 2, body.len() as u64) {
+        return Ok(None);
+    }
+    source.read_at(offset + 2, &mut body)?;
+    Ok(Some(body))
+}
+
 /// Walk every IFD of a TIFF-based RAW file and collect the places that
 /// may hold a JPEG, plus IFD0's orientation. A file that is not
 /// TIFF-based gives an empty result. An IFD that cannot be read is
 /// skipped and the walk goes on.
 fn walk<R: Read + Seek>(source: &mut Source<R>) -> io::Result<Found> {
-    let mut found = Found { jpegs: Vec::new(), orientation: Orientation::NoTransforms };
+    let mut found = Found { jpegs: Vec::new(), orientation: Orientation::NoTransforms, tiff: None };
     let mut header = [0; 8];
     if source.read_at(0, &mut header).is_err() {
         return Ok(found);
@@ -218,7 +279,10 @@ fn walk<R: Read + Seek>(source: &mut Source<R>) -> io::Result<Found> {
         return Ok(found);
     }
 
-    let mut pending = vec![order.u32(&header[4..8]) as u64];
+    let ifd0 = order.u32(&header[4..8]) as u64;
+    found.tiff = Some(TiffHeader { order, magic, ifd0 });
+
+    let mut pending = vec![ifd0];
     let mut seen = Vec::new();
     while let Some(offset) = pending.pop() {
         if offset == 0 || seen.contains(&offset) || seen.len() == MAX_IFDS {
@@ -227,21 +291,10 @@ fn walk<R: Read + Seek>(source: &mut Source<R>) -> io::Result<Found> {
         let is_ifd0 = seen.is_empty();
         seen.push(offset);
 
-        let mut count = [0; 2];
-        if !source.contains(offset, 2) {
+        let Some(body) = read_ifd(source, order, offset)? else {
             continue;
-        }
-        source.read_at(offset, &mut count)?;
-        let count = order.u16(&count) as usize;
-        if count == 0 || count > MAX_ENTRIES {
-            continue;
-        }
-        // The entries and the offset of the next IFD in the chain.
-        let mut body = vec![0; count * 12 + 4];
-        if !source.contains(offset + 2, body.len() as u64) {
-            continue;
-        }
-        source.read_at(offset + 2, &mut body)?;
+        };
+        let count = body.len() / 12;
 
         let mut compression = None;
         let mut photometric = None;
@@ -288,6 +341,51 @@ fn walk<R: Read + Seek>(source: &mut Source<R>) -> io::Result<Found> {
     found.jpegs.sort_by_key(|span| (span.offset, span.len));
     found.jpegs.dedup();
     Ok(found)
+}
+
+/// The start of the file, long enough to hold IFD0, the Exif, GPS and
+/// interoperability IFDs and every value their entries point to. Offsets
+/// in a TIFF file count from the start of the file, so this prefix is a
+/// TIFF block that an EXIF parser reads as it is. An RW2 gets the TIFF
+/// magic number in place of Panasonic's.
+///
+/// Values may lie behind image data, so the prefix can contain a
+/// thumbnail. It stops at `MAX_EXIF_PREFIX`, and the parser skips a value
+/// that is cut off or was left out for its size.
+fn exif_block<R: Read + Seek>(source: &mut Source<R>, tiff: TiffHeader) -> io::Result<Vec<u8>> {
+    let mut end = 8;
+    let mut ifds = vec![tiff.ifd0];
+    // IFD0 and the three it leads to, and no more than that whatever a
+    // broken file points at.
+    for _ in 0..4 {
+        let Some(offset) = ifds.pop() else {
+            break;
+        };
+        let Some(body) = read_ifd(source, tiff.order, offset)? else {
+            continue;
+        };
+        end = end.max(offset + 2 + body.len() as u64);
+        for bytes in body[..body.len() - 4].chunks_exact(12) {
+            let entry = Entry { order: tiff.order, bytes };
+            if matches!(entry.tag(), TAG_EXIF_IFD | TAG_GPS_IFD | TAG_INTEROP_IFD) {
+                ifds.extend(entry.single().map(u64::from));
+            }
+            let size = entry.value_size();
+            if size > 4 && size <= MAX_EXIF_VALUE && source.contains(entry.value_or_offset() as u64, size) {
+                end = end.max(entry.value_or_offset() as u64 + size);
+            }
+        }
+    }
+    let mut block = vec![0; end.min(MAX_EXIF_PREFIX).min(source.len) as usize];
+    source.read_at(0, &mut block)?;
+    if tiff.magic == RW2_MAGIC && block.len() >= 4 {
+        let magic = match tiff.order {
+            ByteOrder::Little => TIFF_MAGIC.to_le_bytes(),
+            ByteOrder::Big => TIFF_MAGIC.to_be_bytes(),
+        };
+        block[2..4].copy_from_slice(&magic);
+    }
+    Ok(block)
 }
 
 /// The offsets in a SubIFDs tag. One offset sits in the entry, more are
@@ -457,14 +555,16 @@ pub(crate) mod test_files {
         out
     }
 
-    /// A file laid out like a Nikon NEF: `jpeg` in a child IFD of IFD0
-    /// and `orientation` in IFD0.
+    /// A file laid out like a Nikon NEF: `jpeg` in a child IFD of IFD0,
+    /// `orientation` and the make "NIKON" in IFD0.
     pub(crate) fn nef_like(jpeg: &[u8], orientation: u32) -> Vec<u8> {
         let mut tiff = TiffBuilder::new(ByteOrder::Little, TIFF_MAGIC, 8);
         tiff.ifd(8, &[
+            (0x010F, 2, 6, 60),
             (TAG_ORIENTATION, TYPE_SHORT, 1, orientation),
             (TAG_SUB_IFDS, TYPE_LONG, 1, 100),
         ], 0);
+        tiff.place(60, b"NIKON\0");
         tiff.ifd(100, &[
             (TAG_COMPRESSION, TYPE_SHORT, 1, 6),
             (TAG_JPEG_OFFSET, TYPE_LONG, 1, 1000),
@@ -495,6 +595,7 @@ mod tests {
 
     use super::test_files::{jpeg, TiffBuilder};
     use super::*;
+    use crate::metadata::{parse_exif, ExifData};
 
     /// The start of a lossless JPEG, as a CR2 stores its sensor data: a
     /// Huffman table segment, then a frame header with marker 0xC3.
@@ -506,8 +607,8 @@ mod tests {
     }
 
     fn shown(file: Vec<u8>) -> Option<(u32, u32, Orientation)> {
-        let found = embedded_jpeg(Cursor::new(file)).unwrap()?;
-        let image = image::load_from_memory(&found.bytes).unwrap();
+        let found = contents(Cursor::new(file)).unwrap();
+        let image = image::load_from_memory(&found.jpeg?).unwrap();
         Some((image.width(), image.height(), found.orientation))
     }
 
@@ -646,11 +747,63 @@ mod tests {
         assert_eq!(shown(tiff.finish()), Some((1920, 8, Orientation::Rotate180)));
     }
 
+    const TAG_MAKE: u16 = 0x010F;
+    const TAG_EXPOSURE_TIME: u16 = 0x829A;
+    const TYPE_ASCII: u16 = 2;
+    const TYPE_RATIONAL: u16 = 5;
+    const TYPE_UNDEFINED: u16 = 7;
+
+    /// The EXIF block reaches past a thumbnail that sits between IFD0 and
+    /// the Exif IFD, as in a Pentax DNG, and ends with the last value.
+    #[test]
+    fn exif_block_ends_with_the_last_value() {
+        let mut tiff = TiffBuilder::new(ByteOrder::Big, TIFF_MAGIC, 8);
+        tiff.ifd(8, &[
+            (TAG_MAKE, TYPE_ASCII, 7, 40),
+            (TAG_EXIF_IFD, TYPE_LONG, 1, 5000),
+        ], 0);
+        tiff.place(40, b"PENTAX\0");
+        tiff.place(100, &[0x55; 4000]);
+        tiff.ifd(5000, &[(TAG_EXPOSURE_TIME, TYPE_RATIONAL, 1, 5100)], 0);
+        tiff.place(5100, &[0, 0, 0, 1, 0, 0, 0, 125]);
+        tiff.place(9000, &[0x55; 100]);
+
+        let block = contents(Cursor::new(tiff.finish())).unwrap().exif.unwrap();
+        assert_eq!(block.len(), 5108);
+        let ExifData::Present(exif) = parse_exif(block) else {
+            panic!("the block did not parse");
+        };
+        assert_eq!(exif.camera.as_deref(), Some("PENTAX"));
+        assert_eq!(exif.shutter.as_deref(), Some("1/125 s"));
+    }
+
+    /// An RW2 has image data as tag values in IFD0. The block does not
+    /// grow to take them in, and it has the TIFF magic number.
+    #[test]
+    fn exif_block_of_an_rw2_leaves_the_image_data_out() {
+        let mut tiff = TiffBuilder::new(ByteOrder::Little, RW2_MAGIC, 24);
+        tiff.ifd(24, &[
+            (TAG_PANASONIC_JPEG, TYPE_UNDEFINED, 200_000, 3000),
+            (TAG_MAKE, TYPE_ASCII, 10, 100),
+        ], 0);
+        tiff.place(100, b"Panasonic\0");
+        tiff.place(3000, &[0x55; 200_000]);
+
+        let block = contents(Cursor::new(tiff.finish())).unwrap().exif.unwrap();
+        assert_eq!(block.len(), 110);
+        assert_eq!(block[..4], *b"II*\0");
+        let ExifData::Present(exif) = parse_exif(block) else {
+            panic!("the block did not parse");
+        };
+        assert_eq!(exif.camera.as_deref(), Some("Panasonic"));
+    }
+
     #[test]
     fn broken_files_give_nothing() {
         assert!(shown(Vec::new()).is_none());
         assert!(shown(b"II".to_vec()).is_none());
         assert!(shown(b"this is not a TIFF file at all".to_vec()).is_none());
+        assert!(contents(Cursor::new(b"this is not a TIFF file at all".to_vec())).unwrap().exif.is_none());
 
         // The first IFD is outside the file.
         assert!(shown(TiffBuilder::new(ByteOrder::Little, TIFF_MAGIC, 5000).finish()).is_none());
@@ -704,6 +857,9 @@ mod tests {
             }
             let picked = pick_for_display(&mut source, &found.jpegs).unwrap();
             eprintln!("  shown: {picked:?}");
+            if let Some(tiff) = found.tiff {
+                eprintln!("  EXIF block: {} bytes", exif_block(&mut source, tiff).unwrap().len());
+            }
         }
     }
 }

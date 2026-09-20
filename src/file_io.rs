@@ -257,18 +257,22 @@ fn decode_checked(mut decoder: impl ImageDecoder) -> ImageResult<DynamicImage> {
 }
 
 /// A camera RAW file is shown through the JPEG the camera stored inside
-/// it. The orientation is the RAW file's own tag.
+/// it. The orientation and the EXIF are the RAW file's own.
 fn decode_raw_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<(DynamicImage, Orientation)> {
     record.format = format_name(None, path);
-    let Some(embedded) = raw::read_embedded_jpeg(path).map_err(ImageError::IoError)? else {
+    let contents = raw::read(path).map_err(ImageError::IoError)?;
+    if let Some(bytes) = contents.exif {
+        record.exif = metadata::parse_exif(bytes);
+    }
+    let Some(jpeg) = contents.jpeg else {
         record.no_embedded_preview = true;
         return Err(ImageError::Unsupported(UnsupportedError::from_format_and_kind(
             ImageFormatHint::PathExtension(path.extension().unwrap_or_default().into()),
             UnsupportedErrorKind::GenericFeature("a RAW file without an embedded JPEG".into()),
         )));
     };
-    let decoder = JpegDecoder::new(Cursor::new(embedded.bytes))?;
-    Ok((decode_checked(decoder)?, embedded.orientation))
+    let decoder = JpegDecoder::new(Cursor::new(jpeg))?;
+    Ok((decode_checked(decoder)?, contents.orientation))
 }
 
 /// The turn the file's EXIF orientation tag asks for. The built-in
@@ -672,8 +676,7 @@ mod tests {
     }
 
     /// A RAW file shows its embedded JPEG, turned by the RAW file's own
-    /// orientation tag. Its thumbnail-sized first IFD is not what gets
-    /// decoded, which is what the TIFF decoder would do with it.
+    /// orientation tag, and its record has the RAW file's EXIF.
     #[test]
     fn raw_file_shows_its_embedded_jpeg() {
         let dir = tempfile::tempdir().unwrap();
@@ -685,6 +688,11 @@ mod tests {
         assert_eq!(loaded.orientation, Orientation::Rotate90);
         assert_eq!(loaded.record.format.as_deref(), Some("NEF"));
         assert!(!loaded.record.no_embedded_preview);
+        let ExifData::Present(exif) = &loaded.record.exif else {
+            panic!("{:?}", loaded.record.exif);
+        };
+        assert_eq!(exif.camera.as_deref(), Some("NIKON"));
+        assert_eq!(exif.orientation.as_deref(), Some("Rotate 90° CW"));
         let shown = crate::decode::image_to_color_image(loaded.image.unwrap(), loaded.orientation);
         assert_eq!(shown.size, [20, 30]);
     }
