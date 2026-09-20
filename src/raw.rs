@@ -5,8 +5,8 @@
 //! reads it. The sensor data is never read.
 //!
 //! There is a finder per container: `tiff` for the formats that are TIFF
-//! files (ARW, CR2, DNG, NEF, RW2), `cr3` for Canon CR3 and `raf` for
-//! Fujifilm RAF. Each returns every place that may hold a JPEG, and the
+//! files (ARW, CR2, DNG, NEF, RW2 and more), `cr3` for Canon CR3 and
+//! `raf` for Fujifilm RAF. Each returns every place that may hold a JPEG, and the
 //! frame header of each candidate decides here which one is shown.
 
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
@@ -25,7 +25,11 @@ pub(crate) mod test_files {
     pub(crate) use super::tiff::test_files::{jpeg, nef_like, without_jpeg};
 }
 
-pub const EXTENSIONS: &[&str] = &["arw", "cr2", "cr3", "dng", "nef", "raf", "rw2"];
+/// Only formats that were tried on real files. The TIFF walk finds the
+/// JPEG in all of these but `cr3` and `raf`.
+pub const EXTENSIONS: &[&str] = &[
+    "arw", "cr2", "cr3", "dng", "kdc", "nef", "nrw", "pef", "raf", "rw2", "rwl", "sr2", "srf", "srw",
+];
 
 /// The JPEG shown for a RAW file is the smallest embedded one with at
 /// least this many pixels on its short side, or the largest when none

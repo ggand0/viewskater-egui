@@ -9,6 +9,9 @@
 //! - DNG: a child IFD, as a single strip with JPEG compression.
 //! - RW2: IFD0, in Panasonic's tag 0x002E.
 //!
+//! KDC, NRW, PEF, RWL, SR2, SRF and SRW files have theirs in one of these
+//! places too.
+//!
 //! So every IFD is walked and every JPEG in it is collected. A CR2 and a
 //! DNG may store the sensor data as a lossless JPEG too. The frame header
 //! check in `pick_for_display` tells the two apart.
