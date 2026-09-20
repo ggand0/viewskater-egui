@@ -4,8 +4,9 @@
 //! RAW file next to the sensor data. This module finds that JPEG and
 //! reads it. The sensor data is never read.
 //!
-//! `tiff` finds it in the formats that are TIFF files: ARW, CR2, DNG, NEF
-//! and RW2. Each finder returns every place that may hold a JPEG, and the
+//! There is a finder per container: `tiff` for the formats that are TIFF
+//! files (ARW, CR2, DNG, NEF, RW2), `cr3` for Canon CR3 and `raf` for
+//! Fujifilm RAF. Each returns every place that may hold a JPEG, and the
 //! frame header of each candidate decides here which one is shown.
 
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
@@ -13,12 +14,18 @@ use std::path::Path;
 
 use image::metadata::Orientation;
 
+mod cr3;
+mod raf;
 mod tiff;
 
+/// Small RAW files for the tests in `file_io`.
 #[cfg(test)]
-pub(crate) use tiff::test_files;
+pub(crate) mod test_files {
+    pub(crate) use super::raf::test_files::raf;
+    pub(crate) use super::tiff::test_files::{jpeg, nef_like, without_jpeg};
+}
 
-pub const EXTENSIONS: &[&str] = &["arw", "cr2", "dng", "nef", "rw2"];
+pub const EXTENSIONS: &[&str] = &["arw", "cr2", "cr3", "dng", "nef", "raf", "rw2"];
 
 /// The JPEG shown for a RAW file is the smallest embedded one with at
 /// least this many pixels on its short side, or the largest when none
@@ -39,12 +46,14 @@ pub struct RawContents {
     /// The JPEG to show, or `None` when the file has none.
     pub jpeg: Option<Vec<u8>>,
     /// The turn the RAW file's orientation tag asks for. The embedded
-    /// JPEG of an ARW, CR2, DNG or NEF has no EXIF block of its own.
+    /// JPEG of an ARW, CR2, CR3, DNG or NEF has no EXIF block of its own.
     pub orientation: Orientation,
-    /// The start of the file, up to the end of its EXIF values, as a
-    /// TIFF block that `metadata::parse_exif` reads. `None` when the file
-    /// is not TIFF-based.
+    /// The RAW file's EXIF as a TIFF block that `metadata::parse_exif`
+    /// reads. `None` when the container is not known, and for a RAF.
     pub exif: Option<Vec<u8>>,
+    /// A RAF's JPEG is a complete camera JPEG. Its orientation and its
+    /// EXIF are inside it, and `orientation` and `exif` above are empty.
+    pub exif_in_jpeg: bool,
 }
 
 pub fn is_raw(path: &Path) -> bool {
@@ -59,10 +68,16 @@ pub fn read(path: &Path) -> io::Result<RawContents> {
 
 fn contents(file: impl Read + Seek) -> io::Result<RawContents> {
     let mut source = Source::new(file)?;
-    let found = match tiff::find(&mut source)? {
-        Some(found) => found,
-        None => Found::nothing(),
+    let mut found = if let Some(found) = tiff::find(&mut source)? {
+        found
+    } else if let Some(found) = cr3::find(&mut source)? {
+        found
+    } else if let Some(found) = raf::find(&mut source)? {
+        found
+    } else {
+        Found::nothing()
     };
+    found.jpegs.retain(|span| span.len > 0 && source.contains(span.offset, span.len));
     let jpeg = match pick_for_display(&mut source, &found.jpegs)? {
         Some(span) => {
             let mut bytes = vec![0; span.len as usize];
@@ -71,7 +86,7 @@ fn contents(file: impl Read + Seek) -> io::Result<RawContents> {
         }
         None => None,
     };
-    Ok(RawContents { jpeg, orientation: found.orientation, exif: found.exif })
+    Ok(RawContents { jpeg, orientation: found.orientation, exif: found.exif, exif_in_jpeg: found.exif_in_jpeg })
 }
 
 /// Where a JPEG is inside the file.
@@ -88,11 +103,14 @@ struct Found {
     orientation: Orientation,
     /// The file's EXIF as a TIFF block for `metadata::parse_exif`.
     exif: Option<Vec<u8>>,
+    /// The embedded JPEG is a complete camera JPEG, and the orientation
+    /// and the EXIF are inside it.
+    exif_in_jpeg: bool,
 }
 
 impl Found {
     fn nothing() -> Self {
-        Self { jpegs: Vec::new(), orientation: Orientation::NoTransforms, exif: None }
+        Self { jpegs: Vec::new(), orientation: Orientation::NoTransforms, exif: None, exif_in_jpeg: false }
     }
 }
 
@@ -203,4 +221,42 @@ fn lossy_jpeg_size<R: Read + Seek>(source: &mut Source<R>, span: Span) -> io::Re
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Prints what is read from real RAW files, one line per file:
+    ///
+    ///     VIEWSKATER_RAW_FILES=a.arw:b.cr3 cargo test real_raw_files_one_line -- --ignored --nocapture
+    ///
+    /// The list uses the platform's path list separator, `:` or `;` on
+    /// Windows.
+    #[test]
+    #[ignore]
+    fn real_raw_files_one_line_each() {
+        let Ok(list) = std::env::var("VIEWSKATER_RAW_FILES") else {
+            eprintln!("VIEWSKATER_RAW_FILES is not set");
+            return;
+        };
+        for path in std::env::split_paths(&list) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            match read(&path) {
+                Ok(found) => {
+                    let shown = found.jpeg.as_deref().map(|bytes| match image::load_from_memory(bytes) {
+                        Ok(image) => format!("{}x{} from {} KB", image.width(), image.height(), bytes.len() / 1024),
+                        Err(e) => format!("does not decode: {e}"),
+                    });
+                    let exif = match (&found.exif, found.exif_in_jpeg) {
+                        (Some(block), _) => format!("{} bytes", block.len()),
+                        (None, true) => "in the JPEG".to_string(),
+                        (None, false) => "none".to_string(),
+                    };
+                    eprintln!("{name} | {} | {:?} | exif {exif}", shown.as_deref().unwrap_or("no JPEG"), found.orientation);
+                }
+                Err(e) => eprintln!("{name} | error: {e}"),
+            }
+        }
+    }
 }

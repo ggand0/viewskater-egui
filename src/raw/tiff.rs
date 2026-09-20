@@ -37,17 +37,17 @@ const TAG_PANASONIC_JPEG: u16 = 0x002E;
 const TAG_COMPRESSION: u16 = 0x0103;
 const TAG_PHOTOMETRIC: u16 = 0x0106;
 const TAG_STRIP_OFFSETS: u16 = 0x0111;
-const TAG_ORIENTATION: u16 = 0x0112;
+pub(super) const TAG_ORIENTATION: u16 = 0x0112;
 const TAG_STRIP_BYTE_COUNTS: u16 = 0x0117;
 const TAG_SUB_IFDS: u16 = 0x014A;
 const TAG_JPEG_OFFSET: u16 = 0x0201;
 const TAG_JPEG_LENGTH: u16 = 0x0202;
-const TAG_EXIF_IFD: u16 = 0x8769;
-const TAG_GPS_IFD: u16 = 0x8825;
-const TAG_INTEROP_IFD: u16 = 0xA005;
+pub(super) const TAG_EXIF_IFD: u16 = 0x8769;
+pub(super) const TAG_GPS_IFD: u16 = 0x8825;
+pub(super) const TAG_INTEROP_IFD: u16 = 0xA005;
 
 const TYPE_SHORT: u16 = 3;
-const TYPE_LONG: u16 = 4;
+pub(super) const TYPE_LONG: u16 = 4;
 const TYPE_IFD: u16 = 13;
 
 const COMPRESSION_OLD_JPEG: u32 = 6;
@@ -63,55 +63,69 @@ struct TiffHeader {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ByteOrder {
+pub(super) enum ByteOrder {
     Little,
     Big,
 }
 
 impl ByteOrder {
-    fn u16(self, b: &[u8]) -> u16 {
+    pub(super) fn u16(self, b: &[u8]) -> u16 {
         match self {
             ByteOrder::Little => u16::from_le_bytes([b[0], b[1]]),
             ByteOrder::Big => u16::from_be_bytes([b[0], b[1]]),
         }
     }
 
-    fn u32(self, b: &[u8]) -> u32 {
+    pub(super) fn u32(self, b: &[u8]) -> u32 {
         match self {
             ByteOrder::Little => u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
             ByteOrder::Big => u32::from_be_bytes([b[0], b[1], b[2], b[3]]),
         }
     }
+
+    pub(super) fn u16_bytes(self, v: u16) -> [u8; 2] {
+        match self {
+            ByteOrder::Little => v.to_le_bytes(),
+            ByteOrder::Big => v.to_be_bytes(),
+        }
+    }
+
+    pub(super) fn u32_bytes(self, v: u32) -> [u8; 4] {
+        match self {
+            ByteOrder::Little => v.to_le_bytes(),
+            ByteOrder::Big => v.to_be_bytes(),
+        }
+    }
 }
 
 /// One 12-byte IFD entry.
-struct Entry<'a> {
-    order: ByteOrder,
-    bytes: &'a [u8],
+pub(super) struct Entry<'a> {
+    pub(super) order: ByteOrder,
+    pub(super) bytes: &'a [u8],
 }
 
 impl Entry<'_> {
-    fn tag(&self) -> u16 {
+    pub(super) fn tag(&self) -> u16 {
         self.order.u16(&self.bytes[0..2])
     }
 
-    fn kind(&self) -> u16 {
+    pub(super) fn kind(&self) -> u16 {
         self.order.u16(&self.bytes[2..4])
     }
 
-    fn count(&self) -> u32 {
+    pub(super) fn count(&self) -> u32 {
         self.order.u32(&self.bytes[4..8])
     }
 
     /// The four value bytes as a number: the value itself when it fits,
     /// else the offset of the value.
-    fn value_or_offset(&self) -> u32 {
+    pub(super) fn value_or_offset(&self) -> u32 {
         self.order.u32(&self.bytes[8..12])
     }
 
     /// How many bytes the value takes. More than four means the entry
     /// holds the value's offset. Zero for a type TIFF does not define.
-    fn value_size(&self) -> u64 {
+    pub(super) fn value_size(&self) -> u64 {
         let unit = match self.kind() {
             1 | 2 | 6 | 7 => 1,
             3 | 8 => 2,
@@ -124,7 +138,7 @@ impl Entry<'_> {
 
     /// A single SHORT or LONG value. A SHORT sits in the first two of the
     /// four value bytes.
-    fn single(&self) -> Option<u32> {
+    pub(super) fn single(&self) -> Option<u32> {
         if self.count() != 1 {
             return None;
         }
@@ -134,6 +148,25 @@ impl Entry<'_> {
             _ => None,
         }
     }
+}
+
+/// The byte order and the offset of IFD0 from the header of a TIFF block
+/// in memory. `None` when the block does not start with a TIFF header.
+pub(super) fn header_of(block: &[u8]) -> Option<(ByteOrder, u32)> {
+    let order = match block.get(..2)? {
+        b"II" => ByteOrder::Little,
+        b"MM" => ByteOrder::Big,
+        _ => return None,
+    };
+    (order.u16(block.get(2..4)?) == TIFF_MAGIC).then_some((order, order.u32(block.get(4..8)?)))
+}
+
+/// The entries of the IFD at `offset` in a TIFF block in memory, 12 bytes
+/// each. `None` when they do not fit inside the block.
+pub(super) fn entries_of(block: &[u8], order: ByteOrder, offset: u32) -> Option<&[u8]> {
+    let start = offset as usize;
+    let count = order.u16(block.get(start..start.checked_add(2)?)?) as usize;
+    block.get(start + 2..(start + 2).checked_add(count * 12)?)
 }
 
 /// The JPEG candidates, the orientation and the EXIF block of a TIFF-based
@@ -245,7 +278,6 @@ fn walk<R: Read + Seek>(source: &mut Source<R>) -> io::Result<(Found, Option<Tif
         pending.extend(children);
     }
 
-    found.jpegs.retain(|span| span.len > 0 && source.contains(span.offset, span.len));
     found.jpegs.sort_by_key(|span| (span.offset, span.len));
     found.jpegs.dedup();
     Ok((found, Some(TiffHeader { order, magic, ifd0 })))
@@ -315,22 +347,22 @@ fn sub_ifds<R: Read + Seek>(source: &mut Source<R>, entry: &Entry) -> io::Result
     Ok(array.chunks_exact(4).map(|b| entry.order.u32(b) as u64).collect())
 }
 
-/// Small TIFF-based files for the tests here and in `file_io`.
+/// Small TIFF-based files for the tests here, in `cr3` and in `file_io`.
 #[cfg(test)]
-pub(crate) mod test_files {
+pub(in crate::raw) mod test_files {
     use image::codecs::jpeg::JpegEncoder;
     use image::{ExtendedColorType, ImageEncoder};
 
     use super::*;
 
     /// Writes IFDs and data at the offsets the test chooses.
-    pub(super) struct TiffBuilder {
+    pub(in crate::raw) struct TiffBuilder {
         order: ByteOrder,
         bytes: Vec<u8>,
     }
 
     impl TiffBuilder {
-        pub(super) fn new(order: ByteOrder, magic: u16, first_ifd: u32) -> Self {
+        pub(in crate::raw) fn new(order: ByteOrder, magic: u16, first_ifd: u32) -> Self {
             let mut builder = Self { order, bytes: Vec::new() };
             let mark = if order == ByteOrder::Little { b"II" } else { b"MM" };
             builder.bytes.extend_from_slice(mark);
@@ -349,7 +381,7 @@ pub(crate) mod test_files {
             if self.order == ByteOrder::Little { v.to_le_bytes() } else { v.to_be_bytes() }
         }
 
-        pub(super) fn place(&mut self, offset: usize, data: &[u8]) {
+        pub(in crate::raw) fn place(&mut self, offset: usize, data: &[u8]) {
             if self.bytes.len() < offset + data.len() {
                 self.bytes.resize(offset + data.len(), 0);
             }
@@ -358,7 +390,7 @@ pub(crate) mod test_files {
 
         /// Entries are (tag, type, count, value). A SHORT value goes into
         /// the first two value bytes, as TIFF asks.
-        pub(super) fn ifd(&mut self, offset: usize, entries: &[(u16, u16, u32, u32)], next: u32) {
+        pub(in crate::raw) fn ifd(&mut self, offset: usize, entries: &[(u16, u16, u32, u32)], next: u32) {
             let mut out = self.u16(entries.len() as u16).to_vec();
             for &(tag, kind, count, value) in entries {
                 out.extend_from_slice(&self.u16(tag));
@@ -375,7 +407,7 @@ pub(crate) mod test_files {
             self.place(offset, &out);
         }
 
-        pub(super) fn finish(self) -> Vec<u8> {
+        pub(in crate::raw) fn finish(self) -> Vec<u8> {
             self.bytes
         }
     }

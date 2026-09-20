@@ -257,7 +257,8 @@ fn decode_checked(mut decoder: impl ImageDecoder) -> ImageResult<DynamicImage> {
 }
 
 /// A camera RAW file is shown through the JPEG the camera stored inside
-/// it. The orientation and the EXIF are the RAW file's own.
+/// it. The orientation and the EXIF are the RAW file's own, except for a
+/// RAF, whose JPEG is a complete camera JPEG with both inside it.
 fn decode_raw_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<(DynamicImage, Orientation)> {
     record.format = format_name(None, path);
     let contents = raw::read(path).map_err(ImageError::IoError)?;
@@ -274,8 +275,15 @@ fn decode_raw_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<(Dyn
             UnsupportedErrorKind::GenericFeature("a RAW file without an embedded JPEG".into()),
         )));
     };
-    let decoder = JpegDecoder::new(Cursor::new(jpeg))?;
-    Ok((decode_checked(decoder)?, contents.orientation))
+    let mut decoder = JpegDecoder::new(Cursor::new(jpeg))?;
+    let mut orientation = contents.orientation;
+    if contents.exif_in_jpeg {
+        if let Ok(Some(bytes)) = decoder.exif_metadata() {
+            record.exif = metadata::parse_exif(bytes);
+        }
+        orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    }
+    Ok((decode_checked(decoder)?, orientation))
 }
 
 /// The turn the file's EXIF orientation tag asks for. The built-in
@@ -696,6 +704,32 @@ mod tests {
         };
         assert_eq!(exif.camera.as_deref(), Some("NIKON"));
         assert_eq!(exif.orientation.as_deref(), Some("Rotate 90° CW"));
+        let shown = crate::decode::image_to_color_image(loaded.image.unwrap(), loaded.orientation);
+        assert_eq!(shown.size, [20, 30]);
+    }
+
+    /// A RAF's orientation and EXIF come out of its embedded JPEG.
+    #[test]
+    fn raf_file_is_turned_by_the_tag_in_its_jpeg() {
+        use image::codecs::jpeg::JpegEncoder;
+        use image::{ExtendedColorType, ImageEncoder};
+
+        let mut jpeg = Vec::new();
+        let mut encoder = JpegEncoder::new(&mut jpeg);
+        encoder.set_exif_metadata(exif_with_orientation(8)).unwrap();
+        encoder.write_image(&[0u8; 30 * 20 * 3], 30, 20, ExtendedColorType::Rgb8).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("photo.raf");
+        std::fs::write(&path, raw::test_files::raf(&jpeg)).unwrap();
+
+        let loaded = load_image(&path);
+        assert_eq!(loaded.orientation, Orientation::Rotate270);
+        assert_eq!(loaded.record.format.as_deref(), Some("RAF"));
+        let ExifData::Present(exif) = &loaded.record.exif else {
+            panic!("{:?}", loaded.record.exif);
+        };
+        assert_eq!(exif.orientation.as_deref(), Some("Rotate 90° CCW"));
         let shown = crate::decode::image_to_color_image(loaded.image.unwrap(), loaded.orientation);
         assert_eq!(shown.size, [20, 30]);
     }
