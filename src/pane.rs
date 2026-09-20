@@ -180,7 +180,7 @@ impl Pane {
                 let decode_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
                 let t1 = Instant::now();
-                let color_image = image_to_color_image(img);
+                let color_image = image_to_color_image(img, loaded.orientation);
                 let convert_ms = t1.elapsed().as_secs_f64() * 1000.0;
 
                 let size = color_image.size;

@@ -277,8 +277,8 @@ fn file_section(
         let [w, h] = texture.size();
         row(ui, "Dims", &format!("{w}x{h} · {}", megapixels(w, h)), theme);
     }
-    // The app shows the pixels as stored, so a turned picture gets a line
-    // saying which turn would show it upright.
+    // A picture turned by its orientation tag gets a line naming the turn.
+    // Dims above is the size after it.
     if let Some(turn) = exif.and_then(|e| e.orientation.as_deref()).filter(|o| *o != "Normal") {
         row(ui, "Orientation", turn, theme);
     }

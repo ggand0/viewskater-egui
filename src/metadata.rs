@@ -65,8 +65,8 @@ pub struct ExifSummary {
     pub exposure_bias: Option<String>,
     /// "2026-03-27 14:05:12", with " +08:00" when the offset tag exists.
     pub date_taken: Option<String>,
-    /// The orientation tag as text, "Rotate 90° CW". The app does not
-    /// apply it yet, so this says how the picture on screen is turned.
+    /// The orientation tag as text, "Rotate 90° CW", the turn that shows
+    /// the stored pixels upright.
     pub orientation: Option<String>,
     pub location: Option<Location>,
     /// Every tag as (name, value) in file order.
@@ -288,7 +288,7 @@ pub(crate) fn ev_text(r: SRational) -> Option<String> {
     Some(format!("{sign}{} EV", trim_decimal(ev.abs(), 1)))
 }
 
-/// The orientation tag as the turn that would show the picture upright.
+/// The orientation tag as the turn that shows the stored pixels upright.
 pub(crate) fn orientation_text(v: u32) -> Option<String> {
     let s = match v {
         1 => "Normal",

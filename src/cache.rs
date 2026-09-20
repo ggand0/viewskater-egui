@@ -47,8 +47,9 @@ impl ThumbnailCache {
                 }
                 // Send a result even on failure so the pending marker clears
                 // and the index can be retried later.
-                let thumbnail = match image::open(&latest_path) {
-                    Ok(img) => Some(crate::decode::image_to_thumbnail(img)),
+                let loaded = load_image(&latest_path);
+                let thumbnail = match loaded.image {
+                    Ok(img) => Some(crate::decode::image_to_thumbnail(img, loaded.orientation)),
                     Err(e) => {
                         log::error!("Thumbnail decode failed for {}: {e}", latest_path.display());
                         None
@@ -687,7 +688,7 @@ impl SlidingWindowCache {
             let outcome = std::panic::catch_unwind(|| {
                 let loaded = load_image(&path);
                 let image = match loaded.image {
-                    Ok(img) => Some(crate::decode::image_to_color_image(img)),
+                    Ok(img) => Some(crate::decode::image_to_color_image(img, loaded.orientation)),
                     Err(e) => {
                         log::warn!("Background decode failed for {}: {}", path.display(), e);
                         None
@@ -835,7 +836,7 @@ impl SlidingWindowCache {
         let loaded = load_image(path);
         let texture = match loaded.image {
             Ok(img) => {
-                let color_image = crate::decode::image_to_color_image(img);
+                let color_image = crate::decode::image_to_color_image(img, loaded.orientation);
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
