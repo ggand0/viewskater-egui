@@ -80,7 +80,7 @@ fn contents(file: impl Read + Seek) -> io::Result<RawContents> {
     } else if let Some(found) = raf::find(&mut source)? {
         found
     } else {
-        Found::nothing()
+        JpegsAndExif::nothing()
     };
     found.jpegs.retain(|span| span.len > 0 && source.contains(span.offset, span.len));
     let jpeg = match pick_for_display(&mut source, &found.jpegs)? {
@@ -101,8 +101,9 @@ struct Span {
     len: u64,
 }
 
-/// What the walk over a container found.
-struct Found {
+/// What a finder reads out of one file: where its JPEGs are, the
+/// orientation tag, and the EXIF block.
+struct JpegsAndExif {
     /// Every place that may hold a JPEG. `pick_for_display` checks them.
     jpegs: Vec<Span>,
     orientation: Orientation,
@@ -113,7 +114,7 @@ struct Found {
     exif_in_jpeg: bool,
 }
 
-impl Found {
+impl JpegsAndExif {
     fn nothing() -> Self {
         Self { jpegs: Vec::new(), orientation: Orientation::NoTransforms, exif: None, exif_in_jpeg: false }
     }

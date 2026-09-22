@@ -1,20 +1,23 @@
-//! Fujifilm RAF. The file starts with a fixed header: 16 bytes of magic
-//! text, and at byte 84 the offset and at byte 88 the length of one JPEG,
-//! both big-endian. That JPEG is a complete camera JPEG, 1920x1280 from
+//! Finds the one embedded JPEG of a Fujifilm RAF file. Its EXIF is inside
+//! that JPEG.
+//!
+//! The file starts with a fixed header: 16 bytes of magic text, and at
+//! byte 84 the offset and at byte 88 the length of one JPEG, both
+//! big-endian. That JPEG is a complete camera JPEG, 1920x1280 from
 //! older bodies and full size from newer ones, with its own EXIF block.
 //! So the orientation and the EXIF are read from the JPEG and not from
 //! the container.
 
 use std::io::{self, Read, Seek};
 
-use super::{Found, Source, Span};
+use super::{JpegsAndExif, Source, Span};
 
 const MAGIC: &[u8; 16] = b"FUJIFILMCCD-RAW ";
 const JPEG_OFFSET_AT: usize = 84;
 const JPEG_LENGTH_AT: usize = 88;
 
 /// The JPEG of a RAF file. `None` when the file is not a RAF.
-pub(super) fn find<R: Read + Seek>(source: &mut Source<R>) -> io::Result<Option<Found>> {
+pub(super) fn find<R: Read + Seek>(source: &mut Source<R>) -> io::Result<Option<JpegsAndExif>> {
     let mut header = [0; JPEG_LENGTH_AT + 4];
     if !source.contains(0, header.len() as u64) {
         return Ok(None);
@@ -24,7 +27,7 @@ pub(super) fn find<R: Read + Seek>(source: &mut Source<R>) -> io::Result<Option<
         return Ok(None);
     }
     let be = |at: usize| u32::from_be_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]]) as u64;
-    let mut found = Found::nothing();
+    let mut found = JpegsAndExif::nothing();
     found.jpegs.push(Span { offset: be(JPEG_OFFSET_AT), len: be(JPEG_LENGTH_AT) });
     found.exif_in_jpeg = true;
     Ok(Some(found))

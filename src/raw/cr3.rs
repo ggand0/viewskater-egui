@@ -1,6 +1,8 @@
-//! Canon CR3. The file has the structure of an MP4: a sequence of boxes,
-//! each with a header of its size and a four-letter type, and some boxes
-//! hold more boxes. A CR3 has a JPEG in three places:
+//! Finds the embedded JPEGs and the EXIF blocks of a Canon CR3 file.
+//!
+//! The file has the structure of an MP4: a sequence of boxes, each with a
+//! header of its size and a four-letter type, and some boxes hold more
+//! boxes. A CR3 has a JPEG in three places:
 //!
 //! - `THMB`, 160x120, inside Canon's `uuid` box in `moov`.
 //! - `PRVW`, 1620x1080, inside a `uuid` box of its own after `moov`.
@@ -20,7 +22,7 @@ use std::io::{self, Read, Seek};
 use image::metadata::Orientation;
 
 use super::tiff::{self, ByteOrder, Entry, TAG_EXIF_IFD, TAG_GPS_IFD, TAG_INTEROP_IFD, TAG_ORIENTATION, TYPE_LONG};
-use super::{Found, Source, Span};
+use super::{JpegsAndExif, Source, Span};
 
 const CANON_UUID: [u8; 16] = [
     0x85, 0xC0, 0xB6, 0x87, 0x82, 0x0F, 0x11, 0xE0, 0x81, 0x11, 0xF4, 0xCE, 0x46, 0x2B, 0x6A, 0x48,
@@ -52,7 +54,7 @@ struct BoxAt {
 
 /// The JPEG candidates, the orientation and the EXIF block of a CR3.
 /// `None` when the file is not a CR3.
-pub(super) fn find<R: Read + Seek>(source: &mut Source<R>) -> io::Result<Option<Found>> {
+pub(super) fn find<R: Read + Seek>(source: &mut Source<R>) -> io::Result<Option<JpegsAndExif>> {
     let mut start = [0; 12];
     if !source.contains(0, 12) {
         return Ok(None);
@@ -62,7 +64,7 @@ pub(super) fn find<R: Read + Seek>(source: &mut Source<R>) -> io::Result<Option<
         return Ok(None);
     }
 
-    let mut found = Found::nothing();
+    let mut found = JpegsAndExif::nothing();
     // CMT1, CMT2 and CMT4.
     let mut exif_blocks: [Option<Vec<u8>>; 3] = [None, None, None];
     for top in boxes(source, 0, source.len)? {

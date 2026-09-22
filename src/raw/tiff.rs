@@ -1,6 +1,9 @@
-//! The RAW formats that are TIFF files: a chain of image file directories
-//! (IFDs), each a list of tags, and some tags point to child IFDs. The
-//! JPEG is in a different place in each format:
+//! Finds the embedded JPEGs and the EXIF block in the RAW formats that are
+//! TIFF files: ARW, CR2, DNG, NEF, RW2, ORF and more.
+//!
+//! A TIFF file is a chain of image file directories (IFDs), each a list of
+//! tags, and some tags point to child IFDs. The JPEG is in a different
+//! place in each format:
 //!
 //! - ARW: IFD0, as the `JPEGInterchangeFormat` offset and length tags.
 //!   Bodies from 2020 on have a second, full-size one in a later IFD.
@@ -21,7 +24,7 @@ use std::io::{self, Read, Seek};
 
 use image::metadata::Orientation;
 
-use super::{Found, Source, Span};
+use super::{JpegsAndExif, Source, Span};
 
 /// Limits for the walk. The file is untrusted input: offsets may point
 /// anywhere and IFDs may point at each other in a loop.
@@ -183,7 +186,7 @@ pub(super) fn entries_of(block: &[u8], order: ByteOrder, offset: u32) -> Option<
 
 /// The JPEG candidates, the orientation and the EXIF block of a TIFF-based
 /// RAW file. `None` when the file is not TIFF-based.
-pub(super) fn find<R: Read + Seek>(source: &mut Source<R>) -> io::Result<Option<Found>> {
+pub(super) fn find<R: Read + Seek>(source: &mut Source<R>) -> io::Result<Option<JpegsAndExif>> {
     let (mut found, tiff) = walk(source)?;
     let Some(tiff) = tiff else {
         return Ok(None);
@@ -220,8 +223,8 @@ fn read_ifd<R: Read + Seek>(source: &mut Source<R>, order: ByteOrder, offset: u6
 /// may hold a JPEG, plus IFD0's orientation. A file that is not
 /// TIFF-based gives no header and nothing found. An IFD that cannot be
 /// read is skipped and the walk goes on.
-fn walk<R: Read + Seek>(source: &mut Source<R>) -> io::Result<(Found, Option<TiffHeader>)> {
-    let mut found = Found::nothing();
+fn walk<R: Read + Seek>(source: &mut Source<R>) -> io::Result<(JpegsAndExif, Option<TiffHeader>)> {
+    let mut found = JpegsAndExif::nothing();
     let mut header = [0; 8];
     if source.read_at(0, &mut header).is_err() {
         return Ok((found, None));
