@@ -246,9 +246,8 @@ fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<(Dynamic
     image.map(|image| (image, orientation))
 }
 
-/// Decode with the allocation check `ImageReader::decode` makes before
-/// decoding. A decoder made by hand, or taken out with `into_decoder`,
-/// leaves the check to the caller.
+/// Decode with the image crate's 512 MB limit on the pixel buffer, which
+/// `ImageReader::decode` checks and a decoder made by hand does not.
 fn decode_checked(mut decoder: impl ImageDecoder) -> ImageResult<DynamicImage> {
     let mut limits = image::Limits::default();
     limits.reserve(decoder.total_bytes())?;
