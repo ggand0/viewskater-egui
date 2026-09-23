@@ -16,6 +16,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 use crate::metadata::{self, ExifData, MetadataRecord};
 use crate::raw;
 use crate::settings::{ImageDiscoveryOptions, ImageSortKey, SortDirection};
+use crate::stars;
 
 const APP_NAME: &str = "viewskater-egui";
 
@@ -45,8 +46,16 @@ fn has_extension(path: &Path, extensions: &[&str]) -> bool {
         .is_some_and(|ext| extensions.iter().any(|supported| ext.eq_ignore_ascii_case(supported)))
 }
 
-pub fn enumerate_images(dir: &Path, opts: ImageDiscoveryOptions) -> Vec<PathBuf> {
-    let entries = enumerate_images_inner(dir, opts);
+/// What a folder listing found: the images in display order, and the
+/// `.viewskater.yaml` files of the folders it walked, for their stars.
+pub struct ImagesAndStarFiles {
+    pub images: Vec<PathBuf>,
+    pub star_files: Vec<PathBuf>,
+}
+
+pub fn enumerate_images(dir: &Path, opts: ImageDiscoveryOptions) -> ImagesAndStarFiles {
+    let mut star_files = Vec::new();
+    let entries = enumerate_images_inner(dir, opts, &mut star_files);
 
     let sort_order = &opts.sort_order;
     let paths = match sort_order.key {
@@ -62,10 +71,14 @@ pub fn enumerate_images(dir: &Path, opts: ImageDiscoveryOptions) -> Vec<PathBuf>
     };
 
     log::info!("Found {} images in {}", paths.len(), dir.display());
-    paths
+    ImagesAndStarFiles { images: paths, star_files }
 }
 
-fn enumerate_images_inner(dir: &Path, opts: ImageDiscoveryOptions) -> Vec<DirEntry> {
+fn enumerate_images_inner(
+    dir: &Path,
+    opts: ImageDiscoveryOptions,
+    star_files: &mut Vec<PathBuf>,
+) -> Vec<DirEntry> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         log::warn!("Failed to read directory: {}", dir.display());
         return Vec::new();
@@ -76,6 +89,11 @@ fn enumerate_images_inner(dir: &Path, opts: ImageDiscoveryOptions) -> Vec<DirEnt
         let path = entry.path();
         match entry.file_type() {
             Ok(ftype) => {
+                // Hidden, so noted before the hidden files are skipped.
+                if ftype.is_file() && path.file_name().is_some_and(|n| n == stars::FILE_NAME) {
+                    star_files.push(path);
+                    continue;
+                }
                 if !opts.include_hidden {
                     let is_hidden = path
                         .file_name()
@@ -90,7 +108,7 @@ fn enumerate_images_inner(dir: &Path, opts: ImageDiscoveryOptions) -> Vec<DirEnt
                 if ftype.is_file() && is_supported_image(&path) {
                     retval.push(entry);
                 } else if ftype.is_dir() && opts.recursive {
-                    retval.append(&mut enumerate_images_inner(&path, opts));
+                    retval.append(&mut enumerate_images_inner(&path, opts, star_files));
                 }
             }
             Err(err) => {

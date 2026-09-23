@@ -67,7 +67,7 @@ impl App {
         if let Some(dir) = self.bench.opts.dirs.first().cloned() {
             let options = self.current_discovery_options();
             self.panes.truncate(1);
-            self.panes[0].open_path(&dir, ctx, options);
+            self.panes[0].open_path(&dir, ctx, options, &mut self.stars);
         }
         let n = self.panes[0].image_paths.len();
         if n < 2 {
@@ -300,13 +300,13 @@ impl App {
             // what a repeated run is for.
             self.bench.run += 1;
             let reopened = Instant::now();
-            self.panes[0].open_path(&folder, ctx, options);
+            self.panes[0].open_path(&folder, ctx, options, &mut self.stars);
             self.start_run(reopened);
         } else if let Some(next) = self.bench.opts.dirs.get(self.bench.dir_idx + 1).cloned() {
             self.bench.dir_idx += 1;
             self.bench.run = 1;
             let opened = Instant::now();
-            self.panes[0].open_path(&next, ctx, options);
+            self.panes[0].open_path(&next, ctx, options, &mut self.stars);
             if self.panes[0].image_paths.len() < 2 {
                 log::error!("bench: {} has fewer than 2 images, skipping", next.display());
                 self.finish_all_benchmarks(ctx);

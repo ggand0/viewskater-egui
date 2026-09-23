@@ -28,6 +28,7 @@ mod perf;
 mod platform;
 mod raw;
 mod settings;
+mod stars;
 mod theme;
 mod trash_bin;
 mod view_animation;

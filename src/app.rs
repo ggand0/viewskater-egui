@@ -15,6 +15,7 @@ use crate::menu;
 use crate::pane::Pane;
 use crate::perf;
 use crate::settings::{self, AppSettings, ImageSortOrder};
+use crate::stars::Stars;
 use crate::theme::UiTheme;
 
 /// Target window size in physical pixels (matches iced version behavior).
@@ -30,6 +31,10 @@ const SCREEN_PREVIEW_UI_RATIO: f32 = 5.0;
 
 /// Scroll options
 const SCROLL_ZOOM_SPEED: f32 = 1.0 / 200.0;
+
+/// The mark on the slider rail at each starred image.
+const STAR_MARK_WIDTH: f32 = 2.0;
+const STAR_MARK_COLOR: egui::Color32 = egui::Color32::from_gray(210);
 
 #[cfg(target_os = "windows")]
 const CJK_PATHS: [&str; 2] = [
@@ -74,16 +79,24 @@ struct PreviewLayout {
     height: f32,
 }
 
+/// The thumbnail of `pane`'s image at `cursor_index` above the slider, with
+/// a star in its corner when that image is starred. Returns whether the
+/// thumbnail painted is the exact one for the index. The pane has a
+/// thumbnail cache, the caller checks.
 fn paint_preview_popup(
     ui: &egui::Ui,
-    tc: &mut crate::cache::ThumbnailCache,
+    pane: &mut Pane,
     cursor_index: usize,
     max_images: usize,
-    path: &std::path::Path,
     layout: &PreviewLayout,
     stale_since: &mut Option<(usize, Instant)>,
+    accent: egui::Color32,
 ) -> bool {
-    let (tex_opt, is_exact) = tc.current_thumbnail_for(cursor_index, path);
+    let Some(tc) = pane.thumbnail_cache.as_mut() else {
+        return false;
+    };
+    let starred = pane.starred_positions.binary_search(&cursor_index).is_ok();
+    let (tex_opt, is_exact) = tc.current_thumbnail_for(cursor_index, &pane.image_paths[cursor_index]);
     let ui_width = layout.width;
     let ui_height = layout.height;
 
@@ -144,6 +157,15 @@ fn paint_preview_popup(
 
     if let Some(tex) = tex_opt {
         painter.image(tex.id(), img_rect, uv, egui::Color32::WHITE);
+        if starred {
+            let pos = img_rect.right_top() + egui::vec2(-4.0, 4.0);
+            let font = egui::FontId::proportional(16.0);
+            // A dark copy one pixel down and right keeps it readable on a
+            // bright thumbnail.
+            let shadow = egui::Color32::from_black_alpha(160);
+            painter.text(pos + egui::vec2(1.0, 1.0), egui::Align2::RIGHT_TOP, "★", font.clone(), shadow);
+            painter.text(pos, egui::Align2::RIGHT_TOP, "★", font, accent);
+        }
 
         if is_exact {
             *stale_since = None;
@@ -252,6 +274,37 @@ pub(crate) fn paint_nav_slider(
         .rect_filled(rail, rail_radius, egui::Color32::from_gray(60));
     let filled = egui::Rect::from_min_max(rail.min, egui::pos2(handle_x, rail.max.y));
     ui.painter().rect_filled(filled, rail_radius, accent);
+
+    // A mark at each starred image, at the spot the handle takes for it.
+    // The shared slider in synced mode marks every pane's starred images.
+    // A pane with the starred-only filter on gets none, because every
+    // image in its list would have one. Marks that land on the same pixel
+    // are drawn once.
+    let mut last_mark_x = None;
+    for pane in panes.iter().filter(|p| !p.starred_only()) {
+        for &position in &pane.starred_positions {
+            if position > max {
+                break;
+            }
+            let x = egui::lerp(
+                (rect.left() + handle_radius)..=(rect.right() - handle_radius),
+                position as f32 / max as f32,
+            )
+            .round();
+            if last_mark_x == Some(x) {
+                continue;
+            }
+            last_mark_x = Some(x);
+            ui.painter().rect_filled(
+                egui::Rect::from_center_size(
+                    egui::pos2(x, cy),
+                    egui::vec2(STAR_MARK_WIDTH, rail_radius * 2.0),
+                ),
+                0.0,
+                STAR_MARK_COLOR,
+            );
+        }
+    }
     ui.painter().circle(
         egui::pos2(handle_x, cy),
         handle_radius,
@@ -278,20 +331,22 @@ pub(crate) fn paint_nav_slider(
                 i.key_down(egui::Key::ArrowLeft) || i.key_down(egui::Key::ArrowRight)
                 || i.key_down(egui::Key::A) || i.key_down(egui::Key::D)
             });
-            if cursor_index < pane.image_paths.len() && !response.dragged() && !nav_active && show_preview {
-                if let Some(tc) = pane.thumbnail_cache.as_mut() {
-                    preview_active = true;
-                    preview_cursor_index = Some(cursor_index);
-                    let layout = PreviewLayout {
-                        hover_pos: pos, slider_rect: rect, screen_rect,
-                        width: ui_width, height: ui_height,
-                    };
-                    preview_exact = paint_preview_popup(
-                        ui, tc, cursor_index, max_images,
-                        &pane.image_paths[cursor_index],
-                        &layout, preview_stale_since,
-                    );
-                }
+            if cursor_index < pane.image_paths.len()
+                && !response.dragged()
+                && !nav_active
+                && show_preview
+                && pane.thumbnail_cache.is_some()
+            {
+                preview_active = true;
+                preview_cursor_index = Some(cursor_index);
+                let layout = PreviewLayout {
+                    hover_pos: pos, slider_rect: rect, screen_rect,
+                    width: ui_width, height: ui_height,
+                };
+                preview_exact = paint_preview_popup(
+                    ui, pane, cursor_index, max_images,
+                    &layout, preview_stale_since, accent,
+                );
             }
         }
     }
@@ -331,6 +386,10 @@ pub struct App {
     /// Where the metadata panel is this frame, so the fullscreen FPS
     /// overlay stays left of it.
     metadata_panel_rect: Option<egui::Rect>,
+    /// The stars of every folder the panes list.
+    pub(crate) stars: Stars,
+    /// The star painted for a moment after S while the footer is hidden.
+    star_flash: Option<culling::StarFlash>,
 }
 
 impl App {
@@ -376,6 +435,8 @@ impl App {
             pending_permanent_delete: None,
             metadata_panel: Default::default(),
             metadata_panel_rect: None,
+            stars: Stars::new(&cc.egui_ctx),
+            star_flash: None,
         };
 
         if !paths.is_empty() {
@@ -383,6 +444,7 @@ impl App {
                 &paths[0],
                 &cc.egui_ctx,
                 app.settings.image_discovery_options,
+                &mut app.stars,
             );
         }
         if paths.len() >= 2 {
@@ -399,6 +461,7 @@ impl App {
                 &paths[1],
                 &cc.egui_ctx,
                 app.settings.image_discovery_options,
+                &mut app.stars,
             );
             app.panes.push(pane1);
         }
@@ -459,6 +522,28 @@ impl App {
             self.panes.first().and_then(name)
                 .unwrap_or_else(|| "ViewSkater".to_string())
         }
+    }
+
+    /// In fullscreen, whether the cursor is near the top or the bottom edge,
+    /// where the menu bar and the footer show. Both false outside
+    /// fullscreen.
+    fn cursor_near_screen_edges(&self, ctx: &egui::Context) -> (bool, bool) {
+        if !self.is_fullscreen {
+            return (false, false);
+        }
+        let screen = ctx.screen_rect();
+        ctx.input(|i| match i.pointer.hover_pos() {
+            Some(pos) => (
+                pos.y - screen.min.y < FULLSCREEN_TOP_ZONE,
+                screen.max.y - pos.y < FULLSCREEN_BOTTOM_ZONE,
+            ),
+            None => (false, false),
+        })
+    }
+
+    /// The footer is on screen this frame.
+    fn footer_visible(&self, ctx: &egui::Context) -> bool {
+        self.settings.show_footer && (!self.is_fullscreen || self.cursor_near_screen_edges(ctx).1)
     }
 
     fn update_title(&mut self, ctx: &egui::Context) {
@@ -550,11 +635,13 @@ impl App {
             .frame(egui::Frame::default().fill(egui::Color32::from_gray(20)))
             .show(ctx, |ui| {
                 let mut results: Vec<(usize, SliderResult)> = Vec::new();
+                let mut pane_rects: Vec<(usize, egui::Rect)> = Vec::new();
 
                 if self.panes.len() <= 1 {
                     if let Some(pane) = self.panes.first_mut() {
                         pane.show_content(ui);
                     }
+                    pane_rects.push((0, ui.max_rect()));
                 } else {
                     let available = ui.available_rect_before_wrap();
                     let divider_w = 4.0;
@@ -583,6 +670,8 @@ impl App {
                         egui::pos2(right_x, content_y),
                         egui::vec2(right_w, content_h),
                     );
+                    pane_rects.push((0, left_rect));
+                    pane_rects.push((1, right_rect));
 
                     // Divider interaction
                     let divider_center_x = available.min.x + left_w + divider_w / 2.0;
@@ -753,9 +842,16 @@ impl App {
                     }
                 }
 
-                results
+                (results, pane_rects)
             })
             .inner;
+        let (slider_results, pane_rects) = slider_results;
+
+        for (pane_idx, rect) in pane_rects {
+            if let Some((starred, alpha)) = self.star_flash_for(pane_idx) {
+                culling::paint_star_flash(ctx, rect, starred, alpha, accent);
+            }
+        }
 
         self.preview_stale_since = preview_stale_since;
         for (pane_idx, result) in slider_results {
@@ -811,6 +907,7 @@ impl eframe::App for App {
             pane.poll_cache();
             pane.poll_animation();
         }
+        self.show_star_failures();
 
         self.handle_external_open_requests(ctx);
         self.handle_dropped_files(ctx);
@@ -823,21 +920,7 @@ impl eframe::App for App {
         self.update_title(ctx);
 
         // Detect cursor proximity to screen edges for fullscreen UI reveal
-        let (cursor_near_top, cursor_near_bottom) = if self.is_fullscreen {
-            let screen = ctx.screen_rect();
-            ctx.input(|i| {
-                if let Some(pos) = i.pointer.hover_pos() {
-                    (
-                        pos.y - screen.min.y < FULLSCREEN_TOP_ZONE,
-                        screen.max.y - pos.y < FULLSCREEN_BOTTOM_ZONE,
-                    )
-                } else {
-                    (false, false)
-                }
-            })
-        } else {
-            (false, false)
-        };
+        let (cursor_near_top, cursor_near_bottom) = self.cursor_near_screen_edges(ctx);
 
         // Compute cache memory breakdown for FPS overlay
         let cache_mb = if self.settings.show_fps {
@@ -858,10 +941,13 @@ impl eframe::App for App {
             };
             let settings_snapshot = self.settings.clone();
             let sort_snapshot = self.current_sort;
+            let (current_starred, starred_only) = self.star_menu_state();
             let mut menu_state = menu::MenuBarState {
                 settings: &mut self.settings,
                 current_sort: &mut self.current_sort,
                 is_fullscreen: self.is_fullscreen,
+                current_starred,
+                starred_only,
             };
             let (action, menu_is_open) = menu::show_menu_bar(
                 ctx,
@@ -896,6 +982,9 @@ impl eframe::App for App {
                 &self.theme,
             );
             self.metadata_panel_rect = Some(out.rect);
+            if let Some(pane_idx) = out.star_clicked {
+                self.toggle_star_pane_image(pane_idx, ctx);
+            }
             if let Some(pane_idx) = out.trash_clicked {
                 self.trash_pane_image(pane_idx, ctx);
             }
@@ -999,5 +1088,10 @@ impl eframe::App for App {
 
         self.paint_toast(ctx);
         self.show_permanent_delete_modal(ctx);
+    }
+
+    /// A star set just before closing is still on its way to disk.
+    fn on_exit(&mut self) {
+        self.stars.finish_writes();
     }
 }

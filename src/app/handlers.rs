@@ -36,11 +36,13 @@ impl App {
                 self.settings.preview_budget_mb,
             );
             if !self.panes[0].image_paths.is_empty() {
+                let discovery_options = self.current_discovery_options();
                 if let Some(dir) = &self.panes[0].dir_path {
                     pane.open_path(
                         dir,
                         ctx,
-                        self.current_discovery_options(),
+                        discovery_options,
+                        &mut self.stars,
                     );
                     pane.jump_to(self.panes[0].current_index, ctx);
                 }
@@ -57,6 +59,7 @@ impl App {
                     &dir,
                     ctx,
                     current_discovery_options,
+                    &mut self.stars,
                 );
             }
         }
@@ -73,6 +76,7 @@ impl App {
                     &file,
                     ctx,
                     current_discovery_options,
+                    &mut self.stars,
                 );
             }
         }
@@ -124,6 +128,8 @@ impl App {
                 crate::file_io::export_and_open_debug_logs(&self.log_buffer);
             }
             MenuAction::MoveToTrash => self.trash_current_images(ctx),
+            MenuAction::ToggleStar => self.toggle_star_current_images(ctx),
+            MenuAction::ToggleStarredOnly => self.toggle_starred_only(ctx),
         }
     }
 
@@ -144,6 +150,21 @@ impl App {
                         || (cfg!(target_os = "macos")
                             && *key == egui::Key::Backspace
                             && modifiers.command)
+                }
+                _ => false,
+            })
+        })
+    }
+
+    /// `key` was pressed this frame, alone or with Shift. Shift is allowed
+    /// because skating holds it, and a person who stops skating to star an
+    /// image often still holds it. Key repeats are ignored, so holding S
+    /// does not flip the star on and off.
+    fn letter_pressed(ctx: &egui::Context, key: egui::Key) -> bool {
+        ctx.input(|i| {
+            i.events.iter().any(|e| match e {
+                egui::Event::Key { key: k, pressed: true, repeat: false, modifiers, .. } => {
+                    *k == key && !modifiers.command && !modifiers.ctrl && !modifiers.alt
                 }
                 _ => false,
             })
@@ -234,6 +255,7 @@ impl App {
                 &path,
                 ctx,
                 current_discovery_options,
+                &mut self.stars,
             );
             pane.zoom = zoom;
             pane.pan = pan;
@@ -377,6 +399,14 @@ impl App {
             self.trash_current_images(ctx);
             return;
         }
+        if Self::letter_pressed(ctx, egui::Key::S) {
+            self.toggle_star_current_images(ctx);
+            return;
+        }
+        if Self::letter_pressed(ctx, egui::Key::F) {
+            self.toggle_starred_only(ctx);
+            return;
+        }
 
         if home {
             for pane in &mut self.panes {
@@ -461,6 +491,7 @@ impl App {
                 &path,
                 ctx,
                 current_discovery_options,
+                &mut self.stars,
             );
             if self.panes[0].current_texture.is_some() {
                 self.perf.record_image_load();
@@ -495,12 +526,14 @@ impl App {
                         path,
                         ctx,
                         current_discovery_options,
+                        &mut self.stars,
                     );
                 } else {
                     self.panes[0].open_path(
                         path,
                         ctx,
                         current_discovery_options,
+                        &mut self.stars,
                     );
                 }
             }

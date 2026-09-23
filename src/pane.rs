@@ -10,6 +10,7 @@ use crate::decode::image_to_color_image;
 use crate::file_io;
 use crate::metadata::MetadataRecord;
 use crate::settings::{ImageDiscoveryOptions};
+use crate::stars::Stars;
 use crate::view_animation::{Easing, ViewAnimation, ViewTransform};
 
 const MIN_ZOOM: f32 = 0.05;
@@ -30,6 +31,13 @@ pub(crate) struct Pane {
     /// Top level directory from which the pane loaded files
     pub(crate) dir_path: Option<PathBuf>,
     pub(crate) image_paths: Vec<PathBuf>,
+    /// The whole list while the starred-only filter is on. `image_paths`
+    /// then holds only the starred images.
+    unfiltered_paths: Option<Vec<PathBuf>>,
+    /// Indices into `image_paths` of the starred images, ascending. The
+    /// footer, the slider and the filter read it, and `refresh_starred`
+    /// rebuilds it when the list or the stars change.
+    pub(crate) starred_positions: Vec<usize>,
     pub(crate) current_index: usize,
     pub(crate) current_texture: Option<egui::TextureHandle>,
     /// File facts and EXIF of the image on screen, from the same decode
@@ -74,6 +82,8 @@ impl Pane {
         Self {
             dir_path: None,
             image_paths: Vec::new(),
+            unfiltered_paths: None,
+            starred_positions: Vec::new(),
             current_index: 0,
             current_texture: None,
             current_record: None,
@@ -100,6 +110,8 @@ impl Pane {
 
     pub(crate) fn close(&mut self) {
         self.image_paths.clear();
+        self.unfiltered_paths = None;
+        self.starred_positions.clear();
         self.current_index = 0;
         self.current_texture = None;
         self.current_record = None;
@@ -112,11 +124,15 @@ impl Pane {
         self.decode_cache.clear();
     }
 
+    /// List the folder of `path` and show `path`, or the first image when
+    /// `path` is a folder. The stars of the listed folders are read into
+    /// `stars`. The starred-only filter is off afterwards.
     pub(crate) fn open_path(
         &mut self,
         path: &std::path::Path,
         ctx: &egui::Context,
         discovery_options: ImageDiscoveryOptions,
+        stars: &mut Stars,
     ) {
         if !path.exists() {
             log::error!("Path does not exist: {}", path.display());
@@ -124,7 +140,11 @@ impl Pane {
         }
 
         let (dir, target_filename) = file_io::resolve_path(path);
-        self.image_paths = file_io::enumerate_images(&dir, discovery_options);
+        let listing = file_io::enumerate_images(&dir, discovery_options);
+        self.image_paths = listing.images;
+        self.unfiltered_paths = None;
+        stars.load(&self.image_paths, &listing.star_files);
+        self.refresh_starred(stars);
 
         if self.image_paths.is_empty() {
             log::warn!("No supported images found in {}", dir.display());
@@ -132,7 +152,7 @@ impl Pane {
         }
         self.dir_path = Some(dir);
 
-        self.current_index = target_filename
+        let index = target_filename
             .and_then(|name| {
                 self.image_paths.iter().position(|p| {
                     p.file_name().map(|f| f.to_string_lossy().into_owned()) == Some(name.clone())
@@ -142,6 +162,14 @@ impl Pane {
 
         self.zoom = 1.0;
         self.pan = egui::Vec2::ZERO;
+        self.load_list(index, ctx);
+    }
+
+    /// Browse `image_paths` from `index`: build the sliding window, the
+    /// thumbnail cache and the slider loader from scratch and show the
+    /// image. Opening a folder and the starred-only filter both come here.
+    fn load_list(&mut self, index: usize, ctx: &egui::Context) {
+        self.current_index = index;
         self.decode_cache.clear();
         self.animation = None;
 
@@ -399,11 +427,26 @@ impl Pane {
     /// Every cache keyed by file index shifts with the list. If the current
     /// image was removed the pane shows the next one, or the previous one
     /// at the end of the list; an emptied pane shows the drop hint.
+    ///
+    /// With the starred-only filter on, the file also leaves the whole list
+    /// kept aside. When the last starred image leaves, the filter turns off
+    /// and the pane shows the whole folder again at the same place.
     pub(crate) fn remove_index(&mut self, index: usize, ctx: &egui::Context) {
         if index >= self.image_paths.len() {
             return;
         }
-        self.image_paths.remove(index);
+        let removed = self.image_paths.remove(index);
+        self.starred_positions.retain(|&i| i != index);
+        for i in &mut self.starred_positions {
+            if *i > index {
+                *i -= 1;
+            }
+        }
+        let index_in_whole_list = self.unfiltered_paths.as_mut().and_then(|whole| {
+            let i = whole.iter().position(|p| *p == removed)?;
+            whole.remove(i);
+            Some(i)
+        });
         if let Some(cache) = &mut self.cache {
             cache.remove_index(index, &self.image_paths);
         }
@@ -413,6 +456,15 @@ impl Pane {
         }
 
         if self.image_paths.is_empty() {
+            if let Some(whole) = self.unfiltered_paths.take().filter(|w| !w.is_empty()) {
+                let index = index_in_whole_list.unwrap_or(0).min(whole.len() - 1);
+                self.image_paths = whole;
+                // Every remaining image is unstarred, or it would have
+                // been in the filtered list.
+                self.starred_positions.clear();
+                self.load_list(index, ctx);
+                return;
+            }
             self.close();
             return;
         }
@@ -440,6 +492,74 @@ impl Pane {
             Some(decoded) => self.show_decoded(decoded, ctx),
             None => self.load_sync(ctx),
         }
+    }
+
+    /// Drop `path` after it left its directory, from the list on screen or,
+    /// with the starred-only filter on, from the whole list kept aside.
+    pub(crate) fn remove_path(&mut self, path: &Path, ctx: &egui::Context) {
+        if let Some(index) = self.image_paths.iter().position(|p| p == path) {
+            self.remove_index(index, ctx);
+        } else if let Some(whole) = &mut self.unfiltered_paths {
+            whole.retain(|p| p != path);
+        }
+    }
+
+    pub(crate) fn is_current_starred(&self) -> bool {
+        self.starred_positions.binary_search(&self.current_index).is_ok()
+    }
+
+    /// The starred-only filter is on.
+    pub(crate) fn starred_only(&self) -> bool {
+        self.unfiltered_paths.is_some()
+    }
+
+    /// Rebuild `starred_positions` after the list or the stars changed.
+    pub(crate) fn refresh_starred(&mut self, stars: &Stars) {
+        self.starred_positions = self
+            .image_paths
+            .iter()
+            .enumerate()
+            .filter(|(_, path)| stars.is_starred(path))
+            .map(|(i, _)| i)
+            .collect();
+    }
+
+    /// Turn the starred-only filter on or off. On, the pane browses only
+    /// its starred images: the image on screen stays if it is starred,
+    /// otherwise the pane moves to the next starred one, or the last one
+    /// before it. Off, the whole list comes back at the same image.
+    /// Returns false when there is no starred image to show.
+    pub(crate) fn set_starred_only(&mut self, on: bool, stars: &Stars, ctx: &egui::Context) -> bool {
+        if on == self.starred_only() {
+            return true;
+        }
+        let shown = self.image_paths.get(self.current_index).cloned();
+        let index = if on {
+            self.refresh_starred(stars);
+            if self.starred_positions.is_empty() {
+                return false;
+            }
+            let later = self.starred_positions.partition_point(|&i| i < self.current_index);
+            let index = later.min(self.starred_positions.len() - 1);
+            let starred = self.starred_positions.iter().map(|&i| self.image_paths[i].clone()).collect();
+            self.unfiltered_paths = Some(std::mem::replace(&mut self.image_paths, starred));
+            index
+        } else {
+            let Some(whole) = self.unfiltered_paths.take() else {
+                return true;
+            };
+            self.image_paths = whole;
+            shown
+                .as_ref()
+                .and_then(|shown| self.image_paths.iter().position(|p| p == shown))
+                .unwrap_or(0)
+        };
+        if self.image_paths.get(index) != shown.as_ref() && self.reset_zoom_pan_on_navigation {
+            self.reset_view();
+        }
+        self.load_list(index, ctx);
+        self.refresh_starred(stars);
+        true
     }
 
     /// Drag the slider to `idx`. Returns true if image was loaded.

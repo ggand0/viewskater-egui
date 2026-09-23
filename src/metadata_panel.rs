@@ -13,7 +13,7 @@ use std::path::Path;
 
 use eframe::egui;
 
-use crate::menu::{format_file_size, trash_button};
+use crate::menu::{format_file_size, star_button, trash_button};
 use crate::metadata::{ExifData, ExifSummary, MetadataRecord};
 use crate::pane::Pane;
 use crate::theme::UiTheme;
@@ -53,6 +53,8 @@ pub(crate) struct PanelState {
 pub(crate) struct PanelOutput {
     /// Where the panel was drawn.
     pub rect: egui::Rect,
+    /// The action row's star button was clicked, for this pane index.
+    pub star_clicked: Option<usize>,
     /// The action row's trash button was clicked, for this pane index.
     pub trash_clicked: Option<usize>,
     /// The resize drag ended this frame. The panel is now this wide.
@@ -74,6 +76,7 @@ struct Frame<'a> {
 }
 
 struct PaneOutput {
+    star_clicked: bool,
     trash_clicked: bool,
     all_exif_toggled: Option<bool>,
     filter_has_focus: bool,
@@ -88,6 +91,7 @@ pub(crate) fn show_metadata_panel(
     theme: &UiTheme,
 ) -> PanelOutput {
     let panel_id = egui::Id::new(PANEL_ID);
+    let mut star_clicked = None;
     let mut trash_clicked = None;
     let mut all_exif_toggled = None;
     let mut filter_has_focus = false;
@@ -117,6 +121,9 @@ pub(crate) fn show_metadata_panel(
                         all_exif_open,
                     };
                     let out = show_pane(ui, pane, &mut state.filter, &frame);
+                    if out.star_clicked {
+                        star_clicked = Some(pane_index);
+                    }
                     if out.trash_clicked {
                         trash_clicked = Some(pane_index);
                     }
@@ -135,6 +142,7 @@ pub(crate) fn show_metadata_panel(
 
     PanelOutput {
         rect: response.response.rect,
+        star_clicked,
         trash_clicked,
         resized_to,
         all_exif_toggled,
@@ -187,6 +195,7 @@ fn tab_strip(ui: &mut egui::Ui, count: usize, active: &mut usize, theme: &UiThem
 
 fn show_pane(ui: &mut egui::Ui, pane: &Pane, filter: &mut String, f: &Frame) -> PaneOutput {
     let mut out = PaneOutput {
+        star_clicked: false,
         trash_clicked: false,
         all_exif_toggled: None,
         filter_has_focus: false,
@@ -204,12 +213,19 @@ fn show_pane(ui: &mut egui::Ui, pane: &Pane, filter: &mut String, f: &Frame) -> 
         _ => None,
     };
 
-    // Action row. Stars and a flag join the trash button later.
+    // Action row: the star at the left and the trash button at the right
+    // end, as far apart as the row allows, so a misclick meant for the
+    // star does not move the photo to the trash.
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        if trash_button(ui, f.theme).clicked() {
-            out.trash_clicked = true;
+        if star_button(ui, pane.is_current_starred(), f.theme).clicked() {
+            out.star_clicked = true;
         }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if trash_button(ui, f.theme).clicked() {
+                out.trash_clicked = true;
+            }
+        });
     });
 
     ui.scope(|ui| {

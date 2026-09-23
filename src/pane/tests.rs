@@ -200,7 +200,7 @@ fn real_files_move_out_and_the_pane_follows() {
         write_png(&dir.path().join(format!("img{i}.png")), (i * 40) as u8);
     }
     let mut p = pane(&ctx);
-    p.open_path(&dir.path().join("img2.png"), &ctx, Default::default());
+    p.open_path(&dir.path().join("img2.png"), &ctx, Default::default(), &mut Stars::new(&ctx));
     assert_eq!(p.image_paths.len(), 6);
     assert_eq!(p.current_index, 2);
     settle(&mut p);
@@ -252,7 +252,7 @@ fn real_files_failed_move_keeps_everything() {
         write_png(&dir.path().join(format!("img{i}.png")), (i * 80) as u8);
     }
     let mut p = pane(&ctx);
-    p.open_path(dir.path(), &ctx, Default::default());
+    p.open_path(dir.path(), &ctx, Default::default(), &mut Stars::new(&ctx));
     settle(&mut p);
     let before = p.image_paths.clone();
 
@@ -292,7 +292,7 @@ fn keyboard_navigation_passes_a_file_that_fails_to_decode() {
 
     let ctx = egui::Context::default();
     let mut p = pane(&ctx);
-    p.open_path(&dir.path().join("a.png"), &ctx, Default::default());
+    p.open_path(&dir.path().join("a.png"), &ctx, Default::default(), &mut Stars::new(&ctx));
     wait_for_decodes(&mut p);
     assert_eq!(p.current_index, 0);
 
@@ -313,4 +313,172 @@ fn keyboard_navigation_passes_a_file_that_fails_to_decode() {
     assert!(p.navigate(-1, &ctx));
     assert_eq!(p.current_index, 0);
     assert!(p.current_texture.is_some());
+}
+
+// ---- stars and the starred-only filter --------------------------------
+
+/// Six PNGs, img0 to img5, opened at `current`, with `starred` starred.
+fn starred_folder(ctx: &egui::Context, starred: &[usize], current: usize) -> (tempfile::TempDir, Pane, Stars) {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..6 {
+        write_png(&dir.path().join(format!("img{i}.png")), (i * 40) as u8);
+    }
+    let mut stars = Stars::new(ctx);
+    let mut p = pane(ctx);
+    p.open_path(&dir.path().join(format!("img{current}.png")), ctx, Default::default(), &mut stars);
+    for &i in starred {
+        let path = p.image_paths[i].clone();
+        stars.star(&path, std::fs::metadata(&path).unwrap().len()).unwrap();
+    }
+    assert!(stars.wait_for_writes().is_empty());
+    p.refresh_starred(&stars);
+    settle(&mut p);
+    (dir, p, stars)
+}
+
+fn names(paths: &[PathBuf]) -> Vec<String> {
+    paths.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect()
+}
+
+fn shown(p: &Pane) -> String {
+    names(&p.image_paths[p.current_index..=p.current_index]).remove(0)
+}
+
+#[test]
+fn filter_moves_to_the_next_starred_image_and_back() {
+    let ctx = egui::Context::default();
+    let (_dir, mut p, stars) = starred_folder(&ctx, &[1, 4], 2);
+    assert_eq!(p.starred_positions, [1, 4]);
+
+    assert!(p.set_starred_only(true, &stars, &ctx));
+    assert!(p.starred_only());
+    assert_eq!(names(&p.image_paths), ["img1.png", "img4.png"]);
+    assert_eq!(shown(&p), "img4.png");
+    assert_eq!(p.starred_positions, [0, 1]);
+    assert!(p.current_texture.is_some());
+
+    assert!(p.set_starred_only(false, &stars, &ctx));
+    assert!(!p.starred_only());
+    assert_eq!(p.image_paths.len(), 6);
+    assert_eq!(shown(&p), "img4.png");
+    assert_eq!(p.starred_positions, [1, 4]);
+}
+
+#[test]
+fn filter_keeps_a_starred_image_on_screen() {
+    let ctx = egui::Context::default();
+    let (_dir, mut p, stars) = starred_folder(&ctx, &[1, 4], 1);
+    assert!(p.set_starred_only(true, &stars, &ctx));
+    assert_eq!(shown(&p), "img1.png");
+}
+
+#[test]
+fn filter_after_the_last_star_moves_back_to_it() {
+    let ctx = egui::Context::default();
+    let (_dir, mut p, stars) = starred_folder(&ctx, &[1, 4], 5);
+    assert!(p.set_starred_only(true, &stars, &ctx));
+    assert_eq!(shown(&p), "img4.png");
+}
+
+#[test]
+fn filter_without_stars_changes_nothing() {
+    let ctx = egui::Context::default();
+    let (_dir, mut p, stars) = starred_folder(&ctx, &[], 2);
+    let before = p.image_paths.clone();
+    assert!(!p.set_starred_only(true, &stars, &ctx));
+    assert!(!p.starred_only());
+    assert_eq!(p.image_paths, before);
+    assert_eq!(p.current_index, 2);
+}
+
+/// Removing a star while the filter is on keeps the image in the list,
+/// so the picture does not jump away from under the key press.
+#[test]
+fn unstarring_under_the_filter_keeps_the_image() {
+    let ctx = egui::Context::default();
+    let (_dir, mut p, mut stars) = starred_folder(&ctx, &[1, 4], 1);
+    assert!(p.set_starred_only(true, &stars, &ctx));
+    let path = p.image_paths[p.current_index].clone();
+    stars.unstar(&path).unwrap();
+    p.refresh_starred(&stars);
+    assert_eq!(names(&p.image_paths), ["img1.png", "img4.png"]);
+    assert!(!p.is_current_starred());
+    assert_eq!(p.starred_positions, [1]);
+}
+
+#[test]
+fn trash_under_the_filter_leaves_both_lists() {
+    let ctx = egui::Context::default();
+    let (_dir, mut p, stars) = starred_folder(&ctx, &[1, 4], 1);
+    let bin = tempfile::tempdir().unwrap();
+    let bin_path = bin.path().to_path_buf();
+    let move_out = |path: &Path| -> Result<(), String> {
+        std::fs::rename(path, bin_path.join(path.file_name().unwrap())).map_err(|e| e.to_string())
+    };
+    assert!(p.set_starred_only(true, &stars, &ctx));
+
+    p.remove_current(&ctx, move_out).unwrap().unwrap();
+    assert_eq!(names(&p.image_paths), ["img4.png"]);
+    assert_eq!(p.starred_positions, [0]);
+    assert!(p.set_starred_only(false, &stars, &ctx));
+    assert_eq!(names(&p.image_paths), ["img0.png", "img2.png", "img3.png", "img4.png", "img5.png"]);
+    assert_eq!(shown(&p), "img4.png");
+}
+
+/// When the last starred image goes to the trash, the filter turns off and
+/// the pane shows the folder again where that image was, instead of an
+/// empty pane.
+#[test]
+fn trashing_the_last_starred_image_turns_the_filter_off() {
+    let ctx = egui::Context::default();
+    let (_dir, mut p, stars) = starred_folder(&ctx, &[3], 0);
+    let bin = tempfile::tempdir().unwrap();
+    let bin_path = bin.path().to_path_buf();
+    let move_out = |path: &Path| -> Result<(), String> {
+        std::fs::rename(path, bin_path.join(path.file_name().unwrap())).map_err(|e| e.to_string())
+    };
+    assert!(p.set_starred_only(true, &stars, &ctx));
+    assert_eq!(shown(&p), "img3.png");
+
+    p.remove_current(&ctx, move_out).unwrap().unwrap();
+    assert!(!p.starred_only());
+    assert_eq!(p.image_paths.len(), 5);
+    assert_eq!(shown(&p), "img4.png");
+    assert!(p.current_texture.is_some());
+}
+
+/// The other pane trashed an image this pane keeps only in its whole list.
+#[test]
+fn remove_path_reaches_the_whole_list() {
+    let ctx = egui::Context::default();
+    let (_dir, mut p, stars) = starred_folder(&ctx, &[1, 4], 1);
+    assert!(p.set_starred_only(true, &stars, &ctx));
+    let unstarred = p.unfiltered_paths.as_ref().unwrap()[2].clone();
+
+    p.remove_path(&unstarred, &ctx);
+    assert_eq!(names(&p.image_paths), ["img1.png", "img4.png"]);
+    assert!(p.set_starred_only(false, &stars, &ctx));
+    assert_eq!(names(&p.image_paths), ["img0.png", "img1.png", "img3.png", "img4.png", "img5.png"]);
+}
+
+#[test]
+fn remove_index_shifts_the_starred_positions() {
+    let ctx = egui::Context::default();
+    let mut p = pane_with(&ctx, 6, 0);
+    p.starred_positions = vec![1, 3, 5];
+    p.remove_index(3, &ctx);
+    assert_eq!(p.starred_positions, [1, 4]);
+    p.remove_index(0, &ctx);
+    assert_eq!(p.starred_positions, [0, 3]);
+}
+
+#[test]
+fn opening_a_folder_turns_the_filter_off() {
+    let ctx = egui::Context::default();
+    let (dir, mut p, mut stars) = starred_folder(&ctx, &[1, 4], 1);
+    assert!(p.set_starred_only(true, &stars, &ctx));
+    p.open_path(dir.path(), &ctx, Default::default(), &mut stars);
+    assert!(!p.starred_only());
+    assert_eq!(p.image_paths.len(), 6);
+    assert_eq!(p.starred_positions, [1, 4]);
 }

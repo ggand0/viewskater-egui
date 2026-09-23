@@ -93,6 +93,10 @@ pub(crate) struct MenuBarState<'a> {
     pub settings: &'a mut AppSettings,
     pub current_sort: &'a mut ImageSortOrder,
     pub is_fullscreen: bool,
+    /// Every image S acts on has a star, so the Edit row reads "Unstar".
+    pub current_starred: bool,
+    /// The starred-only filter is on in an active pane.
+    pub starred_only: bool,
 }
 
 /// Returns (MenuAction, menu_is_open) so fullscreen mode can keep the bar visible
@@ -108,6 +112,8 @@ pub(crate) fn show_menu_bar(
     let settings = &mut *state.settings;
     let current_sort = &mut *state.current_sort;
     let is_fullscreen = state.is_fullscreen;
+    let current_starred = state.current_starred;
+    let starred_only = state.starred_only;
     let mut action = MenuAction::None;
     let mut menu_is_open = false;
     let is_dual = panes.len() >= 2;
@@ -188,6 +194,16 @@ pub(crate) fn show_menu_bar(
             if show_edit {
                 ui.menu_button("Edit", |ui| {
                     let (ml, mw) = setup_menu_hover(ui);
+                    let star_label = if current_starred { "Unstar  S" } else { "Star  S" };
+                    hover_row(ui, theme, ml, mw, |ui| {
+                        if ui
+                            .add_enabled(has_images, egui::Button::new(star_label))
+                            .clicked()
+                        {
+                            action = MenuAction::ToggleStar;
+                            ui.close_menu();
+                        }
+                    });
                     let trash_label = if cfg!(target_os = "macos") {
                         "Move to Trash  Del / Cmd+Backspace"
                     } else {
@@ -274,6 +290,14 @@ pub(crate) fn show_menu_bar(
                                     *current_sort = settings.image_discovery_options.sort_order;
                                 }
                             });
+                        }
+                    });
+                });
+                hover_row(ui, theme, ml, mw, |ui| {
+                    ui.horizontal(|ui| {
+                        let mut on = starred_only;
+                        if toggle_switch(ui, &mut on, "Starred Only  F", theme) {
+                            action = MenuAction::ToggleStarredOnly;
                         }
                     });
                 });
@@ -442,6 +466,8 @@ pub(crate) fn show_footer(
 
 /// Width reserved for the trash button and the gap before the counter.
 const FOOTER_BUTTON_W: f32 = 26.0;
+/// Width of the star slot before the file name.
+const FOOTER_STAR_W: f32 = 14.0;
 
 /// Paint one pane's footer. Returns true if its Move to Trash button was
 /// clicked.
@@ -457,8 +483,20 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool, theme: 
         let dim = egui::Color32::from_gray(160);
         let sep_w = 20.0; // approximate separator + spacing width
 
+        // The star slot before the file name exists only when the pane's
+        // list has a starred image, so a pane without stars looks as it
+        // always did. With the starred-only filter on, the counter says so
+        // in the accent colour.
+        let star_slot = !pane.starred_positions.is_empty();
+        let filtered = pane.starred_only();
+        let counter_color = if filtered { theme.accent } else { bright };
+
         // Prepare text elements
-        let index_text = format!("{} / {}", pane.current_index + 1, pane.image_paths.len());
+        let index_text = if filtered {
+            format!("{} / {} starred", pane.current_index + 1, pane.image_paths.len())
+        } else {
+            format!("{} / {}", pane.current_index + 1, pane.image_paths.len())
+        };
         let filename = path.as_os_str().to_string_lossy();
         // Only show file names relative to panes' top level dir
         let filename = match &pane.dir_path {
@@ -500,13 +538,17 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool, theme: 
         let res_w = resolution.as_ref().map_or(0.0, |r| measure(ui, r) + sep_w);
         let size_w = file_size.as_ref().map_or(0.0, |s| measure(ui, s) + sep_w);
         let button_w = if show_buttons { FOOTER_BUTTON_W } else { 0.0 };
+        let star_w = if star_slot { FOOTER_STAR_W + ui.spacing().item_spacing.x } else { 0.0 };
 
-        let remaining = total - index_w - button_w - margin;
+        let remaining = total - index_w - button_w - margin - star_w;
         let show_filename = remaining >= filename_w;
         let show_res = show_filename && remaining >= filename_w + res_w;
         let show_size = show_res && remaining >= filename_w + res_w + size_w;
 
         // Render visible elements (priority: index > filename > resolution > file size)
+        if star_slot {
+            footer_star(ui, pane.is_current_starred(), theme);
+        }
         if show_filename {
             ui.label(egui::RichText::new(&filename).monospace().color(bright).size(13.0));
         }
@@ -541,22 +583,22 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool, theme: 
                 |ui| {
                     let counter_w = if space >= index_w + button_w {
                         ui.label(
-                            egui::RichText::new(&index_text).monospace().color(bright).size(13.0),
+                            egui::RichText::new(&index_text).monospace().color(counter_color).size(13.0),
                         );
                         index_w
                     } else if space >= short_index_w + button_w {
                         ui.label(
-                            egui::RichText::new(&short_index).monospace().color(bright).size(13.0),
+                            egui::RichText::new(&short_index).monospace().color(counter_color).size(13.0),
                         );
                         short_index_w
                     } else if space >= index_w {
                         ui.label(
-                            egui::RichText::new(&index_text).monospace().color(bright).size(13.0),
+                            egui::RichText::new(&index_text).monospace().color(counter_color).size(13.0),
                         );
                         return;
                     } else if space >= short_index_w {
                         ui.label(
-                            egui::RichText::new(&short_index).monospace().color(bright).size(13.0),
+                            egui::RichText::new(&short_index).monospace().color(counter_color).size(13.0),
                         );
                         return;
                     } else {
@@ -597,6 +639,48 @@ pub(crate) fn trash_button(ui: &mut egui::Ui, theme: &UiTheme) -> egui::Response
     response.on_hover_text(format!("Move to Trash ({shortcut})"))
 }
 
+/// The footer's star before the file name: filled in the accent colour on
+/// a starred image, empty space on the others, so the name stays put while
+/// skating past starred images. It is not a button. S, the Edit menu and
+/// the metadata panel set stars.
+fn footer_star(ui: &mut egui::Ui, starred: bool, theme: &UiTheme) {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(FOOTER_STAR_W, 18.0), egui::Sense::hover());
+    if starred {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "★",
+            egui::FontId::proportional(14.0),
+            theme.accent,
+        );
+        response.on_hover_text("Starred (S)");
+    }
+}
+
+/// The metadata panel's star button: an outline, gray at rest and accent
+/// on hover like the trash button, and filled in the accent colour when
+/// the image is starred. ★ and ☆ come from egui's bundled emoji-icon-font.
+pub(crate) fn star_button(ui: &mut egui::Ui, starred: bool, theme: &UiTheme) -> egui::Response {
+    let size = egui::vec2(20.0, 18.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let (glyph, color) = if starred {
+        ("★", theme.accent)
+    } else if response.hovered() {
+        ("☆", theme.accent)
+    } else {
+        ("☆", egui::Color32::from_gray(160))
+    };
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        egui::FontId::proportional(15.0),
+        color,
+    );
+    response.on_hover_text(if starred { "Unstar (S)" } else { "Star (S)" })
+}
+
 pub(crate) fn format_file_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{} B", bytes)
@@ -624,4 +708,6 @@ pub(crate) enum MenuAction {
     ShowLogs,
     ExportDebugLogs,
     MoveToTrash,
+    ToggleStar,
+    ToggleStarredOnly,
 }
