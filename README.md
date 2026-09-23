@@ -14,6 +14,7 @@ This is the egui port of the original [iced version](https://github.com/ggand0/v
 - Scroll-to-zoom centered on cursor, click-drag to pan
 - Fullscreen mode with cursor proximity UI reveal
 - Supports jpg, jxl, png, bmp, webp, gif, tiff, qoi, tga
+- Opens camera RAW files (arw, cr2, cr3, dng, nef, raf, rw2 and more) by showing the JPEG the camera stored inside them
 
 ## Download
 

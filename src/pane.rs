@@ -5,7 +5,7 @@ use std::time::Instant;
 use eframe::egui;
 
 use crate::animation::{AnimationPlayer, AnimationPoll};
-use crate::cache::{self, Loaded};
+use crate::cache::{self, Decoded, Loaded};
 use crate::decode::image_to_color_image;
 use crate::file_io;
 use crate::metadata::MetadataRecord;
@@ -207,7 +207,9 @@ impl Pane {
                 );
             }
             Err(e) => {
-                log::error!("Failed to load {}: {}", path.display(), e);
+                if !loaded.record.no_embedded_preview {
+                    log::error!("Failed to load {}: {}", path.display(), e);
+                }
                 self.set_current_failed(loaded.record, ctx);
             }
         }
@@ -229,10 +231,10 @@ impl Pane {
             return false;
         }
 
-        if let Some(t) = self
+        if let Some(decoded) = self
             .cache
             .as_ref()
-            .and_then(|cache| cache.loaded_for(new_index))
+            .and_then(|cache| cache.decoded_for(new_index))
         {
             self.current_index = new_index;
 
@@ -258,7 +260,7 @@ impl Pane {
                     summary,
                 );
             }
-            self.set_current(Some(t), ctx);
+            self.show_decoded(decoded, ctx);
             return true;
         }
         false
@@ -278,20 +280,18 @@ impl Pane {
 
         if let Some(cache) = &mut self.cache {
             cache.jump_to(index, &self.image_paths);
-            let loaded = cache.loaded_for(index);
-            let hit = loaded.is_some();
+            let decoded = cache.decoded_for(index);
             let summary = cache.summary();
             log::debug!(
                 "jump {}/{} cache={} {}",
                 index,
                 self.image_paths.len(),
                 summary,
-                if hit { "hit" } else { "miss" },
+                if decoded.is_some() { "hit" } else { "miss" },
             );
-            if hit {
-                self.set_current(loaded, ctx);
-            } else {
-                self.load_sync(ctx);
+            match decoded {
+                Some(decoded) => self.show_decoded(decoded, ctx),
+                None => self.load_sync(ctx),
             }
         } else {
             self.load_sync(ctx);
@@ -306,7 +306,9 @@ impl Pane {
         !self.image_paths.is_empty() && self.current_index > 0
     }
 
-    /// Check whether the next image in the given direction is cached and ready.
+    /// Check whether the next image in the given direction is cached and
+    /// ready. A file whose decode failed is ready: there is nothing more
+    /// to wait for, and navigation moves onto it and past it.
     pub(crate) fn is_next_cached(&self, delta: isize) -> bool {
         if self.image_paths.is_empty() {
             return false;
@@ -318,7 +320,7 @@ impl Pane {
         }
         self.cache
             .as_ref()
-            .is_some_and(|c| c.loaded_for(new_index).is_some())
+            .is_some_and(|c| c.decoded_for(new_index).is_some())
     }
 
     /// Benchmark hooks. The pane owns the cache, so these forward to it:
@@ -433,9 +435,9 @@ impl Pane {
         let cached = self
             .cache
             .as_ref()
-            .and_then(|c| c.loaded_for(self.current_index));
+            .and_then(|c| c.decoded_for(self.current_index));
         match cached {
-            Some(loaded) => self.set_current(Some(loaded), ctx),
+            Some(decoded) => self.show_decoded(decoded, ctx),
             None => self.load_sync(ctx),
         }
     }
@@ -523,8 +525,9 @@ impl Pane {
                 });
             }
         } else {
+            let no_preview = self.current_record.as_ref().is_some_and(|record| record.no_embedded_preview);
             ui.centered_and_justified(|ui| {
-                ui.label("Failed to load image");
+                ui.label(if no_preview { "No embedded preview in this RAW file" } else { "Failed to load image" });
             });
         }
         false
@@ -620,6 +623,14 @@ impl Pane {
             }
         }
         self.start_animation(ctx);
+    }
+
+    /// Put what the sliding window has for the current file on screen.
+    fn show_decoded(&mut self, decoded: Decoded, ctx: &egui::Context) {
+        match decoded {
+            Decoded::Image(loaded) => self.set_current(Some(loaded), ctx),
+            Decoded::Failed(record) => self.set_current_failed(record, ctx),
+        }
     }
 
     /// The pixels could not be decoded: nothing on screen, but the file

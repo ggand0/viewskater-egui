@@ -148,8 +148,8 @@ fn tex(ctx: &egui::Context, original_index: usize) -> egui::TextureHandle {
     ctx.load_texture(format!("f{original_index}"), one_pixel(), egui::TextureOptions::LINEAR)
 }
 
-fn loaded(ctx: &egui::Context, original_index: usize) -> Loaded {
-    Loaded { texture: tex(ctx, original_index), record: empty_record() }
+fn loaded(ctx: &egui::Context, original_index: usize) -> Decoded {
+    Decoded::Image(Loaded { texture: tex(ctx, original_index), record: empty_record() })
 }
 
 /// Window over files [first, first + 2 * cache_count + 1), every slot
@@ -171,7 +171,7 @@ fn assert_slots_consistent(c: &SlidingWindowCache, removed: usize) {
         let original = if new_index >= removed { new_index + 1 } else { new_index };
         if let Some(t) = slot {
             assert_eq!(
-                t.texture.name(),
+                t.image().unwrap().texture.name(),
                 format!("f{original}"),
                 "slot {k} (file {new_index}) holds the wrong texture"
             );
@@ -188,14 +188,14 @@ fn remove_before_window_shifts_first_only() {
     let ctx = egui::Context::default();
     let paths = fake_paths(20);
     let mut c = window(&ctx, 2, 10); // files 10..14
-    let before: Vec<_> = c.slots.iter().map(|s| s.as_ref().unwrap().texture.name()).collect();
+    let before: Vec<_> = c.slots.iter().map(|s| s.as_ref().unwrap().image().unwrap().texture.name()).collect();
 
     let mut after = paths.clone();
     after.remove(3);
     c.remove_index(3, &after);
 
     assert_eq!(c.first_file_index, 9);
-    let now: Vec<_> = c.slots.iter().map(|s| s.as_ref().unwrap().texture.name()).collect();
+    let now: Vec<_> = c.slots.iter().map(|s| s.as_ref().unwrap().image().unwrap().texture.name()).collect();
     assert_eq!(now, before, "slot contents must not change");
     assert_slots_consistent(&c, 3);
     assert!(c.running_decodes.is_empty(), "nothing to load when the window is untouched");
@@ -208,14 +208,14 @@ fn remove_after_window_changes_nothing() {
     let ctx = egui::Context::default();
     let paths = fake_paths(20);
     let mut c = window(&ctx, 2, 3); // files 3..7
-    let before: Vec<_> = c.slots.iter().map(|s| s.as_ref().unwrap().texture.name()).collect();
+    let before: Vec<_> = c.slots.iter().map(|s| s.as_ref().unwrap().image().unwrap().texture.name()).collect();
 
     let mut after = paths.clone();
     after.remove(15);
     c.remove_index(15, &after);
 
     assert_eq!(c.first_file_index, 3);
-    let now: Vec<_> = c.slots.iter().map(|s| s.as_ref().unwrap().texture.name()).collect();
+    let now: Vec<_> = c.slots.iter().map(|s| s.as_ref().unwrap().image().unwrap().texture.name()).collect();
     assert_eq!(now, before);
     assert!(c.running_decodes.is_empty());
 }
@@ -242,7 +242,7 @@ fn remove_center_fills_from_the_right() {
     assert!(c.slots[4].is_none());
     assert_eq!(c.running_decodes.get(&after[9]), Some(&9));
     // The first four slots kept their textures: f5 f6 f8 f9.
-    let names: Vec<_> = c.slots.iter().take(4).map(|s| s.as_ref().unwrap().texture.name()).collect();
+    let names: Vec<_> = c.slots.iter().take(4).map(|s| s.as_ref().unwrap().image().unwrap().texture.name()).collect();
     assert_eq!(names, ["f5", "f6", "f8", "f9"]);
 }
 
@@ -258,7 +258,7 @@ fn remove_first_slot_fills_from_the_right() {
 
     assert_eq!(c.first_file_index, 5);
     assert_slots_consistent(&c, 5);
-    let names: Vec<_> = c.slots.iter().take(4).map(|s| s.as_ref().unwrap().texture.name()).collect();
+    let names: Vec<_> = c.slots.iter().take(4).map(|s| s.as_ref().unwrap().image().unwrap().texture.name()).collect();
     assert_eq!(names, ["f6", "f7", "f8", "f9"]);
     assert!(c.slots[4].is_none());
 }
@@ -278,7 +278,7 @@ fn remove_at_end_of_list_fills_from_the_left() {
     assert_eq!(c.slots.len(), 5);
     assert!(c.slots[0].is_none(), "new leftmost slot is loading");
     assert_eq!(c.running_decodes.get(&after[4]), Some(&4));
-    let names: Vec<_> = c.slots.iter().skip(1).map(|s| s.as_ref().unwrap().texture.name()).collect();
+    let names: Vec<_> = c.slots.iter().skip(1).map(|s| s.as_ref().unwrap().image().unwrap().texture.name()).collect();
     assert_eq!(names, ["f5", "f6", "f7", "f8"]);
     assert_slots_consistent(&c, 9);
 }
@@ -298,7 +298,7 @@ fn remove_when_list_is_shorter_than_window_leaves_empty_slot() {
 
     assert_eq!(c.first_file_index, 0);
     assert_eq!(c.slots.len(), 5);
-    let names: Vec<_> = c.slots.iter().map(|s| s.as_ref().map(|t| t.texture.name())).collect();
+    let names: Vec<_> = c.slots.iter().map(|s| s.as_ref().map(|t| t.image().unwrap().texture.name())).collect();
     assert_eq!(names, [Some("f0".into()), Some("f2".into()), None, None, None]);
     assert!(c.running_decodes.is_empty(), "nothing exists to load");
 }
@@ -382,7 +382,7 @@ fn stale_decode_result_is_dropped_by_poll() {
 
     assert!(c.pending_uploads.is_empty(), "stale result must not be uploaded");
     // Slot 3 is now file 8 (originally f9), which had a texture.
-    assert_eq!(c.slots[3].as_ref().unwrap().texture.name(), "f9");
+    assert_eq!(c.slots[3].as_ref().unwrap().image().unwrap().texture.name(), "f9");
 }
 
 #[test]

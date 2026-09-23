@@ -14,6 +14,7 @@ mod preview_sim_bench;
 
 const COL_LOADED: egui::Color32 = egui::Color32::from_rgb(76, 175, 80);
 const COL_LOADING: egui::Color32 = egui::Color32::from_rgb(255, 183, 77);
+const COL_FAILED: egui::Color32 = egui::Color32::from_rgb(229, 115, 115);
 const COL_EMPTY: egui::Color32 = egui::Color32::from_rgb(60, 60, 60);
 
 pub struct ThumbnailCache {
@@ -51,7 +52,9 @@ impl ThumbnailCache {
                 let thumbnail = match loaded.image {
                     Ok(img) => Some(crate::decode::image_to_thumbnail(img, loaded.orientation)),
                     Err(e) => {
-                        log::error!("Thumbnail decode failed for {}: {e}", latest_path.display());
+                        if !loaded.record.no_embedded_preview {
+                            log::error!("Thumbnail decode failed for {}: {e}", latest_path.display());
+                        }
                         None
                     }
                 };
@@ -213,6 +216,27 @@ impl Loaded {
     }
 }
 
+/// What the sliding window has for a file once its decode has finished.
+/// A file whose pixels failed is a result too. Without it the window
+/// could not tell such a file from one that is still decoding, and
+/// keyboard navigation, which waits for the next image, would wait on it
+/// for good.
+#[derive(Clone)]
+pub enum Decoded {
+    Image(Loaded),
+    /// The pixels failed to decode. The record exists anyway.
+    Failed(Arc<MetadataRecord>),
+}
+
+impl Decoded {
+    fn image(&self) -> Option<&Loaded> {
+        match self {
+            Decoded::Image(loaded) => Some(loaded),
+            Decoded::Failed(_) => None,
+        }
+    }
+}
+
 /// A finished background decode waiting for its GPU upload in `poll`.
 struct PendingUpload {
     file_index: usize,
@@ -228,7 +252,8 @@ struct PendingUpload {
 /// `current_index - first_file_index`, ideally at the center (`cache_count`),
 /// but off-center near directory boundaries.
 pub struct SlidingWindowCache {
-    slots: VecDeque<Option<Loaded>>,
+    /// `None` until the file's decode has finished.
+    slots: VecDeque<Option<Decoded>>,
     first_file_index: usize,
     cache_count: usize,
 
@@ -368,9 +393,10 @@ impl SlidingWindowCache {
         // Synchronously decode the center image
         let center_slot = center_index - self.first_file_index;
         let (texture, record) = Self::decode_sync(&image_paths[center_index], &self.ctx);
-        if let Some(texture) = texture {
-            self.slots[center_slot] = Some(Loaded { texture, record: record.clone() });
-        }
+        self.slots[center_slot] = Some(match texture {
+            Some(texture) => Decoded::Image(Loaded { texture, record: record.clone() }),
+            None => Decoded::Failed(record.clone()),
+        });
 
         // Spawn background loads for all other valid slots
         for i in 0..cache_size {
@@ -417,6 +443,11 @@ impl SlidingWindowCache {
                     name,
                     record: result.record,
                 });
+            } else if let Some(slot_idx) = self.slot_index_for(file_index) {
+                // Nothing to upload. The slot gets the failure right away.
+                if self.slots[slot_idx].is_none() {
+                    self.slots[slot_idx] = Some(Decoded::Failed(result.record));
+                }
             }
 
             // A decode slot freed up — spawn the next queued decode if any.
@@ -444,7 +475,7 @@ impl SlidingWindowCache {
                         upload.image,
                         egui::TextureOptions::LINEAR,
                     );
-                    self.slots[slot_idx] = Some(Loaded { texture, record: upload.record });
+                    self.slots[slot_idx] = Some(Decoded::Image(Loaded { texture, record: upload.record }));
                 }
             }
         }
@@ -604,7 +635,7 @@ impl SlidingWindowCache {
     /// Format: `[first..last] loaded/total running=N`
     pub fn summary(&self) -> String {
         let last = self.first_file_index + self.slots.len().saturating_sub(1);
-        let loaded = self.slots.iter().filter(|s| s.is_some()).count();
+        let loaded = self.slots.iter().flatten().filter(|s| s.image().is_some()).count();
         let total = self.slots.len();
         if self.running_decodes.is_empty() {
             format!("[{}..{}] {}/{}", self.first_file_index, last, loaded, total)
@@ -618,7 +649,7 @@ impl SlidingWindowCache {
 
     /// Total bytes of loaded textures in the sliding window.
     pub fn total_bytes(&self) -> usize {
-        self.slots.iter().filter_map(|s| s.as_ref()).map(Loaded::bytes).sum()
+        self.slots.iter().flatten().filter_map(Decoded::image).map(Loaded::bytes).sum()
     }
 
     pub fn total_mb(&self) -> f64 {
@@ -630,10 +661,17 @@ impl SlidingWindowCache {
         self.first_file_index
     }
 
-    /// The loaded image for a file index, if its slot is filled.
+    /// The loaded image for a file index, if its slot has one.
     pub fn loaded_for(&self, file_index: usize) -> Option<Loaded> {
+        self.decoded_for(file_index)?.image().cloned()
+    }
+
+    /// What the window has for a file index: its image, or the failure of
+    /// its decode. `None` while the decode has not finished and for a
+    /// file outside the window.
+    pub fn decoded_for(&self, file_index: usize) -> Option<Decoded> {
         let slot_idx = file_index.checked_sub(self.first_file_index)?;
-        self.slots.get(slot_idx).and_then(|opt| opt.clone())
+        self.slots.get(slot_idx)?.clone()
     }
 
     /// Find which slot (if any) holds the given file index.
@@ -690,7 +728,9 @@ impl SlidingWindowCache {
                 let image = match loaded.image {
                     Ok(img) => Some(crate::decode::image_to_color_image(img, loaded.orientation)),
                     Err(e) => {
-                        log::warn!("Background decode failed for {}: {}", path.display(), e);
+                        if !loaded.record.no_embedded_preview {
+                            log::warn!("Background decode failed for {}: {}", path.display(), e);
+                        }
                         None
                     }
                 };
@@ -767,7 +807,9 @@ impl SlidingWindowCache {
                 for i in 0..cache_size {
                     let file_index = self.first_file_index + i;
                     let is_current = file_index == current_index;
-                    let is_loaded = self.slots.get(i).is_some_and(|s| s.is_some());
+                    let slot = self.slots.get(i).and_then(|s| s.as_ref());
+                    let is_loaded = slot.is_some_and(|s| s.image().is_some());
+                    let is_failed = matches!(slot, Some(Decoded::Failed(_)));
                     let is_running_decodes = self.running_decodes.values().any(|&i| i == file_index);
                     let is_valid = file_index < num_files;
 
@@ -781,6 +823,8 @@ impl SlidingWindowCache {
                         egui::Color32::from_gray(25)
                     } else if is_loaded {
                         COL_LOADED
+                    } else if is_failed {
+                        COL_FAILED
                     } else if is_running_decodes {
                         COL_LOADING
                     } else {
@@ -822,6 +866,8 @@ impl SlidingWindowCache {
                     ui.add_space(4.0);
                     legend_swatch(ui, COL_LOADING, "Loading");
                     ui.add_space(4.0);
+                    legend_swatch(ui, COL_FAILED, "Failed");
+                    ui.add_space(4.0);
                     legend_swatch(ui, COL_EMPTY, "Empty");
                 });
             });
@@ -844,7 +890,9 @@ impl SlidingWindowCache {
                 Some(ctx.load_texture(&name, color_image, egui::TextureOptions::LINEAR))
             }
             Err(e) => {
-                log::error!("Failed to decode {}: {}", path.display(), e);
+                if !loaded.record.no_embedded_preview {
+                    log::error!("Failed to decode {}: {}", path.display(), e);
+                }
                 None
             }
         };

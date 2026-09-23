@@ -1,17 +1,20 @@
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::fs::{DirEntry, File, OpenOptions};
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, Once};
 use std::time::SystemTime;
 
+use image::codecs::jpeg::JpegDecoder;
+use image::error::{ImageFormatHint, UnsupportedError, UnsupportedErrorKind};
 use image::metadata::Orientation;
-use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat, ImageReader, ImageResult};
+use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageReader, ImageResult};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 use crate::metadata::{self, ExifData, MetadataRecord};
+use crate::raw;
 use crate::settings::{ImageDiscoveryOptions, ImageSortKey, SortDirection};
 
 const APP_NAME: &str = "viewskater-egui";
@@ -24,7 +27,12 @@ const ANIMATION_CAPABLE_EXTENSIONS: &[&str] = &["gif", "png", "apng", "webp"];
 static REGISTER_IMAGE_DECODERS: Once = Once::new();
 
 pub fn is_supported_image(path: &Path) -> bool {
-    has_extension(path, SUPPORTED_EXTENSIONS)
+    has_extension(path, SUPPORTED_EXTENSIONS) || raw::is_raw(path)
+}
+
+/// Every extension the app opens, for the file dialog's filter.
+pub fn supported_extensions() -> Vec<&'static str> {
+    SUPPORTED_EXTENSIONS.iter().chain(raw::EXTENSIONS).copied().collect()
 }
 
 pub fn may_have_animation(path: &Path) -> bool {
@@ -204,6 +212,11 @@ pub fn load_image(path: &Path) -> LoadedImage {
 }
 
 fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<(DynamicImage, Orientation)> {
+    // Before the format guess: most RAW files are TIFF files, and the
+    // TIFF decoder would decode the small thumbnail in their first IFD.
+    if raw::is_raw(path) {
+        return decode_raw_into(path, record);
+    }
     let reader = ImageReader::open(path)?.with_guessed_format()?;
     let format = reader.format();
     record.format = format_name(format, path);
@@ -218,12 +231,7 @@ fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<(Dynamic
     }
     // The image crate scans the same EXIF bytes for this one tag, apart from `parse_exif`, but the cost is well under 1 µs and trivial.
     let mut orientation = exif_orientation(&mut decoder, format);
-    // The allocation check `ImageReader::decode` makes before decoding.
-    // `into_decoder` leaves it to the caller.
-    let mut limits = image::Limits::default();
-    limits.reserve(decoder.total_bytes())?;
-    decoder.set_limits(limits)?;
-    let image = DynamicImage::from_decoder(decoder);
+    let image = decode_checked(decoder);
 
     // A PNG may carry its eXIf chunk after the pixel data. ImageMagick
     // writes it there. The decoder only knew the chunks before the first
@@ -236,6 +244,45 @@ fn decode_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<(Dynamic
         }
     }
     image.map(|image| (image, orientation))
+}
+
+/// Decode with the image crate's 512 MB limit on the pixel buffer, which
+/// `ImageReader::decode` checks and a decoder made by hand does not.
+fn decode_checked(mut decoder: impl ImageDecoder) -> ImageResult<DynamicImage> {
+    let mut limits = image::Limits::default();
+    limits.reserve(decoder.total_bytes())?;
+    decoder.set_limits(limits)?;
+    DynamicImage::from_decoder(decoder)
+}
+
+/// A camera RAW file is shown through the JPEG the camera stored inside
+/// it. The orientation and the EXIF are the RAW file's own, except for a
+/// RAF, whose JPEG is a complete camera JPEG with both inside it.
+fn decode_raw_into(path: &Path, record: &mut MetadataRecord) -> ImageResult<(DynamicImage, Orientation)> {
+    record.format = format_name(None, path);
+    let contents = raw::read(path).map_err(ImageError::IoError)?;
+    if let Some(bytes) = contents.exif {
+        record.exif = metadata::parse_exif(bytes);
+    }
+    let Some(jpeg) = contents.jpeg else {
+        // An expected case with its own message in the pane, so the
+        // callers do not log it as a failure.
+        log::debug!("No embedded JPEG in {}", path.display());
+        record.no_embedded_preview = true;
+        return Err(ImageError::Unsupported(UnsupportedError::from_format_and_kind(
+            ImageFormatHint::PathExtension(path.extension().unwrap_or_default().into()),
+            UnsupportedErrorKind::GenericFeature("a RAW file without an embedded JPEG".into()),
+        )));
+    };
+    let mut decoder = JpegDecoder::new(Cursor::new(jpeg))?;
+    let mut orientation = contents.orientation;
+    if contents.exif_in_jpeg {
+        if let Ok(Some(bytes)) = decoder.exif_metadata() {
+            record.exif = metadata::parse_exif(bytes);
+        }
+        orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    }
+    Ok((decode_checked(decoder)?, orientation))
 }
 
 /// The turn the file's EXIF orientation tag asks for. The built-in
@@ -636,6 +683,73 @@ mod tests {
         assert_eq!(loaded.orientation, Orientation::NoTransforms);
         let shown = crate::decode::image_to_color_image(loaded.image.unwrap(), loaded.orientation);
         assert_eq!(shown.size, [3, 2]);
+    }
+
+    /// A RAW file shows its embedded JPEG, turned by the RAW file's own
+    /// orientation tag, and its record has the RAW file's EXIF.
+    #[test]
+    fn raw_file_shows_its_embedded_jpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("photo.NEF");
+        std::fs::write(&path, raw::test_files::nef_like(&raw::test_files::jpeg(30, 20), 6)).unwrap();
+
+        assert!(is_supported_image(&path));
+        let loaded = load_image(&path);
+        assert_eq!(loaded.orientation, Orientation::Rotate90);
+        assert_eq!(loaded.record.format.as_deref(), Some("NEF"));
+        assert!(!loaded.record.no_embedded_preview);
+        let ExifData::Present(exif) = &loaded.record.exif else {
+            panic!("{:?}", loaded.record.exif);
+        };
+        assert_eq!(exif.camera.as_deref(), Some("NIKON"));
+        assert_eq!(exif.orientation.as_deref(), Some("Rotate 90° CW"));
+        let shown = crate::decode::image_to_color_image(loaded.image.unwrap(), loaded.orientation);
+        assert_eq!(shown.size, [20, 30]);
+    }
+
+    /// A RAF's orientation and EXIF come out of its embedded JPEG.
+    #[test]
+    fn raf_file_is_turned_by_the_tag_in_its_jpeg() {
+        use image::codecs::jpeg::JpegEncoder;
+        use image::{ExtendedColorType, ImageEncoder};
+
+        let mut jpeg = Vec::new();
+        let mut encoder = JpegEncoder::new(&mut jpeg);
+        encoder.set_exif_metadata(exif_with_orientation(8)).unwrap();
+        encoder.write_image(&[0u8; 30 * 20 * 3], 30, 20, ExtendedColorType::Rgb8).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("photo.raf");
+        std::fs::write(&path, raw::test_files::raf(&jpeg)).unwrap();
+
+        let loaded = load_image(&path);
+        assert_eq!(loaded.orientation, Orientation::Rotate270);
+        assert_eq!(loaded.record.format.as_deref(), Some("RAF"));
+        let ExifData::Present(exif) = &loaded.record.exif else {
+            panic!("{:?}", loaded.record.exif);
+        };
+        assert_eq!(exif.orientation.as_deref(), Some("Rotate 90° CCW"));
+        let shown = crate::decode::image_to_color_image(loaded.image.unwrap(), loaded.orientation);
+        assert_eq!(shown.size, [20, 30]);
+    }
+
+    /// A RAW file without a JPEG fails to load, and its record has the
+    /// reason so that the pane can name it.
+    #[test]
+    fn raw_file_without_a_jpeg_has_the_reason_in_its_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("frame.dng");
+        std::fs::write(&path, raw::test_files::without_jpeg()).unwrap();
+
+        let loaded = load_image(&path);
+        assert!(loaded.image.is_err());
+        assert!(loaded.record.no_embedded_preview);
+        assert_eq!(loaded.record.file_size, Some(1100));
+
+        // A file that fails for another reason does not get the flag.
+        let broken = dir.path().join("broken.jpg");
+        std::fs::write(&broken, b"this is not a jpeg").unwrap();
+        assert!(!load_image(&broken).record.no_embedded_preview);
     }
 
     fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {

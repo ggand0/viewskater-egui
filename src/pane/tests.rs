@@ -264,3 +264,53 @@ fn real_files_failed_move_keeps_everything() {
     assert!(p.current_texture.is_some());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
 }
+
+/// Poll until the sliding window has nothing decoding or waiting for
+/// upload, or the deadline passes.
+fn wait_for_decodes(p: &mut Pane) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        p.poll_cache();
+        if p.is_settled() || Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// A file that cannot be decoded sits between two that can. Keyboard
+/// navigation moves only when the next image is ready, and a failed
+/// decode counts as ready, so the arrow keys move onto the broken file
+/// and past it in both directions. Before, the pane waited on that file
+/// for good and the rest of the folder could not be reached.
+#[test]
+fn keyboard_navigation_passes_a_file_that_fails_to_decode() {
+    let dir = tempfile::tempdir().unwrap();
+    write_png(&dir.path().join("a.png"), 10);
+    std::fs::write(dir.path().join("b.jpg"), b"this is not a jpeg").unwrap();
+    write_png(&dir.path().join("c.png"), 30);
+
+    let ctx = egui::Context::default();
+    let mut p = pane(&ctx);
+    p.open_path(&dir.path().join("a.png"), &ctx, Default::default());
+    wait_for_decodes(&mut p);
+    assert_eq!(p.current_index, 0);
+
+    assert!(p.is_next_cached(1));
+    assert!(p.navigate(1, &ctx));
+    assert_eq!(p.current_index, 1);
+    assert!(p.current_texture.is_none());
+    assert_eq!(p.current_record.as_ref().and_then(|r| r.file_size), Some(18));
+
+    assert!(p.is_next_cached(1));
+    assert!(p.navigate(1, &ctx));
+    assert_eq!(p.current_index, 2);
+    assert!(p.current_texture.is_some());
+
+    assert!(p.navigate(-1, &ctx));
+    assert_eq!(p.current_index, 1);
+    assert!(p.current_texture.is_none());
+    assert!(p.navigate(-1, &ctx));
+    assert_eq!(p.current_index, 0);
+    assert!(p.current_texture.is_some());
+}

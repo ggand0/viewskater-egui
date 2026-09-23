@@ -161,6 +161,39 @@
       <key>CFBundleTypeIconFile</key>
       <string>ViewSkater.icns</string>
     </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Camera RAW Image</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>arw</string>
+        <string>cr2</string>
+        <string>cr3</string>
+        <string>dng</string>
+        <string>kdc</string>
+        <string>nef</string>
+        <string>nrw</string>
+        <string>orf</string>
+        <string>ori</string>
+        <string>pef</string>
+        <string>raf</string>
+        <string>rw2</string>
+        <string>rwl</string>
+        <string>sr2</string>
+        <string>srf</string>
+        <string>srw</string>
+      </array>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.camera-raw-image</string>
+      </array>
+      <key>CFBundleTypeIconFile</key>
+      <string>ViewSkater.icns</string>
+    </dict>
   </array>
 </dict>
 </plist>
