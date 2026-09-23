@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use eframe::egui;
@@ -101,15 +102,17 @@ enum SettingsTab {
     #[default]
     General,
     Performance,
+    Stars,
 }
 
 impl SettingsTab {
-    const ALL: [Self; 2] = [Self::General, Self::Performance];
+    const ALL: [Self; 3] = [Self::General, Self::Performance, Self::Stars];
 
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
             Self::Performance => "Performance",
+            Self::Stars => "Stars",
         }
     }
 }
@@ -421,6 +424,9 @@ impl AppSettings {
 #[derive(Default)]
 pub struct SettingsChanges {
     pub pane_settings: bool,
+    /// The Stars tab's Danger Zone confirmed moving every star file to the
+    /// trash.
+    pub move_star_files: bool,
 }
 
 impl SettingsChanges {
@@ -432,7 +438,8 @@ impl SettingsChanges {
                 || after.mouse_wheel_zoom != before.mouse_wheel_zoom
                 || after.reset_zoom_pan_on_navigation != before.reset_zoom_pan_on_navigation
                 || after.preview_budget_mb != before.preview_budget_mb
-                || after.image_discovery_options != before.image_discovery_options
+                || after.image_discovery_options != before.image_discovery_options,
+            move_star_files: false,
         }
     }
 }
@@ -471,15 +478,23 @@ impl AppSettings {
 }
 
 /// Show the settings modal and report which settings changed.
+/// `star_folders` are the folders with a `.viewskater.yaml`, for the Stars
+/// tab.
 pub fn show_settings_modal(
     ctx: &egui::Context,
     settings: &mut AppSettings,
     show: &mut bool,
     theme: &UiTheme,
+    star_folders: &BTreeSet<PathBuf>,
 ) -> SettingsChanges {
+    // The Danger Zone's second step starts over every time the modal
+    // opens, and whenever another tab is shown.
+    let confirm_id = egui::Id::new("star_files_confirm");
     if !*show {
+        ctx.data_mut(|d| d.remove::<bool>(confirm_id));
         return SettingsChanges::default();
     }
+    let mut move_star_files = false;
 
     // Snapshot at start of frame; if anything changes we save immediately
     // and stamp the save time so the "Saved" indicator can fade in.
@@ -551,6 +566,9 @@ pub fn show_settings_modal(
                             match tab {
                                 SettingsTab::General => render_general_tab(&mut child, &mut tmp, theme),
                                 SettingsTab::Performance => render_performance_tab(&mut child, &mut tmp, theme),
+                                SettingsTab::Stars => {
+                                    render_stars_tab(&mut child, star_folders, &mut false, theme);
+                                }
                             }
                             target_h = target_h.max(child.min_rect().height());
                         }
@@ -569,6 +587,16 @@ pub fn show_settings_modal(
                                 SettingsTab::Performance => {
                                     render_performance_tab(ui, settings, theme);
                                 }
+                                SettingsTab::Stars => {
+                                    let mut confirming: bool =
+                                        ctx.data(|d| d.get_temp(confirm_id)).unwrap_or(false);
+                                    move_star_files =
+                                        render_stars_tab(ui, star_folders, &mut confirming, theme);
+                                    ctx.data_mut(|d| d.insert_temp(confirm_id, confirming));
+                                }
+                            }
+                            if active_tab != SettingsTab::Stars {
+                                ctx.data_mut(|d| d.remove::<bool>(confirm_id));
                             }
                         });
 
@@ -610,7 +638,7 @@ pub fn show_settings_modal(
         ctx.data_mut(|d| d.insert_temp(saved_at_id, now));
     }
 
-    SettingsChanges::between(&snapshot, settings)
+    SettingsChanges { move_star_files, ..SettingsChanges::between(&snapshot, settings) }
 }
 
 fn section(
@@ -770,6 +798,107 @@ fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiT
     }
 
     ui.add_space(10.0);
+}
+
+/// The folders that hold a `.viewskater.yaml`, each opening in the file
+/// manager on click, and the Danger Zone that moves every one of those
+/// files to the trash. The button asks a second time in place instead of
+/// opening a second modal over Preferences. Returns true on the second
+/// click.
+fn render_stars_tab(
+    ui: &mut egui::Ui,
+    folders: &BTreeSet<PathBuf>,
+    confirming: &mut bool,
+    theme: &UiTheme,
+) -> bool {
+    let files = |n: usize| if n == 1 { "1 star file".to_string() } else { format!("{n} star files") };
+    let mut move_requested = false;
+
+    section(
+        ui,
+        "Star Files",
+        Some("Folders with a hidden .viewskater.yaml that lists their starred images"),
+        theme,
+        |ui| {
+            ui.set_width(ui.available_width());
+            if folders.is_empty() {
+                ui.label(egui::RichText::new("No folder has one yet").size(12.0).color(theme.muted));
+                return;
+            }
+            egui::ScrollArea::vertical()
+                .id_salt("star_file_folders")
+                .max_height(140.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for folder in folders {
+                        let text = folder.display().to_string();
+                        let link = ui.add(egui::Link::new(egui::RichText::new(&text).size(12.0)));
+                        if link.on_hover_text("Open in the file manager").clicked() {
+                            crate::file_io::open_in_file_explorer(&text);
+                        }
+                    }
+                });
+        },
+    );
+
+    ui.add_space(12.0);
+
+    let danger = egui::Color32::from_rgb(210, 80, 80);
+    ui.label(egui::RichText::new("Danger Zone").size(14.0).color(danger));
+    ui.add_space(4.0);
+    egui::Frame::default()
+        .stroke(egui::Stroke::new(1.0_f32, danger))
+        .corner_radius(6.0)
+        .inner_margin(10.0)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new("Move all star files to the Trash").strong());
+            ui.label(
+                egui::RichText::new(
+                    "Every folder above loses its stars. The files stay in the Trash until it is \
+                     emptied, so they can be put back.",
+                )
+                .size(11.0)
+                .color(theme.muted),
+            );
+            if cfg!(target_os = "windows") {
+                ui.label(
+                    egui::RichText::new(
+                        "Files on network and removable drives stay where they are, because \
+                         Windows would delete them for good.",
+                    )
+                    .size(11.0)
+                    .color(theme.muted),
+                );
+            }
+            ui.add_space(8.0);
+            if !*confirming {
+                let button = egui::Button::new(egui::RichText::new("Move to Trash…").color(danger))
+                    .stroke(egui::Stroke::new(1.0_f32, danger));
+                if ui.add_enabled(!folders.is_empty(), button).clicked() {
+                    *confirming = true;
+                }
+                return;
+            }
+            ui.label(format!("Move {} to the Trash?", files(folders.len())));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    *confirming = false;
+                }
+                ui.add_space(8.0);
+                let confirm = egui::Button::new(
+                    egui::RichText::new("Move to Trash").color(egui::Color32::WHITE),
+                )
+                .fill(egui::Color32::from_rgb(160, 50, 50));
+                if ui.add(confirm).clicked() {
+                    *confirming = false;
+                    move_requested = true;
+                }
+            });
+        });
+
+    move_requested
 }
 
 fn render_performance_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiTheme) {

@@ -200,7 +200,7 @@ fn real_files_move_out_and_the_pane_follows() {
         write_png(&dir.path().join(format!("img{i}.png")), (i * 40) as u8);
     }
     let mut p = pane(&ctx);
-    p.open_path(&dir.path().join("img2.png"), &ctx, Default::default(), &mut Stars::new(&ctx));
+    p.open_path(&dir.path().join("img2.png"), &ctx, Default::default(), &mut Stars::new(&ctx, None));
     assert_eq!(p.image_paths.len(), 6);
     assert_eq!(p.current_index, 2);
     settle(&mut p);
@@ -252,7 +252,7 @@ fn real_files_failed_move_keeps_everything() {
         write_png(&dir.path().join(format!("img{i}.png")), (i * 80) as u8);
     }
     let mut p = pane(&ctx);
-    p.open_path(dir.path(), &ctx, Default::default(), &mut Stars::new(&ctx));
+    p.open_path(dir.path(), &ctx, Default::default(), &mut Stars::new(&ctx, None));
     settle(&mut p);
     let before = p.image_paths.clone();
 
@@ -292,7 +292,7 @@ fn keyboard_navigation_passes_a_file_that_fails_to_decode() {
 
     let ctx = egui::Context::default();
     let mut p = pane(&ctx);
-    p.open_path(&dir.path().join("a.png"), &ctx, Default::default(), &mut Stars::new(&ctx));
+    p.open_path(&dir.path().join("a.png"), &ctx, Default::default(), &mut Stars::new(&ctx, None));
     wait_for_decodes(&mut p);
     assert_eq!(p.current_index, 0);
 
@@ -323,7 +323,7 @@ fn starred_folder(ctx: &egui::Context, starred: &[usize], current: usize) -> (te
     for i in 0..6 {
         write_png(&dir.path().join(format!("img{i}.png")), (i * 40) as u8);
     }
-    let mut stars = Stars::new(ctx);
+    let mut stars = Stars::new(ctx, None);
     let mut p = pane(ctx);
     p.open_path(&dir.path().join(format!("img{current}.png")), ctx, Default::default(), &mut stars);
     for &i in starred {

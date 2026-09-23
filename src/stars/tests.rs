@@ -26,7 +26,7 @@ fn size(path: &Path) -> u64 {
 fn loaded(dir: &Path, images: &[PathBuf]) -> Stars {
     let star_file = dir.join(FILE_NAME);
     let star_files = if star_file.exists() { vec![star_file] } else { Vec::new() };
-    let mut stars = Stars::new(&egui::Context::default());
+    let mut stars = Stars::new(&egui::Context::default(), None);
     stars.load(images, &star_files);
     stars
 }
@@ -258,4 +258,167 @@ fn the_listing_notes_the_star_files() {
     let listing = crate::file_io::enumerate_images(dir.path(), with_hidden);
     assert_eq!(listing.images.len(), 3, "the hidden file is no image even when hidden files are listed");
     assert_eq!(listing.star_files, [dir.path().join(FILE_NAME)]);
+}
+
+// ---- the list of folders and moving the files to the trash -------------
+
+/// Stars with the folder list in `list`, loaded over `dir`.
+fn loaded_with_list(dir: &Path, images: &[PathBuf], list: &Path) -> Stars {
+    let star_file = dir.join(FILE_NAME);
+    let star_files = if star_file.exists() { vec![star_file] } else { Vec::new() };
+    let mut stars = Stars::new(&egui::Context::default(), Some(list.to_path_buf()));
+    stars.load(images, &star_files);
+    stars
+}
+
+fn listed_on_disk(list: &Path) -> Vec<PathBuf> {
+    read_folder_list(list).unwrap().into_iter().collect()
+}
+
+/// A move to the trash that renames the file into `bin` under a numbered
+/// name, since every star file has the same name. Nothing touches the
+/// real trash.
+fn move_into(bin: &Path) -> impl Fn(&Path) -> Result<(), String> + '_ {
+    let moved = std::cell::Cell::new(0);
+    move |path: &Path| {
+        moved.set(moved.get() + 1);
+        let target = bin.join(format!("{}{}", moved.get(), path.file_name().unwrap().to_string_lossy()));
+        fs::rename(path, target).map_err(|e| e.to_string())
+    }
+}
+
+#[test]
+fn starring_puts_the_folder_in_the_list() {
+    let (dir, images) = folder();
+    let config = tempfile::tempdir().unwrap();
+    let list = config.path().join("star_folders.yaml");
+    let mut stars = loaded_with_list(dir.path(), &images, &list);
+    assert!(stars.star_file_folders().is_empty());
+
+    stars.star(&images[0], size(&images[0])).unwrap();
+    assert!(stars.wait_for_writes().is_empty());
+    assert_eq!(listed_on_disk(&list), [dir.path().to_path_buf()]);
+
+    let again = Stars::new(&egui::Context::default(), Some(list.clone()));
+    assert_eq!(again.star_file_folders().iter().collect::<Vec<_>>(), [dir.path()]);
+}
+
+/// A file from before the list existed, from another computer or in a
+/// copied folder joins the list when a listing walks past it.
+#[test]
+fn a_listed_folder_with_a_file_joins_the_list() {
+    let (dir, images) = folder();
+    fs::write(dir.path().join(FILE_NAME), "version: 1\n").unwrap();
+    let config = tempfile::tempdir().unwrap();
+    let list = config.path().join("star_folders.yaml");
+    let stars = loaded_with_list(dir.path(), &images, &list);
+    assert_eq!(stars.star_file_folders().iter().collect::<Vec<_>>(), [dir.path()]);
+    assert_eq!(listed_on_disk(&list), [dir.path().to_path_buf()]);
+}
+
+#[test]
+fn a_folder_another_window_listed_stays_in_the_list() {
+    let (first_dir, first_images) = folder();
+    let (second_dir, second_images) = folder();
+    let config = tempfile::tempdir().unwrap();
+    let list = config.path().join("star_folders.yaml");
+    let mut first = loaded_with_list(first_dir.path(), &first_images, &list);
+    let mut second = loaded_with_list(second_dir.path(), &second_images, &list);
+
+    first.star(&first_images[0], size(&first_images[0])).unwrap();
+    second.star(&second_images[0], size(&second_images[0])).unwrap();
+    assert!(first.wait_for_writes().is_empty());
+    assert!(second.wait_for_writes().is_empty());
+
+    let mut expected = vec![first_dir.path().to_path_buf(), second_dir.path().to_path_buf()];
+    expected.sort();
+    assert_eq!(listed_on_disk(&list), expected);
+}
+
+#[test]
+fn a_list_from_a_newer_version_is_never_written() {
+    let (dir, images) = folder();
+    let config = tempfile::tempdir().unwrap();
+    let list = config.path().join("star_folders.yaml");
+    let newer = "version: 2\nfolders:\n- /somewhere\n";
+    fs::write(&list, newer).unwrap();
+    let mut stars = loaded_with_list(dir.path(), &images, &list);
+
+    stars.star(&images[0], size(&images[0])).unwrap();
+    assert!(stars.wait_for_writes().is_empty());
+    assert_eq!(fs::read_to_string(&list).unwrap(), newer);
+    assert!(stars.star_file_folders().contains(dir.path()), "listed in memory");
+}
+
+/// Two folders with stars and one listed folder whose file is gone. Both
+/// files go into the bin, never deleted, and the list ends up empty.
+#[test]
+fn every_star_file_goes_to_the_trash() {
+    let (first_dir, first_images) = folder();
+    let (second_dir, second_images) = folder();
+    let (gone_dir, gone_images) = folder();
+    let config = tempfile::tempdir().unwrap();
+    let bin = tempfile::tempdir().unwrap();
+    let list = config.path().join("star_folders.yaml");
+    let mut stars = Stars::new(&egui::Context::default(), Some(list.clone()));
+    let all_images: Vec<PathBuf> =
+        first_images.iter().chain(&second_images).chain(&gone_images).cloned().collect();
+    stars.load(&all_images, &[]);
+    stars.star(&first_images[0], size(&first_images[0])).unwrap();
+    stars.star(&second_images[1], size(&second_images[1])).unwrap();
+    stars.star(&gone_images[2], size(&gone_images[2])).unwrap();
+    assert!(stars.wait_for_writes().is_empty());
+    fs::rename(gone_dir.path().join(FILE_NAME), bin.path().join("taken away")).unwrap();
+
+    let moves = stars.move_star_files(move_into(bin.path()), |_| false);
+
+    assert_eq!(moves.moved, 2);
+    assert!(moves.left_in_place.is_empty());
+    assert!(moves.failed.is_empty());
+    assert!(!first_dir.path().join(FILE_NAME).exists());
+    assert!(!second_dir.path().join(FILE_NAME).exists());
+    assert_eq!(fs::read_dir(bin.path()).unwrap().count(), 3, "two moved files and the one taken away");
+    assert!(!stars.is_starred(&first_images[0]));
+    assert!(!stars.is_starred(&second_images[1]));
+    assert!(stars.star_file_folders().is_empty());
+    assert!(listed_on_disk(&list).is_empty());
+}
+
+/// On a Windows network share or removable drive the trash would delete
+/// for good. Those files stay, keep their stars and stay in the list.
+#[test]
+fn a_file_where_the_trash_would_delete_stays() {
+    let (dir, images) = folder();
+    let config = tempfile::tempdir().unwrap();
+    let bin = tempfile::tempdir().unwrap();
+    let list = config.path().join("star_folders.yaml");
+    let mut stars = loaded_with_list(dir.path(), &images, &list);
+    stars.star(&images[0], size(&images[0])).unwrap();
+    assert!(stars.wait_for_writes().is_empty());
+
+    let moves = stars.move_star_files(move_into(bin.path()), |_| true);
+
+    assert_eq!(moves.moved, 0);
+    assert_eq!(moves.left_in_place, [dir.path().join(FILE_NAME)]);
+    assert!(dir.path().join(FILE_NAME).exists());
+    assert!(stars.is_starred(&images[0]));
+    assert_eq!(listed_on_disk(&list), [dir.path().to_path_buf()]);
+}
+
+#[test]
+fn a_refused_move_keeps_the_file_and_its_stars() {
+    let (dir, images) = folder();
+    let config = tempfile::tempdir().unwrap();
+    let list = config.path().join("star_folders.yaml");
+    let mut stars = loaded_with_list(dir.path(), &images, &list);
+    stars.star(&images[0], size(&images[0])).unwrap();
+    assert!(stars.wait_for_writes().is_empty());
+
+    let moves = stars.move_star_files(|_| Err("no trash here".to_string()), |_| false);
+
+    assert_eq!(moves.moved, 0);
+    assert_eq!(moves.failed, [(dir.path().join(FILE_NAME), "no trash here".to_string())]);
+    assert!(dir.path().join(FILE_NAME).exists());
+    assert!(stars.is_starred(&images[0]));
+    assert_eq!(listed_on_disk(&list), [dir.path().to_path_buf()]);
 }

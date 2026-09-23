@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 
 use crate::pane::Pane;
+use crate::stars::StarFileMoves;
 use crate::trash_bin;
 
 use super::{App, DualPaneMode};
@@ -253,6 +254,30 @@ impl App {
         }
     }
 
+    /// Move every star file to the trash once the Stars tab asked for it
+    /// and no star save is pending, so no save puts a file back after it
+    /// left. The files go through `trash_bin`, like Move to Trash.
+    pub(super) fn move_star_files_when_saved(&mut self, ctx: &egui::Context) {
+        if !self.star_files_to_trash {
+            return;
+        }
+        if self.stars.has_pending_writes() {
+            ctx.request_repaint_after(Duration::from_millis(50));
+            return;
+        }
+        self.star_files_to_trash = false;
+        let moves = self.stars.move_star_files(trash_bin::move_to_trash, trash_bin::lacks_recycle_bin);
+        for (path, reason) in &moves.failed {
+            log::error!("Could not move {} to the trash: {reason}", path.display());
+        }
+        for path in &moves.left_in_place {
+            log::info!("Left {} in place: no Recycle Bin there", path.display());
+        }
+        self.refresh_starred_panes();
+        self.show_toast(star_file_moves_message(&moves), !moves.failed.is_empty());
+        ctx.request_repaint();
+    }
+
     /// The flash after S for the pane at `pane_idx`: whether the image got
     /// a star, and the opacity now. Drops the flash once it has faded.
     pub(super) fn star_flash_for(&mut self, pane_idx: usize) -> Option<(bool, f32)> {
@@ -429,6 +454,25 @@ pub(super) fn paint_star_flash(
         color,
     );
     ctx.request_repaint();
+}
+
+fn star_file_moves_message(moves: &StarFileMoves) -> String {
+    let files = |n: usize| if n == 1 { "1 star file".to_string() } else { format!("{n} star files") };
+    let mut message = format!("Moved {} to the Trash", files(moves.moved));
+    if !moves.left_in_place.is_empty() {
+        message += &format!(
+            ". {} on drives without a Recycle Bin stayed where they are",
+            files(moves.left_in_place.len())
+        );
+    }
+    if let Some((path, reason)) = moves.failed.first() {
+        message += &format!(
+            ". {} could not be moved ({}: {reason})",
+            files(moves.failed.len()),
+            path.display()
+        );
+    }
+    message
 }
 
 fn file_name(path: &Path) -> String {

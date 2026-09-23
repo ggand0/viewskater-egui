@@ -390,6 +390,9 @@ pub struct App {
     pub(crate) stars: Stars,
     /// The star painted for a moment after S while the footer is hidden.
     star_flash: Option<culling::StarFlash>,
+    /// The Stars tab in Preferences asked to move every star file to the
+    /// trash. It runs once no star save is pending.
+    star_files_to_trash: bool,
 }
 
 impl App {
@@ -435,8 +438,9 @@ impl App {
             pending_permanent_delete: None,
             metadata_panel: Default::default(),
             metadata_panel_rect: None,
-            stars: Stars::new(&cc.egui_ctx),
+            stars: Stars::new(&cc.egui_ctx, crate::stars::folder_list_path()),
             star_flash: None,
+            star_files_to_trash: false,
         };
 
         if !paths.is_empty() {
@@ -908,6 +912,7 @@ impl eframe::App for App {
             pane.poll_animation();
         }
         self.show_star_failures();
+        self.move_star_files_when_saved(ctx);
 
         self.handle_external_open_requests(ctx);
         self.handle_dropped_files(ctx);
@@ -1074,8 +1079,16 @@ impl eframe::App for App {
         }
 
         // Settings modal — auto-saves on any change inside the modal.
-        let settings_changes =
-            settings::show_settings_modal(ctx, &mut self.settings, &mut self.show_settings, &self.theme);
+        let settings_changes = settings::show_settings_modal(
+            ctx,
+            &mut self.settings,
+            &mut self.show_settings,
+            &self.theme,
+            self.stars.star_file_folders(),
+        );
+        if settings_changes.move_star_files {
+            self.star_files_to_trash = true;
+        }
         if settings_changes.pane_settings {
             self.apply_settings_to_caches();
             // also reload panes but ensure image discovery options are updated

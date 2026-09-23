@@ -11,8 +11,13 @@
 //! Saves run in order on one writer thread, so a slow share never blocks
 //! the UI. Each save reads the file again, changes one entry and writes
 //! the result to a hidden temp file that is renamed over the old one.
+//!
+//! The app also keeps a list of the folders that have the file, in
+//! `star_folders.yaml` next to settings.yaml. Nothing else could find
+//! them again: the Stars tab in Preferences shows the list and moves the
+//! files to the trash for someone who wants them gone.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -30,6 +35,19 @@ const TEMP_NAME: &str = ".viewskater.yaml.tmp";
 /// The format this build reads and writes. A file with a higher version
 /// comes from a newer build and is never written over.
 const VERSION: u32 = 1;
+
+/// Where the list of folders with a `.viewskater.yaml` is kept.
+pub(crate) fn folder_list_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("viewskater-egui").join("star_folders.yaml"))
+}
+
+/// The contents of `star_folders.yaml`.
+#[derive(Serialize, Deserialize)]
+struct FolderList {
+    version: u32,
+    #[serde(default)]
+    folders: BTreeSet<PathBuf>,
+}
 
 /// The contents of one folder's `.viewskater.yaml`.
 #[derive(Serialize, Deserialize)]
@@ -87,16 +105,34 @@ struct FinishedWrite {
     result: Result<(), String>,
 }
 
+/// What moving every star file to the trash did.
+#[derive(Default)]
+pub(crate) struct StarFileMoves {
+    /// Files now in the trash.
+    pub moved: usize,
+    /// Files on a Windows network share or removable drive, where the
+    /// shell would delete them for good instead. They stay where they are.
+    pub left_in_place: Vec<PathBuf>,
+    /// Files the trash refused, with the reason.
+    pub failed: Vec<(PathBuf, String)>,
+}
+
 /// The stars of every folder the panes list, shared by both panes.
 pub(crate) struct Stars {
     folders: HashMap<PathBuf, FolderStars>,
+    /// `star_folders.yaml`, or `None` to keep the list in memory only.
+    folder_list: Option<PathBuf>,
+    /// Absolute paths of the folders known to have a `.viewskater.yaml`.
+    star_file_folders: BTreeSet<PathBuf>,
     jobs: Option<Sender<WriteJob>>,
     finished: Receiver<FinishedWrite>,
     writer: Option<JoinHandle<()>>,
 }
 
 impl Stars {
-    pub(crate) fn new(ctx: &egui::Context) -> Self {
+    /// `folder_list` is `star_folders.yaml` (`folder_list_path`), or `None`
+    /// to keep the list of folders in memory only.
+    pub(crate) fn new(ctx: &egui::Context, folder_list: Option<PathBuf>) -> Self {
         let (jobs, job_receiver) = mpsc::channel::<WriteJob>();
         let (finished_sender, finished) = mpsc::channel();
         let ctx = ctx.clone();
@@ -125,8 +161,17 @@ impl Stars {
                 }
             })
             .expect("spawn the stars writer thread");
+        let star_file_folders = match &folder_list {
+            Some(path) => read_folder_list(path).unwrap_or_else(|e| {
+                log::warn!("{e}");
+                BTreeSet::new()
+            }),
+            None => BTreeSet::new(),
+        };
         Self {
             folders: HashMap::new(),
+            folder_list,
+            star_file_folders,
             jobs: Some(jobs),
             finished,
             writer: Some(writer),
@@ -140,6 +185,16 @@ impl Stars {
     /// its file does not have those changes yet.
     pub(crate) fn load(&mut self, images: &[PathBuf], star_files: &[PathBuf]) {
         let with_file: HashSet<&Path> = star_files.iter().filter_map(|f| f.parent()).collect();
+        // A file from before the list existed, from another computer or in
+        // a copied folder joins the list here.
+        let unlisted: Vec<PathBuf> = with_file
+            .iter()
+            .filter_map(|dir| std::path::absolute(dir).ok())
+            .filter(|dir| !self.star_file_folders.contains(dir))
+            .collect();
+        if !unlisted.is_empty() {
+            self.update_folder_list(&unlisted, &[]);
+        }
         let dirs: HashSet<&Path> = images.iter().filter_map(|p| p.parent()).collect();
         for dir in dirs {
             if self.folders.get(dir).is_some_and(|f| f.pending_writes > 0) {
@@ -193,10 +248,20 @@ impl Stars {
     fn change(&mut self, path: &Path, change: Change) -> Result<(), String> {
         let starring = matches!(change, Change::Star(_));
         let (dir, name) = split(path).map_err(|reason| failure_message(starring, path, &reason))?;
-        let folder = self.folders.entry(dir.to_path_buf()).or_default();
-        if let Some(reason) = &folder.locked {
+        if let Some(reason) = self.folders.get(dir).and_then(|f| f.locked.as_ref()) {
             return Err(failure_message(starring, path, reason));
         }
+        // Listed before the file exists, so the list never misses one. A
+        // save that fails leaves a folder without the file in the list,
+        // which the Stars tab passes over.
+        if starring {
+            if let Ok(absolute) = std::path::absolute(dir) {
+                if !self.star_file_folders.contains(&absolute) {
+                    self.update_folder_list(&[absolute], &[]);
+                }
+            }
+        }
+        let folder = self.folders.entry(dir.to_path_buf()).or_default();
         let was_starred = folder.starred.contains(&name);
         let was_in_file = folder.names_in_file.contains(&name);
         if starring {
@@ -232,6 +297,90 @@ impl Stars {
             }
         }
         failures
+    }
+
+    /// Absolute paths of the folders known to have a `.viewskater.yaml`.
+    pub(crate) fn star_file_folders(&self) -> &BTreeSet<PathBuf> {
+        &self.star_file_folders
+    }
+
+    pub(crate) fn has_pending_writes(&self) -> bool {
+        self.folders.values().any(|f| f.pending_writes > 0)
+    }
+
+    /// Move the `.viewskater.yaml` of every listed folder to the trash with
+    /// `move_to_trash`, the way Move to Trash moves an image. The app never
+    /// deletes one. `lacks_trash` names the locations where the trash would
+    /// delete for good (Windows network shares and removable drives), and
+    /// those files stay. Call it with no saves pending, or a save could put
+    /// a file back right after it left.
+    ///
+    /// The folders whose file is gone leave the list and show no stars.
+    pub(crate) fn move_star_files(
+        &mut self,
+        move_to_trash: impl Fn(&Path) -> Result<(), String>,
+        lacks_trash: impl Fn(&Path) -> bool,
+    ) -> StarFileMoves {
+        let mut moves = StarFileMoves::default();
+        let mut gone = Vec::new();
+        for dir in &self.star_file_folders {
+            let file = dir.join(FILE_NAME);
+            if !file.is_file() {
+                gone.push(dir.clone());
+                continue;
+            }
+            if lacks_trash(&file) {
+                moves.left_in_place.push(file);
+                continue;
+            }
+            match move_to_trash(&file) {
+                Ok(()) => {
+                    moves.moved += 1;
+                    gone.push(dir.clone());
+                    // A temp file only stays behind after a crash mid-save.
+                    let temp = dir.join(TEMP_NAME);
+                    if temp.is_file() {
+                        let _ = move_to_trash(&temp);
+                    }
+                }
+                Err(e) => moves.failed.push((file, e)),
+            }
+        }
+        for (dir, folder) in &mut self.folders {
+            let absolute = std::path::absolute(dir).unwrap_or_else(|_| dir.clone());
+            if gone.contains(&absolute) {
+                *folder = FolderStars::default();
+            }
+        }
+        self.update_folder_list(&[], &gone);
+        moves
+    }
+
+    /// Add and remove folders in the list, on disk too. The file is read
+    /// again first, so folders another window added stay in it.
+    fn update_folder_list(&mut self, add: &[PathBuf], remove: &[PathBuf]) {
+        let mut folders = match &self.folder_list {
+            Some(path) => match read_folder_list(path) {
+                Ok(folders) => folders,
+                Err(e) => {
+                    // Never written over, like a star file this build
+                    // cannot read. The list lives on in memory.
+                    log::warn!("{e}");
+                    self.star_file_folders.extend(add.iter().cloned());
+                    self.star_file_folders.retain(|f| !remove.contains(f));
+                    return;
+                }
+            },
+            None => self.star_file_folders.clone(),
+        };
+        folders.extend(add.iter().cloned());
+        folders.retain(|f| !remove.contains(f));
+        if let Some(path) = &self.folder_list {
+            if let Err(e) = write_folder_list(path, &folders) {
+                log::error!("Could not save {}: {e}", path.display());
+            }
+        }
+        self.star_file_folders = folders;
     }
 
     /// Let the writer finish every save in its queue, then stop it. Runs
@@ -288,6 +437,40 @@ fn failure_message(starring: bool, path: &Path, reason: &str) -> String {
     } else {
         format!("Could not remove the star from {name}: {reason}")
     }
+}
+
+/// The folders in `star_folders.yaml`. An empty list when there is none.
+fn read_folder_list(path: &Path) -> Result<BTreeSet<PathBuf>, String> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(e) => return Err(format!("{} could not be read ({e})", path.display())),
+    };
+    let list: FolderList =
+        serde_yaml::from_str(&text).map_err(|e| format!("{} could not be read ({e})", path.display()))?;
+    if list.version > VERSION {
+        return Err(format!("{} was saved by a newer version of ViewSkater", path.display()));
+    }
+    Ok(list.folders)
+}
+
+/// Write the list through a temp file, like a star file. Paths that are
+/// not valid UTF-8 cannot be written to YAML and are left out.
+fn write_folder_list(path: &Path, folders: &BTreeSet<PathBuf>) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let list = FolderList {
+        version: VERSION,
+        folders: folders.iter().filter(|f| f.to_str().is_some()).cloned().collect(),
+    };
+    let text = serde_yaml::to_string(&list).map_err(io::Error::other)?;
+    let temp = path.with_extension("yaml.tmp");
+    let mut file = fs::File::create(&temp)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&temp, path)
 }
 
 /// The folder and the file name of `path`. The name is a key in YAML, so
