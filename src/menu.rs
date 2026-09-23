@@ -466,8 +466,11 @@ pub(crate) fn show_footer(
 
 /// Width reserved for the trash button and the gap before the counter.
 const FOOTER_BUTTON_W: f32 = 26.0;
-/// Width of the star slot before the file name.
+/// Width of the star slot left of the trash button.
 const FOOTER_STAR_W: f32 = 14.0;
+/// Extra space between the star and the trash button, so a click aimed at
+/// the star does not hit the button.
+const FOOTER_STAR_GAP: f32 = 8.0;
 
 /// Paint one pane's footer. Returns true if its Move to Trash button was
 /// clicked.
@@ -483,10 +486,10 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool, theme: 
         let dim = egui::Color32::from_gray(160);
         let sep_w = 20.0; // approximate separator + spacing width
 
-        // The star slot before the file name exists only when the pane's
-        // list has a starred image, so a pane without stars looks as it
-        // always did. With the starred-only filter on, the counter says so
-        // in the accent colour.
+        // The star slot left of the trash button exists only when the
+        // pane's list has a starred image, so a pane without stars looks as
+        // it always did. With the starred-only filter on, the counter says
+        // so in the accent colour.
         let star_slot = !pane.starred_positions.is_empty();
         let filtered = pane.starred_only();
         let counter_color = if filtered { theme.accent } else { bright };
@@ -538,7 +541,11 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool, theme: 
         let res_w = resolution.as_ref().map_or(0.0, |r| measure(ui, r) + sep_w);
         let size_w = file_size.as_ref().map_or(0.0, |s| measure(ui, s) + sep_w);
         let button_w = if show_buttons { FOOTER_BUTTON_W } else { 0.0 };
-        let star_w = if star_slot { FOOTER_STAR_W + ui.spacing().item_spacing.x } else { 0.0 };
+        let star_w = if star_slot {
+            FOOTER_STAR_W + FOOTER_STAR_GAP + ui.spacing().item_spacing.x
+        } else {
+            0.0
+        };
 
         let remaining = total - index_w - button_w - margin - star_w;
         let show_filename = remaining >= filename_w;
@@ -546,9 +553,6 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool, theme: 
         let show_size = show_res && remaining >= filename_w + res_w + size_w;
 
         // Render visible elements (priority: index > filename > resolution > file size)
-        if star_slot {
-            footer_star(ui, pane.is_current_starred(), theme);
-        }
         if show_filename {
             ui.label(egui::RichText::new(&filename).monospace().color(bright).size(13.0));
         }
@@ -572,8 +576,9 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool, theme: 
         }
 
         // Right end: the counter stays in the corner, the trash button sits
-        // to its left (the iced footer put the copy buttons there too).
-        // The counter is shortened before the button is dropped.
+        // to its left (the iced footer put the copy buttons there too), and
+        // the star left of the button. When space runs out the star goes
+        // first, then the counter is shortened, then the button is dropped.
         if !pane.image_paths.is_empty() {
             let used = ui.min_rect().width();
             let space = total - used - margin;
@@ -604,11 +609,17 @@ fn paint_pane_footer(ui: &mut egui::Ui, pane: &Pane, show_buttons: bool, theme: 
                     } else {
                         return;
                     };
-                    if show_buttons && space - counter_w >= FOOTER_BUTTON_W {
+                    let mut right_w = counter_w;
+                    if show_buttons && space - right_w >= FOOTER_BUTTON_W {
                         ui.add_space(4.0);
                         if trash_button(ui, theme).clicked() {
                             trash_clicked = true;
                         }
+                        right_w += FOOTER_BUTTON_W;
+                    }
+                    if star_slot && space - right_w >= FOOTER_STAR_W + FOOTER_STAR_GAP {
+                        ui.add_space(FOOTER_STAR_GAP);
+                        footer_star(ui, pane.is_current_starred(), theme);
                     }
                 },
             );
@@ -639,10 +650,10 @@ pub(crate) fn trash_button(ui: &mut egui::Ui, theme: &UiTheme) -> egui::Response
     response.on_hover_text(format!("Move to Trash ({shortcut})"))
 }
 
-/// The footer's star before the file name: filled in the accent colour on
-/// a starred image, empty space on the others, so the name stays put while
-/// skating past starred images. It is not a button. S, the Edit menu and
-/// the metadata panel set stars.
+/// The footer's star left of the trash button: filled in the accent colour
+/// on a starred image, empty space on the others, so the file name and the
+/// file size are cut at the same width on every image while skating. It
+/// is not a button. S, the Edit menu and the metadata panel set stars.
 fn footer_star(ui: &mut egui::Ui, starred: bool, theme: &UiTheme) {
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(FOOTER_STAR_W, 18.0), egui::Sense::hover());
