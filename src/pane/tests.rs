@@ -482,3 +482,21 @@ fn opening_a_folder_turns_the_filter_off() {
     assert_eq!(p.image_paths.len(), 6);
     assert_eq!(p.starred_positions, [1, 4]);
 }
+
+#[test]
+fn starred_neighbor_finds_the_nearest_star_each_way() {
+    let ctx = egui::Context::default();
+    let mut p = pane_with(&ctx, 6, 0);
+    p.starred_positions = vec![1, 4];
+    assert_eq!(p.starred_neighbor(1), Some(1));
+    assert_eq!(p.starred_neighbor(-1), None);
+    p.current_index = 1;
+    assert_eq!(p.starred_neighbor(1), Some(4));
+    assert_eq!(p.starred_neighbor(-1), None);
+    p.current_index = 3;
+    assert_eq!(p.starred_neighbor(1), Some(4));
+    assert_eq!(p.starred_neighbor(-1), Some(1));
+    p.current_index = 5;
+    assert_eq!(p.starred_neighbor(1), None);
+    assert_eq!(p.starred_neighbor(-1), Some(4));
+}

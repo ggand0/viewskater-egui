@@ -508,6 +508,16 @@ impl Pane {
         self.starred_positions.binary_search(&self.current_index).is_ok()
     }
 
+    /// The index of the nearest starred image before (`dir` < 0) or after
+    /// (`dir` > 0) the one on screen. `None` when there is none that way.
+    pub(crate) fn starred_neighbor(&self, dir: isize) -> Option<usize> {
+        if dir > 0 {
+            self.starred_positions.iter().copied().find(|&i| i > self.current_index)
+        } else {
+            self.starred_positions.iter().copied().rev().find(|&i| i < self.current_index)
+        }
+    }
+
     /// The starred-only filter is on.
     pub(crate) fn starred_only(&self) -> bool {
         self.unfiltered_paths.is_some()

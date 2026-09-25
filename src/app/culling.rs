@@ -220,6 +220,32 @@ impl App {
         ctx.request_repaint();
     }
 
+    /// Q and E: every active pane jumps to its previous or next starred
+    /// image. A pane with none that way stays, like the arrow keys at the
+    /// end of a folder.
+    pub(super) fn jump_to_starred(&mut self, dir: isize, ctx: &egui::Context) {
+        let use_selection = self.dual_pane_mode == DualPaneMode::Independent;
+        let mut moved = false;
+        for pane in &mut self.panes {
+            if use_selection && !pane.selected {
+                continue;
+            }
+            if let Some(index) = pane.starred_neighbor(dir) {
+                pane.jump_to(index, ctx);
+                moved = true;
+            }
+        }
+        if moved {
+            self.perf.record_image_load();
+        }
+    }
+
+    /// Esc: the starred-only filter is on in an active pane.
+    pub(super) fn starred_only_in_active_pane(&self) -> bool {
+        let use_selection = self.dual_pane_mode == DualPaneMode::Independent;
+        self.panes.iter().any(|p| (!use_selection || p.selected) && p.starred_only())
+    }
+
     /// The Edit menu's star row reads "Unstar" when every image S acts on
     /// has a star. The View menu's switch shows whether the filter is on
     /// in an active pane.

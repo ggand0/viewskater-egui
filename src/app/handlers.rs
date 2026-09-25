@@ -158,13 +158,18 @@ impl App {
 
     /// `key` was pressed this frame, alone or with Shift. Shift is allowed
     /// because skating holds it, and a person who stops skating to star an
-    /// image often still holds it. Key repeats are ignored, so holding S
-    /// does not flip the star on and off.
-    fn letter_pressed(ctx: &egui::Context, key: egui::Key) -> bool {
+    /// image often still holds it. With `repeats` false a held key counts
+    /// once, so holding S does not flip the star on and off. Holding E
+    /// keeps jumping.
+    fn letter_pressed(ctx: &egui::Context, key: egui::Key, repeats: bool) -> bool {
         ctx.input(|i| {
             i.events.iter().any(|e| match e {
-                egui::Event::Key { key: k, pressed: true, repeat: false, modifiers, .. } => {
-                    *k == key && !modifiers.command && !modifiers.ctrl && !modifiers.alt
+                egui::Event::Key { key: k, pressed: true, repeat, modifiers, .. } => {
+                    *k == key
+                        && (repeats || !repeat)
+                        && !modifiers.command
+                        && !modifiers.ctrl
+                        && !modifiers.alt
                 }
                 _ => false,
             })
@@ -399,12 +404,27 @@ impl App {
             self.trash_current_images(ctx);
             return;
         }
-        if Self::letter_pressed(ctx, egui::Key::S) {
+        if Self::letter_pressed(ctx, egui::Key::S, false) {
             self.toggle_star_current_images(ctx);
             return;
         }
-        if Self::letter_pressed(ctx, egui::Key::F) {
+        if Self::letter_pressed(ctx, egui::Key::F, false) {
             self.toggle_starred_only(ctx);
+            return;
+        }
+        // In fullscreen the first Esc left fullscreen above. A modal open
+        // returned earlier, so the Esc that closes Preferences does not
+        // also turn the filter off.
+        if escape && self.starred_only_in_active_pane() {
+            self.toggle_starred_only(ctx);
+            return;
+        }
+        if Self::letter_pressed(ctx, egui::Key::Q, true) {
+            self.jump_to_starred(-1, ctx);
+            return;
+        }
+        if Self::letter_pressed(ctx, egui::Key::E, true) {
+            self.jump_to_starred(1, ctx);
             return;
         }
 
