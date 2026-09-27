@@ -222,8 +222,21 @@ impl App {
 
     /// Q and E: every active pane jumps to its previous or next starred
     /// image. A pane with none that way stays, like the arrow keys at the
-    /// end of a folder.
+    /// end of a folder. Synced panes move together by position, so they
+    /// both go to the nearest position where either one has a star.
     pub(super) fn jump_to_starred(&mut self, dir: isize, ctx: &egui::Context) {
+        if self.panes.len() >= 2 && self.dual_pane_mode == DualPaneMode::Synced {
+            let Some(target) = crate::pane::synced_starred_neighbor(&self.panes, dir) else {
+                return;
+            };
+            for pane in &mut self.panes {
+                if !pane.image_paths.is_empty() {
+                    pane.jump_to(target, ctx);
+                }
+            }
+            self.perf.record_image_load();
+            return;
+        }
         let use_selection = self.dual_pane_mode == DualPaneMode::Independent;
         let mut moved = false;
         for pane in &mut self.panes {

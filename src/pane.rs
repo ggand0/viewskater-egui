@@ -898,5 +898,24 @@ impl Pane {
     }
 }
 
+/// For synced dual pane, where the panes move together by position: the
+/// nearest position before (`dir` < 0) or after (`dir` > 0) the one the
+/// panes are at where any of them has a starred image. The panes are at
+/// the highest current index, the one the shared slider shows, because a
+/// shorter list stops at its last image.
+pub(crate) fn synced_starred_neighbor(panes: &[Pane], dir: isize) -> Option<usize> {
+    let position = panes
+        .iter()
+        .filter(|p| !p.image_paths.is_empty())
+        .map(|p| p.current_index)
+        .max()?;
+    let starred = panes.iter().flat_map(|p| p.starred_positions.iter().copied());
+    if dir > 0 {
+        starred.filter(|&i| i > position).min()
+    } else {
+        starred.filter(|&i| i < position).max()
+    }
+}
+
 #[cfg(test)]
 mod tests;

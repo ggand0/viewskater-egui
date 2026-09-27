@@ -500,3 +500,36 @@ fn starred_neighbor_finds_the_nearest_star_each_way() {
     assert_eq!(p.starred_neighbor(1), None);
     assert_eq!(p.starred_neighbor(-1), Some(4));
 }
+
+/// Synced panes: Q and E stop at every position where either pane has a
+/// star, so both panes' stars are reached and the panes stay together.
+#[test]
+fn synced_panes_reach_the_stars_of_both() {
+    let ctx = egui::Context::default();
+    let mut panes = vec![pane_with(&ctx, 8, 0), pane_with(&ctx, 8, 0)];
+    panes[0].starred_positions = vec![2, 6];
+    panes[1].starred_positions = vec![4];
+    let at = |panes: &mut [Pane], i: usize| panes.iter_mut().for_each(|p| p.current_index = i);
+
+    assert_eq!(synced_starred_neighbor(&panes, 1), Some(2));
+    at(&mut panes, 2);
+    assert_eq!(synced_starred_neighbor(&panes, 1), Some(4));
+    at(&mut panes, 4);
+    assert_eq!(synced_starred_neighbor(&panes, 1), Some(6));
+    assert_eq!(synced_starred_neighbor(&panes, -1), Some(2));
+    at(&mut panes, 6);
+    assert_eq!(synced_starred_neighbor(&panes, 1), None);
+    assert_eq!(synced_starred_neighbor(&panes, -1), Some(4));
+}
+
+/// A shorter list stops at its last image. The panes are at the longer
+/// one's index, the one the shared slider shows.
+#[test]
+fn synced_panes_go_from_the_longer_lists_index() {
+    let ctx = egui::Context::default();
+    let mut panes = vec![pane_with(&ctx, 8, 6), pane_with(&ctx, 4, 3)];
+    panes[0].starred_positions = vec![7];
+    panes[1].starred_positions = vec![1];
+    assert_eq!(synced_starred_neighbor(&panes, 1), Some(7));
+    assert_eq!(synced_starred_neighbor(&panes, -1), Some(1));
+}
