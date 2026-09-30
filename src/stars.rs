@@ -103,6 +103,8 @@ struct FinishedWrite {
     was_starred: bool,
     was_in_file: bool,
     result: Result<(), String>,
+    /// Whether the folder has its `.viewskater.yaml` after this save.
+    has_file: bool,
 }
 
 /// What moving every star file to the trash did.
@@ -145,7 +147,9 @@ impl Stars {
                         log::error!("Could not save the star of {} in {}: {e}", job.name, job.dir.display());
                     }
                     let failed = result.is_err();
+                    let has_file = job.dir.join(FILE_NAME).is_file();
                     let _ = finished_sender.send(FinishedWrite {
+                        has_file,
                         dir: job.dir,
                         name: job.name,
                         starred: matches!(job.change, Change::Star(_)),
@@ -251,9 +255,9 @@ impl Stars {
         if let Some(reason) = self.folders.get(dir).and_then(|f| f.locked.as_ref()) {
             return Err(failure_message(starring, path, reason));
         }
-        // Listed before the file exists, so the list never misses one. A
-        // save that fails leaves a folder without the file in the list,
-        // which the Stars tab passes over.
+        // Listed before the file exists, so the list never misses one. If
+        // the saves fail and leave no file, `take_failures` takes the
+        // folder off the list again.
         if starring {
             if let Ok(absolute) = std::path::absolute(dir) {
                 if !self.star_file_folders.contains(&absolute) {
@@ -284,10 +288,11 @@ impl Stars {
     }
 
     /// Collect the saves the writer finished since the last call. A failed
-    /// save takes its change back. Returns one message per failure, for
-    /// the user.
+    /// save takes its change back, and a folder left without its file
+    /// leaves the list. Returns one message per failure, for the user.
     pub(crate) fn take_failures(&mut self) -> Vec<String> {
         let mut failures = Vec::new();
+        let mut without_file = Vec::new();
         while let Ok(done) = self.finished.try_recv() {
             let folder = self.folders.entry(done.dir.clone()).or_default();
             folder.pending_writes = folder.pending_writes.saturating_sub(1);
@@ -295,6 +300,16 @@ impl Stars {
                 restore(folder, &done.name, done.was_starred, done.was_in_file);
                 failures.push(failure_message(done.starred, &done.dir.join(&done.name), &reason));
             }
+            if folder.pending_writes == 0 && !done.has_file {
+                if let Ok(absolute) = std::path::absolute(&done.dir) {
+                    if self.star_file_folders.contains(&absolute) {
+                        without_file.push(absolute);
+                    }
+                }
+            }
+        }
+        if !without_file.is_empty() {
+            self.update_folder_list(&[], &without_file);
         }
         failures
     }

@@ -335,6 +335,33 @@ fn a_folder_another_window_listed_stays_in_the_list() {
     assert_eq!(listed_on_disk(&list), expected);
 }
 
+/// A folder whose first save fails has no file, so it leaves the list
+/// again. A later failure in a folder that has its file keeps it listed.
+#[test]
+fn a_failed_first_save_takes_the_folder_off_the_list() {
+    let (dir, images) = folder();
+    let config = tempfile::tempdir().unwrap();
+    let list = config.path().join("star_folders.yaml");
+    let mut stars = loaded_with_list(dir.path(), &images, &list);
+    // A folder where the temp file goes makes the save fail everywhere.
+    let blocker = dir.path().join(TEMP_NAME);
+    fs::create_dir(&blocker).unwrap();
+
+    stars.star(&images[0], size(&images[0])).unwrap();
+    assert_eq!(stars.wait_for_writes().len(), 1);
+    assert!(!dir.path().join(FILE_NAME).exists());
+    assert!(stars.star_file_folders().is_empty());
+    assert!(listed_on_disk(&list).is_empty());
+
+    fs::rename(&blocker, dir.path().join("set aside")).unwrap();
+    stars.star(&images[0], size(&images[0])).unwrap();
+    assert!(stars.wait_for_writes().is_empty());
+    fs::rename(dir.path().join("set aside"), &blocker).unwrap();
+    stars.star(&images[1], size(&images[1])).unwrap();
+    assert_eq!(stars.wait_for_writes().len(), 1);
+    assert_eq!(listed_on_disk(&list), [dir.path().to_path_buf()]);
+}
+
 #[test]
 fn a_list_from_a_newer_version_is_never_written() {
     let (dir, images) = folder();
