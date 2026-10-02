@@ -219,7 +219,7 @@ fn ns_window(frame: &eframe::Frame) -> Option<Retained<NSWindow>> {
 ///
 /// Used by window-state persistence to tell a normal frame from one that
 /// should not be recorded. `isZoomed` only becomes true once the zoom
-/// animation has landed; AppKit runs that animation (and the un-zoom one)
+/// animation has finished. AppKit runs that animation (and the un-zoom one)
 /// as a live resize, so `inLiveResize` covers every frame in between, the
 /// same way it covers a user dragging an edge.
 pub fn window_zoomed_or_resizing(frame: &eframe::Frame) -> bool {

@@ -331,8 +331,8 @@ pub struct App {
     /// Where the metadata panel is this frame, so the fullscreen FPS
     /// overlay stays left of it.
     metadata_panel_rect: Option<egui::Rect>,
-    /// Last geometry seen while the window was in its normal state; what
-    /// gets persisted for the next launch.
+    /// Last geometry seen while the window was in its normal state. This is
+    /// what gets persisted for the next launch.
     window_geometry: Option<NormalWindowGeometry>,
 }
 

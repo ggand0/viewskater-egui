@@ -16,7 +16,7 @@ use eframe::egui;
 
 /// eframe's storage key for window settings. It is `STORAGE_WINDOW_KEY` in
 /// eframe's `epi_integration`, private there. eframe reads this key at
-/// startup regardless of `persist_window`; that flag only controls whether
+/// startup regardless of `persist_window`. That flag only controls whether
 /// eframe writes it.
 pub const EFRAME_WINDOW_KEY: &str = "window";
 
@@ -36,7 +36,7 @@ pub struct NormalWindowGeometry {
 impl NormalWindowGeometry {
     /// Capture the current geometry, or None while the window is maximized,
     /// fullscreen, or minimized. On macOS egui-winit does not query the
-    /// maximized state at runtime, so the window is asked directly; that
+    /// maximized state at runtime, so the window is asked directly. That
     /// also excludes the frames of a zoom animation in progress.
     #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     pub fn capture(ctx: &egui::Context, frame: &eframe::Frame) -> Option<Self> {
