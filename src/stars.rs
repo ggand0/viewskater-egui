@@ -352,7 +352,8 @@ impl Stars {
                 Ok(()) => {
                     moves.moved += 1;
                     gone.push(dir.clone());
-                    // A temp file only stays behind after a crash mid-save.
+                    // A temp file only stays behind after a crash or a
+                    // failed save.
                     let temp = dir.join(TEMP_NAME);
                     if temp.is_file() {
                         let _ = move_to_trash(&temp);
@@ -483,7 +484,7 @@ fn write_folder_list(path: &Path, folders: &BTreeSet<PathBuf>) -> io::Result<()>
     let temp = path.with_extension("yaml.tmp");
     let mut file = fs::File::create(&temp)?;
     file.write_all(text.as_bytes())?;
-    file.sync_all()?;
+    sync_file(&file)?;
     drop(file);
     fs::rename(&temp, path)
 }
@@ -573,9 +574,34 @@ fn write_through_temp(dir: &Path, path: &Path, text: &str) -> io::Result<()> {
     let temp = dir.join(TEMP_NAME);
     let mut file = create_hidden(&temp)?;
     file.write_all(text.as_bytes())?;
-    file.sync_all()?;
+    sync_file(&file)?;
     drop(file);
     fs::rename(&temp, path)
+}
+
+/// Wait until `file` is on its storage, so the rename after it never puts
+/// a half-written file in place. On macOS `sync_all` is fcntl(F_FULLFSYNC),
+/// which also has the drive empty its own write cache, and the SMB client
+/// refuses it with ENOTSUP before any request reaches the server. When it
+/// fails, fsync(2) sends the data to the drive or the server. SQLite's
+/// full_fsync falls back the same way.
+fn sync_file(file: &fs::File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        if file.sync_all().is_ok() {
+            return Ok(());
+        }
+        // SAFETY: `file` owns the descriptor for the duration of the call.
+        if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+            return Ok(());
+        }
+        Err(io::Error::last_os_error())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        file.sync_all()
+    }
 }
 
 /// Windows refuses to open an existing hidden file for rewriting unless
