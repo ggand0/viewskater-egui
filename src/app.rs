@@ -1,4 +1,6 @@
-mod handlers;
+mod bench;
+mod culling;
+pub(crate) mod handlers;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -187,6 +189,7 @@ pub(crate) fn paint_nav_slider(
     preview_stale_since: &mut Option<(usize, Instant)>,
     show_preview: bool,
     bench_hover_t: Option<f32>,
+    bench_drag: Option<crate::bench::slider::BenchDrag>,
 ) -> SliderResult {
     if max_images <= 1 {
         return SliderResult {
@@ -217,7 +220,15 @@ pub(crate) fn paint_nav_slider(
     let cy = rect.center().y;
     let handle_range = (rect.left() + handle_radius)..=(rect.right() - handle_radius);
 
-    if let Some(pos) = response.interact_pointer_pos() {
+    // --bench-slider injects the drag in place of the pointer; everything
+    // below (target, release, throttle, sync decode, refill) runs as for a
+    // real drag.
+    if let Some(drag) = bench_drag {
+        idx = (max as f32 * drag.t.clamp(0.0, 1.0)).round() as usize;
+        if idx != current_idx {
+            target = Some(idx);
+        }
+    } else if let Some(pos) = response.interact_pointer_pos() {
         let usable = rect.x_range().shrink(handle_radius);
         let drag_t = ((pos.x - usable.min) / (usable.max - usable.min)).clamp(0.0, 1.0);
         idx = (max as f32 * drag_t).round() as usize;
@@ -225,7 +236,7 @@ pub(crate) fn paint_nav_slider(
             target = Some(idx);
         }
     }
-    let released = response.drag_stopped();
+    let released = bench_drag.map_or_else(|| response.drag_stopped(), |d| d.released);
 
     let rail = egui::Rect::from_min_max(
         egui::pos2(rect.left(), cy - rail_radius),
@@ -308,7 +319,18 @@ pub struct App {
     file_receiver: Receiver<PathBuf>,
     last_preview_idx: Option<usize>,
     preview_stale_since: Option<(usize, Instant)>,
-    preview_bench: Option<crate::bench::preview::PreviewBench>,
+    /// The `--bench-*` modes and their progress; see app/bench.rs.
+    bench: bench::BenchState,
+    /// Outcome of the last trash move, painted briefly over the image.
+    toast: Option<culling::Toast>,
+    /// Files waiting for the user to confirm a permanent delete (Windows
+    /// locations without a Recycle Bin).
+    pending_permanent_delete: Option<Vec<PathBuf>>,
+    /// The metadata side panel's state between frames.
+    metadata_panel: crate::metadata_panel::PanelState,
+    /// Where the metadata panel is this frame, so the fullscreen FPS
+    /// overlay stays left of it.
+    metadata_panel_rect: Option<egui::Rect>,
     /// Last geometry seen while the window was in its normal state; what
     /// gets persisted for the next launch.
     window_geometry: Option<NormalWindowGeometry>,
@@ -322,7 +344,8 @@ impl App {
         settings: AppSettings,
         file_receiver: Receiver<PathBuf>,
         needs_dpi_resize: bool,
-        bench_preview: bool,
+        bench_opts: crate::bench::BenchOptions,
+        app_start: Instant,
     ) -> Self {
         let theme = UiTheme::teal_dark();
         theme.apply_to_visuals(&cc.egui_ctx);
@@ -351,7 +374,11 @@ impl App {
             file_receiver,
             last_preview_idx: None,
             preview_stale_since: None,
-            preview_bench: None,
+            bench: bench::BenchState::new(bench_opts, app_start),
+            toast: None,
+            pending_permanent_delete: None,
+            metadata_panel: Default::default(),
+            metadata_panel_rect: None,
             window_geometry: None,
         };
 
@@ -384,15 +411,7 @@ impl App {
             app.perf.record_image_load();
         }
 
-        if bench_preview {
-            let n = app.panes[0].image_paths.len();
-            if n > 1 {
-                log::info!("preview bench: starting on {n} images");
-                app.preview_bench = Some(crate::bench::preview::PreviewBench::new(n));
-            } else {
-                log::error!("--bench-preview requires a folder with at least 2 images");
-            }
-        }
+        app.start_benchmarks(&cc.egui_ctx);
 
         let mut fonts = egui::FontDefinitions::default();
         let mut cjk_loaded = false;
@@ -480,15 +499,19 @@ impl App {
 
         let accent = self.theme.accent;
         let mut stale_since = self.preview_stale_since;
-        let preview = (self.settings.slider_preview || self.preview_bench.is_some())
-            && self.panes.len() < 2;
-        let bench_t = self.preview_bench.as_ref().and_then(|b| b.hover_t());
+        // No thumbnails while the slider bench drags, as with a real drag.
+        let preview = (self.settings.slider_preview || self.bench.preview.is_some())
+            && self.panes.len() < 2
+            && self.bench.slider.is_none();
+        let bench_t = self.bench.preview.as_ref().and_then(|b| b.hover_t());
+        let now = Instant::now();
+        let bench_drag = self.bench.slider.as_ref().and_then(|b| b.drag(now));
         let result = egui::TopBottomPanel::bottom("nav")
-            .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent, &mut self.panes, &mut stale_since, preview, bench_t))
+            .show(ctx, |ui| paint_nav_slider(ui, current_idx, max_images, accent, &mut self.panes, &mut stale_since, preview, bench_t, bench_drag))
             .inner;
         self.preview_stale_since = stale_since;
 
-        if let Some(bench) = &mut self.preview_bench {
+        if let Some(bench) = &mut self.bench.preview {
             // At each phase end, sample the overlay's Preview FPS counter
             // and reset its 2s window so the next phase's sample is pure.
             if let Some(phase) = bench.tick(result.preview_cursor_index, result.preview_exact) {
@@ -497,7 +520,7 @@ impl App {
             }
             if bench.is_done() {
                 log::info!("{}", bench.report());
-                self.preview_bench = None;
+                self.bench.preview = None;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             } else {
                 ctx.request_repaint();
@@ -514,7 +537,11 @@ impl App {
             self.preview_stale_since = None;
         }
 
-        self.apply_slider_result_all(result, ctx);
+        let target_changed = result.target.is_some();
+        let shown = self.apply_slider_result_all(result, ctx);
+        if self.bench.slider.is_some() {
+            self.tick_slider_bench(now, bench_drag, target_changed, shown, ctx);
+        }
     }
 
     fn show_central_panel(&mut self, ctx: &egui::Context) {
@@ -630,8 +657,8 @@ impl App {
                     if independent {
                         let muted = egui::Color32::from_gray(50);
                         for (i, (pane, x, w)) in [
-                            (&first[0], available.min.x, left_w),
-                            (&rest[0], right_x, right_w),
+                            (&mut first[0], available.min.x, left_w),
+                            (&mut rest[0], right_x, right_w),
                         ]
                         .into_iter()
                         .enumerate()
@@ -640,6 +667,19 @@ impl App {
                                 egui::pos2(x, available.min.y),
                                 egui::vec2(w, strip_h),
                             );
+                            // A real widget, so egui routes the click by layer: a
+                            // menu popup lying over the strip keeps its click (the
+                            // Edit menu's first row overlaps the strip). The strip
+                            // is added after the divider handle, so it takes the
+                            // top 18 px of the handle's grab area.
+                            let response = ui.interact(
+                                strip_rect,
+                                ui.id().with(("pane_strip", i)),
+                                egui::Sense::click(),
+                            );
+                            if response.clicked() {
+                                pane.selected = !pane.selected;
+                            }
                             let color = if pane.selected { accent } else { muted };
                             ui.painter().rect_filled(strip_rect, 0.0, color);
 
@@ -656,26 +696,6 @@ impl App {
                                 egui::FontId::monospace(11.0),
                                 text_color,
                             );
-                        }
-
-                        // Handle clicks on strips (use raw pointer to avoid
-                        // conflicting with divider/pane interactions)
-                        if ui.input(|i| i.pointer.any_click()) {
-                            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                                let strip_area = egui::Rect::from_min_size(
-                                    available.min,
-                                    egui::vec2(available.width(), strip_h),
-                                );
-                                if strip_area.contains(pos) {
-                                    let divider_center =
-                                        available.min.x + left_w + divider_w / 2.0;
-                                    if pos.x < divider_center {
-                                        first[0].selected = !first[0].selected;
-                                    } else {
-                                        rest[0].selected = !rest[0].selected;
-                                    }
-                                }
-                            }
                         }
                     }
 
@@ -701,6 +721,7 @@ impl App {
                                         &mut stale_l,
                                         false,
                                         None,
+                                        None,
                                     )
                                 },
                             )
@@ -725,6 +746,7 @@ impl App {
                                         rest,
                                         &mut stale_r,
                                         false,
+                                        None,
                                         None,
                                     )
                                 },
@@ -757,6 +779,16 @@ impl eframe::App for App {
         if let Some(render_state) = frame.wgpu_render_state() {
             render_state.device.poll(eframe::wgpu::Maintain::Wait);
             self.perf.sample_gpu_memory(&render_state.device);
+        }
+
+        // Official build: follow the accent preset from settings. The free
+        // build keeps the default teal whatever the settings file says.
+        #[cfg(feature = "official")]
+        {
+            let accent = self.settings.accent_color();
+            if self.theme.accent != accent {
+                self.theme.accent = accent;
+            }
         }
 
         // Force dark theme every frame (egui_winit can reapply system theme on macOS)
@@ -792,7 +824,12 @@ impl eframe::App for App {
 
         self.handle_external_open_requests(ctx);
         self.handle_dropped_files(ctx);
-        self.handle_keyboard(ctx);
+        if self.bench.nav.is_some() {
+            // The benchmark is the keyboard for the duration of the run.
+            self.tick_nav_bench(ctx);
+        } else {
+            self.handle_keyboard(ctx);
+        }
         self.update_title(ctx);
 
         let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
@@ -857,9 +894,53 @@ impl eframe::App for App {
             self.menu_open = false;
         }
 
+        // Metadata panel (right). The I key shows and hides it, in
+        // fullscreen too. Added before the footer and the slider so they
+        // shrink with it.
+        if self.settings.show_metadata_panel {
+            let out = crate::metadata_panel::show_metadata_panel(
+                ctx,
+                &self.panes,
+                &mut self.metadata_panel,
+                self.settings.metadata_panel_width,
+                self.settings.metadata_all_exif_open,
+                &self.theme,
+            );
+            self.metadata_panel_rect = Some(out.rect);
+            if let Some(pane_idx) = out.trash_clicked {
+                self.trash_pane_image(pane_idx, ctx);
+            }
+            let mut settings_changed = false;
+            if let Some(width) = out.resized_to {
+                if (width - self.settings.metadata_panel_width).abs() >= 0.5 {
+                    self.settings.metadata_panel_width = width;
+                    settings_changed = true;
+                }
+            }
+            if let Some(open) = out.all_exif_toggled {
+                self.settings.metadata_all_exif_open = open;
+                settings_changed = true;
+            }
+            if settings_changed {
+                self.settings.save();
+            }
+        } else {
+            self.metadata_panel_rect = None;
+            self.metadata_panel.filter_has_focus = false;
+        }
+
         // Footer — in fullscreen, revealed when cursor near bottom edge
         if self.settings.show_footer && (!is_fullscreen || cursor_near_bottom) {
-            menu::show_footer(ctx, &self.panes, self.divider_fraction);
+            let clicked = menu::show_footer(
+                ctx,
+                &self.panes,
+                self.divider_fraction,
+                self.settings.show_footer_buttons,
+                &self.theme,
+            );
+            if let Some(pane_idx) = clicked {
+                self.trash_pane_image(pane_idx, ctx);
+            }
         }
 
         // Slider panel — in fullscreen, revealed when cursor near bottom edge
@@ -870,10 +951,19 @@ impl eframe::App for App {
         // Central panel (must be last — fills remaining space)
         self.show_central_panel(ctx);
 
-        // FPS overlay in fullscreen (painted over central panel, top-right corner)
+        // The metadata panel follows the pane whose image was clicked.
+        for (i, pane) in self.panes.iter_mut().enumerate() {
+            if pane.take_image_click() {
+                self.metadata_panel.active_pane = i;
+            }
+        }
+
+        // FPS overlay in fullscreen (painted over the central panel, top
+        // right corner, left of the metadata panel when that is open)
         if is_fullscreen && self.settings.show_fps {
             let fps = self.perf.fps_text(cache_mb);
             let screen = ctx.screen_rect();
+            let right = self.metadata_panel_rect.map_or(screen.max.x, |rect| rect.min.x);
             let font = egui::FontId::monospace(14.0);
             let color = egui::Color32::from_rgba_unmultiplied(220, 220, 220, 200);
             let bg = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140);
@@ -881,7 +971,7 @@ impl eframe::App for App {
             let text_size = galley.size();
             let margin = 8.0;
             let pos = egui::pos2(
-                screen.max.x - text_size.x - margin * 2.0,
+                right - text_size.x - margin * 2.0,
                 screen.min.y + margin,
             );
             let bg_rect = egui::Rect::from_min_size(
@@ -917,6 +1007,9 @@ impl eframe::App for App {
 
         // About modal (on top of everything)
         about::show_about_modal(ctx, &mut self.show_about, &self.theme);
+
+        self.paint_toast(ctx);
+        self.show_permanent_delete_modal(ctx);
     }
 
     /// Called by eframe on exit and at its autosave interval, after it has

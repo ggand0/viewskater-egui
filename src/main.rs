@@ -21,11 +21,15 @@ mod cache;
 mod decode;
 mod file_io;
 mod menu;
+mod metadata;
+mod metadata_panel;
 mod pane;
 mod perf;
 mod platform;
+mod raw;
 mod settings;
 mod theme;
+mod trash_bin;
 mod view_animation;
 mod window_state;
 
@@ -35,11 +39,8 @@ struct Args {
     /// Paths to image files or directories
     paths: Vec<PathBuf>,
 
-    /// Run the slider preview benchmark on the given folder and exit.
-    /// Simulates hovering the navigation slider and reports thumbnail
-    /// latency stats to the log.
-    #[arg(long)]
-    bench_preview: bool,
+    #[command(flatten)]
+    bench: bench::BenchArgs,
 }
 
 /// Configure eframe's wgpu setup with the user-selected MemoryHints. The hint
@@ -97,6 +98,7 @@ fn load_icon() -> Option<egui::IconData> {
 }
 
 fn main() -> eframe::Result {
+    let app_start = std::time::Instant::now();
     let log_buffer = file_io::setup_logger();
     file_io::setup_panic_hook(log_buffer.clone());
     let args = Args::parse();
@@ -176,7 +178,8 @@ fn main() -> eframe::Result {
                 settings,
                 file_rx,
                 !has_persisted_state,
-                args.bench_preview,
+                args.bench.into(),
+                app_start,
             )))
         }),
     )

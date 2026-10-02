@@ -152,7 +152,7 @@ fn tab_bar(ui: &mut egui::Ui, active: &mut SettingsTab, theme: &UiTheme) {
                 ui.painter().hline(
                     (rect.min.x + padding.x)..=(rect.max.x - padding.x),
                     rect.max.y - 1.0,
-                    egui::Stroke::new(2.0, theme.accent),
+                    egui::Stroke::new(2.0_f32, theme.accent),
                 );
             }
 
@@ -164,14 +164,16 @@ fn tab_bar(ui: &mut egui::Ui, active: &mut SettingsTab, theme: &UiTheme) {
     ui.add_space(2.0);
 }
 
-/// Custom radio row for GPU memory mode: an accent-colored circle indicator,
-/// a primary label, and a muted description on the next line.
-fn gpu_memory_radio(
+/// Custom radio row: an accent-colored circle indicator, a primary label with
+/// an optional color swatch after it, and a muted description on the next
+/// line. Used for the GPU memory mode and the accent presets.
+fn radio_row<T: PartialEq + Copy>(
     ui: &mut egui::Ui,
-    current: &mut GpuMemoryMode,
-    value: GpuMemoryMode,
+    current: &mut T,
+    value: T,
     label: &str,
     description: &str,
+    swatch: Option<egui::Color32>,
     theme: &UiTheme,
 ) {
     let selected = *current == value;
@@ -185,7 +187,7 @@ fn gpu_memory_radio(
         ui.painter().circle_stroke(
             center,
             radius,
-            egui::Stroke::new(1.5, egui::Color32::from_gray(140)),
+            egui::Stroke::new(1.5_f32, egui::Color32::from_gray(140)),
         );
         if selected {
             ui.painter()
@@ -196,21 +198,75 @@ fn gpu_memory_radio(
         }
 
         ui.vertical(|ui| {
-            let label_response = ui.add(
-                egui::Label::new(egui::RichText::new(label).size(13.0))
-                    .sense(egui::Sense::click()),
-            );
-            if label_response.clicked() {
-                *current = value;
+            ui.horizontal(|ui| {
+                let label_response = ui.add(
+                    egui::Label::new(egui::RichText::new(label).size(13.0))
+                        .sense(egui::Sense::click()),
+                );
+                if label_response.clicked() {
+                    *current = value;
+                }
+                if let Some(color) = swatch {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect.shrink(1.0), 3.0, color);
+                }
+            });
+            if !description.is_empty() {
+                ui.label(
+                    egui::RichText::new(description)
+                        .size(11.0)
+                        .color(theme.muted),
+                );
             }
-            ui.label(
-                egui::RichText::new(description)
-                    .size(11.0)
-                    .color(theme.muted),
-            );
         });
     });
     ui.add_space(4.0);
+}
+
+/// Accent color preset. Only the official build shows the picker; the free
+/// build keeps the default teal and ignores the stored value, so a settings
+/// file written by either build loads in the other.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccentPreset {
+    /// The teal from the iced version and the free build.
+    #[default]
+    Teal,
+    /// Bright cyan from the icon's foreground trails.
+    Cyan,
+    /// Warm amber, for contrast against photo-heavy screens.
+    Amber,
+    /// Soft violet.
+    Violet,
+    /// A color picked in the settings, stored in `AppSettings::custom_accent`.
+    Custom,
+}
+
+#[cfg(feature = "official")]
+impl AccentPreset {
+    pub(crate) const ALL: [Self; 5] = [Self::Teal, Self::Cyan, Self::Amber, Self::Violet, Self::Custom];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Teal => "Teal",
+            Self::Cyan => "Cyan",
+            Self::Amber => "Amber",
+            Self::Violet => "Violet",
+            Self::Custom => "Custom",
+        }
+    }
+
+    /// Fixed color of a preset. `Custom` has none; see [`AppSettings::color_of`].
+    fn fixed_color(self) -> Option<egui::Color32> {
+        let rgb = match self {
+            Self::Teal => crate::theme::DEFAULT_ACCENT,
+            Self::Cyan => [46, 230, 255],
+            Self::Amber => [240, 160, 60],
+            Self::Violet => [160, 130, 235],
+            Self::Custom => return None,
+        };
+        Some(crate::theme::rgb(rgb))
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -294,6 +350,9 @@ pub struct ImageSortOrder {
 #[serde(default)]
 pub struct AppSettings {
     pub show_footer: bool,
+    /// Action buttons at the right end of the footer (Move to Trash).
+    /// Off for people who use the viewer as a plain reader.
+    pub show_footer_buttons: bool,
     pub show_fps: bool,
     pub show_cache_overlay: bool,
     pub sync_zoom_pan: bool,
@@ -306,12 +365,23 @@ pub struct AppSettings {
     pub slider_preview: bool,
     pub preview_budget_mb: usize,
     pub image_discovery_options: ImageDiscoveryOptions,
+    pub accent_preset: AccentPreset,
+    /// Accent used when `accent_preset` is `Custom`, as sRGB bytes.
+    pub custom_accent: [u8; 3],
+    /// The metadata side panel (the I key). Off until someone turns it on.
+    pub show_metadata_panel: bool,
+    /// Width of the metadata panel in points, stored when a resize drag
+    /// ends.
+    pub metadata_panel_width: f32,
+    /// Whether the panel's All EXIF list is expanded.
+    pub metadata_all_exif_open: bool,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             show_footer: true,
+            show_footer_buttons: true,
             show_fps: true,
             show_cache_overlay: false,
             sync_zoom_pan: true,
@@ -324,7 +394,27 @@ impl Default for AppSettings {
             slider_preview: true,
             preview_budget_mb: 200,
             image_discovery_options: ImageDiscoveryOptions::default(),
+            accent_preset: AccentPreset::default(),
+            custom_accent: crate::theme::DEFAULT_ACCENT,
+            show_metadata_panel: false,
+            metadata_panel_width: crate::metadata_panel::DEFAULT_WIDTH,
+            metadata_all_exif_open: false,
         }
+    }
+}
+
+#[cfg(feature = "official")]
+impl AppSettings {
+    /// The color a preset resolves to, using `custom_accent` for `Custom`.
+    pub(crate) fn color_of(&self, preset: AccentPreset) -> egui::Color32 {
+        preset
+            .fixed_color()
+            .unwrap_or_else(|| crate::theme::rgb(self.custom_accent))
+    }
+
+    /// The accent color the UI should use for the current preset.
+    pub(crate) fn accent_color(&self) -> egui::Color32 {
+        self.color_of(self.accent_preset)
     }
 }
 
@@ -420,7 +510,7 @@ pub fn show_settings_modal(
         .show(ctx, |ui| {
             egui::Frame::default()
                 .fill(theme.card_bg)
-                .stroke(egui::Stroke::new(1.0, theme.card_stroke))
+                .stroke(egui::Stroke::new(1.0_f32, theme.card_stroke))
                 .corner_radius(8.0)
                 .inner_margin(20.0)
                 .show(ui, |ui| {
@@ -619,6 +709,12 @@ fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiT
             toggle_switch(ui, &mut settings.show_footer, "Footer", theme);
         });
         ui.horizontal(|ui| {
+            toggle_switch(ui, &mut settings.show_footer_buttons, "Footer Buttons", theme);
+        });
+        ui.horizontal(|ui| {
+            toggle_switch(ui, &mut settings.show_metadata_panel, "Metadata Panel", theme);
+        });
+        ui.horizontal(|ui| {
             toggle_switch(ui, &mut settings.show_fps, "FPS Overlay", theme);
         });
         ui.horizontal(|ui| {
@@ -640,6 +736,39 @@ fn render_general_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: &UiT
         });
     });
 
+    #[cfg(feature = "official")]
+    {
+        ui.add_space(12.0);
+        section(ui, "Theme", None, theme, |ui| {
+            ui.label(
+                egui::RichText::new("Accent Color")
+                    .size(12.0)
+                    .color(theme.muted),
+            );
+            ui.add_space(4.0);
+            for preset in AccentPreset::ALL {
+                let swatch = settings.color_of(preset);
+                radio_row(
+                    ui,
+                    &mut settings.accent_preset,
+                    preset,
+                    preset.label(),
+                    "",
+                    Some(swatch),
+                    theme,
+                );
+            }
+            if settings.accent_preset == AccentPreset::Custom {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(26.0);
+                    ui.label(egui::RichText::new("Pick a color").size(12.0).color(theme.muted));
+                    ui.color_edit_button_srgb(&mut settings.custom_accent);
+                });
+            }
+        });
+    }
+
     ui.add_space(10.0);
 }
 
@@ -651,28 +780,31 @@ fn render_performance_tab(ui: &mut egui::Ui, settings: &mut AppSettings, theme: 
                 .color(theme.muted),
         );
         ui.add_space(4.0);
-        gpu_memory_radio(
+        radio_row(
             ui,
             &mut settings.gpu_memory_mode,
             GpuMemoryMode::Performance,
             "Performance",
             "Highest nav speed, largest GPU memory",
+            None,
             theme,
         );
-        gpu_memory_radio(
+        radio_row(
             ui,
             &mut settings.gpu_memory_mode,
             GpuMemoryMode::Balanced,
             "Balanced",
             "Recommended for most users",
+            None,
             theme,
         );
-        gpu_memory_radio(
+        radio_row(
             ui,
             &mut settings.gpu_memory_mode,
             GpuMemoryMode::LowMemory,
             "Low Memory",
             "Lowest GPU memory, slower navigation",
+            None,
             theme,
         );
         ui.add_space(6.0);

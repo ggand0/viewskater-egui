@@ -5,6 +5,18 @@ use crate::pane::Pane;
 
 use super::{App, DualPaneMode, SliderResult};
 
+/// What one `step_navigation` call did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NavOutcome {
+    /// At least one active pane moved to the next image.
+    pub advanced: bool,
+    /// A pane could move but its next texture was not in the sliding
+    /// window yet, so nothing moved this frame. A stall.
+    pub blocked: bool,
+    /// No active pane can move further in this direction.
+    pub at_end: bool,
+}
+
 impl App {
     pub(super) fn set_single_pane(&mut self) {
         if self.panes.len() >= 2 {
@@ -54,7 +66,7 @@ impl App {
         let current_discovery_options = self.current_discovery_options();
         if let Some(pane) = self.panes.get_mut(pane_idx) {
             if let Some(file) = rfd::FileDialog::new()
-                .add_filter("Images", &["jpg", "jpeg", "jxl", "png", "apng", "bmp", "webp", "gif", "tiff", "tif", "qoi", "tga"])
+                .add_filter("Images", &crate::file_io::supported_extensions())
                 .pick_file()
             {
                 pane.open_path(
@@ -111,15 +123,42 @@ impl App {
             MenuAction::ExportDebugLogs => {
                 crate::file_io::export_and_open_debug_logs(&self.log_buffer);
             }
+            MenuAction::MoveToTrash => self.trash_current_images(ctx),
         }
     }
 
+    /// Delete (any platform) or Cmd+Backspace (macOS, the Finder shortcut)
+    /// was pressed this frame. Key repeats are ignored on purpose: holding
+    /// the key must not trash a run of files.
+    fn trash_key_pressed(ctx: &egui::Context) -> bool {
+        ctx.input(|i| {
+            i.events.iter().any(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } => {
+                    *key == egui::Key::Delete
+                        || (cfg!(target_os = "macos")
+                            && *key == egui::Key::Backspace
+                            && modifiers.command)
+                }
+                _ => false,
+            })
+        })
+    }
+
     /// Apply slider result to all panes (synced mode).
-    pub(super) fn apply_slider_result_all(&mut self, result: SliderResult, ctx: &egui::Context) {
+    /// Returns true if any pane put a new image on screen this frame.
+    pub(super) fn apply_slider_result_all(&mut self, result: SliderResult, ctx: &egui::Context) -> bool {
+        let mut shown = false;
         if let Some(idx) = result.target {
             for pane in &mut self.panes {
                 if pane.apply_slider_target(idx, ctx) {
                     self.perf.record_image_load();
+                    shown = true;
                 }
             }
             ctx.request_repaint();
@@ -130,6 +169,7 @@ impl App {
                 pane.apply_slider_release(ctx);
             }
         }
+        shown
     }
 
     /// Apply slider result to a single pane (independent mode).
@@ -216,10 +256,20 @@ impl App {
     }
 
     pub(super) fn handle_keyboard(&mut self, ctx: &egui::Context) {
+        // The metadata panel's filter box has focus: the keys are text
+        // now, not shortcuts. A and D would move six images while someone
+        // types "camera" otherwise. The panel reports this itself.
+        // `ctx.wants_keyboard_input()` is true for any focused widget, and
+        // Tab, the footer toggle, also moves egui's focus onto a button,
+        // which would leave every shortcut dead after one Tab press.
+        if self.metadata_panel.filter_has_focus {
+            return;
+        }
+
         let (home, end, shift, nav_right_pressed, nav_left_pressed,
              nav_right_held, nav_left_held, set_single, set_dual,
              set_independent, select_pane1, select_pane2,
-             toggle_footer, open_folder, open_file, close, quit,
+             toggle_footer, toggle_metadata_panel, open_folder, open_file, close, quit,
              toggle_fullscreen, escape, scroll_delta, command_held) =
             ctx.input(|i| {
                 (
@@ -236,6 +286,7 @@ impl App {
                     i.key_pressed(egui::Key::Num1) && !i.modifiers.command,
                     i.key_pressed(egui::Key::Num2) && !i.modifiers.command,
                     i.key_pressed(egui::Key::Tab),
+                    i.key_pressed(egui::Key::I),
                     i.key_pressed(egui::Key::O) && i.modifiers.command && i.modifiers.shift,
                     i.key_pressed(egui::Key::O) && i.modifiers.command && !i.modifiers.shift,
                     i.key_pressed(egui::Key::W) && i.modifiers.command,
@@ -273,6 +324,11 @@ impl App {
         }
         if toggle_footer {
             self.settings.show_footer = !self.settings.show_footer;
+            self.settings.save();
+            return;
+        }
+        if toggle_metadata_panel {
+            self.settings.show_metadata_panel = !self.settings.show_metadata_panel;
             self.settings.save();
             return;
         }
@@ -314,7 +370,12 @@ impl App {
         let use_selection = self.dual_pane_mode == DualPaneMode::Independent;
         let is_active = |p: &Pane| !use_selection || p.selected;
 
-        if self.show_settings || self.show_about {
+        if self.show_settings || self.show_about || self.pending_permanent_delete.is_some() {
+            return;
+        }
+
+        if Self::trash_key_pressed(ctx) {
+            self.trash_current_images(ctx);
             return;
         }
 
@@ -334,37 +395,9 @@ impl App {
             }
             self.perf.record_image_load();
         } else if nav_right {
-            let all_ready = self.panes.iter().all(|p| {
-                !is_active(p) || p.image_paths.is_empty() || p.is_next_cached(1)
-            });
-            if all_ready {
-                let any_advanced = self.panes.iter_mut().fold(false, |acc, p| {
-                    if is_active(p) { p.navigate(1, ctx) || acc } else { acc }
-                });
-                if any_advanced {
-                    self.perf.record_image_load();
-                }
-            }
-            let any_can = self.panes.iter().any(|p| is_active(p) && p.can_navigate_forward());
-            if any_can {
-                ctx.request_repaint();
-            }
+            self.step_navigation(1, ctx);
         } else if nav_left {
-            let all_ready = self.panes.iter().all(|p| {
-                !is_active(p) || p.image_paths.is_empty() || p.is_next_cached(-1)
-            });
-            if all_ready {
-                let any_advanced = self.panes.iter_mut().fold(false, |acc, p| {
-                    if is_active(p) { p.navigate(-1, ctx) || acc } else { acc }
-                });
-                if any_advanced {
-                    self.perf.record_image_load();
-                }
-            }
-            let any_can = self.panes.iter().any(|p| is_active(p) && p.can_navigate_backward());
-            if any_can {
-                ctx.request_repaint();
-            }
+            self.step_navigation(-1, ctx);
         }
 
         if !self.settings.mouse_wheel_zoom && !command_held && scroll_delta != 0.0 {
@@ -382,6 +415,40 @@ impl App {
             }
             ctx.request_repaint();
         }
+    }
+
+    /// One keyboard navigation step in direction `dir` (+1 right, -1 left)
+    /// for every active pane, the way a held key does it: move only when
+    /// every active pane already has the next texture in its sliding
+    /// window, otherwise draw another frame and try again. `--bench-nav`
+    /// calls this directly in place of the key state, so the benchmark
+    /// runs the same code as a person holding the key.
+    pub(crate) fn step_navigation(&mut self, dir: isize, ctx: &egui::Context) -> NavOutcome {
+        let use_selection = self.dual_pane_mode == DualPaneMode::Independent;
+        let is_active = |p: &Pane| !use_selection || p.selected;
+
+        let any_can = self.panes.iter().any(|p| {
+            is_active(p)
+                && if dir > 0 { p.can_navigate_forward() } else { p.can_navigate_backward() }
+        });
+        if !any_can {
+            return NavOutcome { advanced: false, blocked: false, at_end: true };
+        }
+
+        let all_ready = self.panes.iter().all(|p| {
+            !is_active(p) || p.image_paths.is_empty() || p.is_next_cached(dir)
+        });
+        let mut advanced = false;
+        if all_ready {
+            advanced = self.panes.iter_mut().fold(false, |acc, p| {
+                if is_active(p) { p.navigate(dir, ctx) || acc } else { acc }
+            });
+            if advanced {
+                self.perf.record_image_load();
+            }
+        }
+        ctx.request_repaint();
+        NavOutcome { advanced, blocked: !all_ready, at_end: false }
     }
 
     /// Drain any paths forwarded from the platform layer (e.g. macOS Finder
@@ -441,7 +508,7 @@ impl App {
         }
     }
 
-    fn current_discovery_options(&self) -> ImageDiscoveryOptions {
+    pub(super) fn current_discovery_options(&self) -> ImageDiscoveryOptions {
         let mut opts = self.settings.image_discovery_options;
         opts.sort_order = self.current_sort;
         opts

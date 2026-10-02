@@ -1,12 +1,14 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use eframe::egui;
 
 use crate::animation::{AnimationPlayer, AnimationPoll};
-use crate::cache;
+use crate::cache::{self, Decoded, Loaded};
 use crate::decode::image_to_color_image;
-use crate::file_io::{self, open_image};
+use crate::file_io;
+use crate::metadata::MetadataRecord;
 use crate::settings::{ImageDiscoveryOptions};
 use crate::view_animation::{Easing, ViewAnimation, ViewTransform};
 
@@ -30,6 +32,11 @@ pub(crate) struct Pane {
     pub(crate) image_paths: Vec<PathBuf>,
     pub(crate) current_index: usize,
     pub(crate) current_texture: Option<egui::TextureHandle>,
+    /// File facts and EXIF of the image on screen, from the same decode
+    /// that produced `current_texture`. Set when the image changes, not
+    /// when an animation frame swaps the texture. Present without a
+    /// texture when the pixels failed to decode.
+    pub(crate) current_record: Option<Arc<MetadataRecord>>,
     animation: Option<AnimationPlayer>,
     pub(crate) zoom: f32,
     pub(crate) pan: egui::Vec2,
@@ -45,7 +52,13 @@ pub(crate) struct Pane {
     pub(crate) reset_zoom_pan_on_navigation: bool,
     pub(crate) preview_budget_mb: usize,
     last_image_click: Option<ImageClick>,
+    /// A primary click on the image since `take_image_click` last ran.
+    image_clicked: bool,
     view_animation: Option<ViewAnimation>,
+    /// How long each synchronous load in `load_sync` took, plus the LRU hit
+    /// count, recorded only while `--bench-slider` asks
+    /// (`record_sync_load_times`).
+    sync_load_times: Option<(Vec<crate::bench::slider::SyncLoadTiming>, usize)>,
 }
 
 impl Pane {
@@ -63,6 +76,7 @@ impl Pane {
             image_paths: Vec::new(),
             current_index: 0,
             current_texture: None,
+            current_record: None,
             animation: None,
             zoom: 1.0,
             pan: egui::Vec2::ZERO,
@@ -78,7 +92,9 @@ impl Pane {
             reset_zoom_pan_on_navigation,
             preview_budget_mb,
             last_image_click: None,
+            image_clicked: false,
             view_animation: None,
+            sync_load_times: None,
         }
     }
 
@@ -86,6 +102,7 @@ impl Pane {
         self.image_paths.clear();
         self.current_index = 0;
         self.current_texture = None;
+        self.current_record = None;
         self.animation = None;
         self.zoom = 1.0;
         self.pan = egui::Vec2::ZERO;
@@ -129,8 +146,8 @@ impl Pane {
         self.animation = None;
 
         let mut c = cache::SlidingWindowCache::new(ctx, self.cache_count, self.decode_threads);
-        c.initialize(self.current_index, &self.image_paths);
-        self.set_current_texture(c.current_texture_for(self.current_index), ctx);
+        let record = c.initialize(self.current_index, &self.image_paths);
+        self.show_sync_result(c.loaded_for(self.current_index), record, ctx);
         self.cache = Some(c);
         self.thumbnail_cache = Some(cache::ThumbnailCache::new(ctx, self.preview_budget_mb));
         self.slider_loader = Some(cache::SliderLoader::new(ctx));
@@ -147,19 +164,23 @@ impl Pane {
         let file_index = self.current_index;
 
         // LRU hit — texture is already on the GPU, no upload.
-        if let Some(cached_handle) = self.decode_cache.get(file_index) {
-            self.set_current_texture(Some(cached_handle), ctx);
+        if let Some(cached) = self.decode_cache.get(file_index) {
+            self.set_current(Some(cached), ctx);
             log::debug!("LRU hit [{}]", file_index);
+            if let Some((_, hits)) = &mut self.sync_load_times {
+                *hits += 1;
+            }
             return;
         }
 
         let t0 = Instant::now();
-        match open_image(&path) {
+        let loaded = file_io::load_image(&path);
+        match loaded.image {
             Ok(img) => {
                 let decode_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
                 let t1 = Instant::now();
-                let color_image = image_to_color_image(img);
+                let color_image = image_to_color_image(img, loaded.orientation);
                 let convert_ms = t1.elapsed().as_secs_f64() * 1000.0;
 
                 let size = color_image.size;
@@ -169,9 +190,12 @@ impl Pane {
                     .unwrap_or_else(|| "slider_sync".into());
 
                 let t2 = Instant::now();
-                let handle = self.decode_cache.insert(file_index, name, color_image);
+                let cached = self.decode_cache.insert(file_index, name, color_image, loaded.record);
                 let upload_ms = t2.elapsed().as_secs_f64() * 1000.0;
-                self.set_current_texture(Some(handle), ctx);
+                self.set_current(Some(cached), ctx);
+                if let Some((times, _)) = &mut self.sync_load_times {
+                    times.push(crate::bench::slider::SyncLoadTiming { decode_ms, convert_ms, upload_ms });
+                }
 
                 log::debug!(
                     "load_sync [{}] ({}x{}): decode={:.1}ms convert={:.1}ms upload={:.1}ms total={:.1}ms [LRU: {} / {:.0} MB]",
@@ -183,8 +207,10 @@ impl Pane {
                 );
             }
             Err(e) => {
-                log::error!("Failed to load {}: {}", path.display(), e);
-                self.set_current_texture(None, ctx);
+                if !loaded.record.no_embedded_preview {
+                    log::error!("Failed to load {}: {}", path.display(), e);
+                }
+                self.set_current_failed(loaded.record, ctx);
             }
         }
     }
@@ -205,10 +231,10 @@ impl Pane {
             return false;
         }
 
-        if let Some(t) = self
+        if let Some(decoded) = self
             .cache
             .as_ref()
-            .and_then(|cache| cache.current_texture_for(new_index))
+            .and_then(|cache| cache.decoded_for(new_index))
         {
             self.current_index = new_index;
 
@@ -234,7 +260,7 @@ impl Pane {
                     summary,
                 );
             }
-            self.set_current_texture(Some(t), ctx);
+            self.show_decoded(decoded, ctx);
             return true;
         }
         false
@@ -254,20 +280,18 @@ impl Pane {
 
         if let Some(cache) = &mut self.cache {
             cache.jump_to(index, &self.image_paths);
-            let texture = cache.current_texture_for(index);
-            let hit = texture.is_some();
+            let decoded = cache.decoded_for(index);
             let summary = cache.summary();
             log::debug!(
                 "jump {}/{} cache={} {}",
                 index,
                 self.image_paths.len(),
                 summary,
-                if hit { "hit" } else { "miss" },
+                if decoded.is_some() { "hit" } else { "miss" },
             );
-            if hit {
-                self.set_current_texture(texture, ctx);
-            } else {
-                self.load_sync(ctx);
+            match decoded {
+                Some(decoded) => self.show_decoded(decoded, ctx),
+                None => self.load_sync(ctx),
             }
         } else {
             self.load_sync(ctx);
@@ -282,7 +306,9 @@ impl Pane {
         !self.image_paths.is_empty() && self.current_index > 0
     }
 
-    /// Check whether the next image in the given direction is cached and ready.
+    /// Check whether the next image in the given direction is cached and
+    /// ready. A file whose decode failed is ready: there is nothing more
+    /// to wait for, and navigation moves onto it and past it.
     pub(crate) fn is_next_cached(&self, delta: isize) -> bool {
         if self.image_paths.is_empty() {
             return false;
@@ -294,7 +320,43 @@ impl Pane {
         }
         self.cache
             .as_ref()
-            .is_some_and(|c| c.current_texture_for(new_index).is_some())
+            .is_some_and(|c| c.decoded_for(new_index).is_some())
+    }
+
+    /// Benchmark hooks. The pane owns the cache, so these forward to it:
+    /// record how long background decodes take, and report when the
+    /// sliding window has nothing in flight.
+    pub(crate) fn record_decode_times(&mut self, on: bool) {
+        if let Some(cache) = &mut self.cache {
+            cache.record_decode_times(on);
+        }
+    }
+
+    pub(crate) fn take_decode_times(&mut self) -> Vec<f64> {
+        self.cache.as_mut().map_or_else(Vec::new, |c| c.take_decode_times())
+    }
+
+    /// Empty the decode LRU so the next benchmark phase starts from the
+    /// same state as the previous one, whatever it loaded.
+    pub(crate) fn clear_decode_lru(&mut self) {
+        self.decode_cache.clear();
+    }
+
+    pub(crate) fn record_sync_load_times(&mut self, on: bool) {
+        self.sync_load_times = if on { Some((Vec::new(), 0)) } else { None };
+    }
+
+    /// Sync load timings and LRU hits since recording started or the last
+    /// call.
+    pub(crate) fn take_sync_load_times(&mut self) -> (Vec<crate::bench::slider::SyncLoadTiming>, usize) {
+        match &mut self.sync_load_times {
+            Some((times, hits)) => (std::mem::take(times), std::mem::take(hits)),
+            None => (Vec::new(), 0),
+        }
+    }
+
+    pub(crate) fn is_settled(&self) -> bool {
+        self.cache.as_ref().is_none_or(|c| c.is_settled())
     }
 
     /// Returns (lru_mb, sliding_window_mb).
@@ -309,7 +371,74 @@ impl Pane {
             cache.poll(&self.image_paths);
         }
         if let Some(tc) = &mut self.thumbnail_cache {
-            tc.poll();
+            tc.poll(&self.image_paths);
+        }
+    }
+
+    /// Move the current image to the trash through `trasher` and drop it
+    /// from the pane. Nothing in the pane changes unless `trasher` returns
+    /// `Ok`, so a failed move leaves the list, index and caches as they
+    /// were. Returns the path that was removed, or `None` for an empty pane.
+    ///
+    /// `trasher` is injected so the list bookkeeping can be tested without
+    /// touching a real trash; the app passes `trash_bin::move_to_trash`.
+    pub(crate) fn remove_current<E>(
+        &mut self,
+        ctx: &egui::Context,
+        trasher: impl FnOnce(&Path) -> Result<(), E>,
+    ) -> Result<Option<PathBuf>, E> {
+        let Some(path) = self.image_paths.get(self.current_index).cloned() else {
+            return Ok(None);
+        };
+        trasher(&path)?;
+        self.remove_index(self.current_index, ctx);
+        Ok(Some(path))
+    }
+
+    /// Drop the file at `index` from the pane after it left the directory.
+    /// Every cache keyed by file index shifts with the list. If the current
+    /// image was removed the pane shows the next one, or the previous one
+    /// at the end of the list; an emptied pane shows the drop hint.
+    pub(crate) fn remove_index(&mut self, index: usize, ctx: &egui::Context) {
+        if index >= self.image_paths.len() {
+            return;
+        }
+        self.image_paths.remove(index);
+        if let Some(cache) = &mut self.cache {
+            cache.remove_index(index, &self.image_paths);
+        }
+        self.decode_cache.remove_index(index);
+        if let Some(tc) = &mut self.thumbnail_cache {
+            tc.remove_index(index);
+        }
+
+        if self.image_paths.is_empty() {
+            self.close();
+            return;
+        }
+
+        if index < self.current_index {
+            // A file before the current one left: same image, lower index.
+            self.current_index -= 1;
+            return;
+        }
+        if index > self.current_index {
+            return;
+        }
+
+        // The current image itself left. Show the file that took its
+        // index, or the last file when the removed one was last.
+        self.current_index = index.min(self.image_paths.len() - 1);
+        if self.reset_zoom_pan_on_navigation {
+            self.reset_view();
+        }
+        let cached = self
+            .cache
+            .as_ref()
+            .and_then(|c| c.decoded_for(self.current_index));
+        match cached {
+            Some(decoded) => self.show_decoded(decoded, ctx),
+            None => self.load_sync(ctx),
         }
     }
 
@@ -328,10 +457,10 @@ impl Pane {
         let found_in_cache = self
             .cache
             .as_ref()
-            .and_then(|c| c.current_texture_for(clamped));
+            .and_then(|c| c.loaded_for(clamped));
 
-        if let Some(tex) = found_in_cache {
-            self.set_current_texture(Some(tex), ctx);
+        if let Some(loaded) = found_in_cache {
+            self.set_current(Some(loaded), ctx);
             true
         } else if let Some(loader) = &mut self.slider_loader {
             if loader.should_load() {
@@ -347,21 +476,21 @@ impl Pane {
 
     /// Finalize after slider drag released: re-center cache.
     pub(crate) fn apply_slider_release(&mut self, ctx: &egui::Context) {
-        let texture = if let Some(cache) = &mut self.cache {
+        let loaded = if let Some(cache) = &mut self.cache {
             cache.jump_to(self.current_index, &self.image_paths);
-            let texture = cache.current_texture_for(self.current_index);
+            let loaded = cache.loaded_for(self.current_index);
             log::debug!(
                 "slider release {}/{} cache={}",
                 self.current_index,
                 self.image_paths.len(),
                 cache.summary(),
             );
-            texture
+            loaded
         } else {
             None
         };
-        if let Some(texture) = texture {
-            self.set_current_texture(Some(texture), ctx);
+        if let Some(loaded) = loaded {
+            self.set_current(Some(loaded), ctx);
         }
     }
 
@@ -396,8 +525,9 @@ impl Pane {
                 });
             }
         } else {
+            let no_preview = self.current_record.as_ref().is_some_and(|record| record.no_embedded_preview);
             ui.centered_and_justified(|ui| {
-                ui.label("Failed to load image");
+                ui.label(if no_preview { "No embedded preview in this RAW file" } else { "Failed to load image" });
             });
         }
         false
@@ -462,6 +592,12 @@ impl Pane {
         }
     }
 
+    /// True once per primary click on the image since the last call. The
+    /// metadata panel follows clicks between panes.
+    pub(crate) fn take_image_click(&mut self) -> bool {
+        std::mem::take(&mut self.image_clicked)
+    }
+
     pub(crate) fn poll_animation(&mut self) {
         let Some(animation) = &mut self.animation else {
             return;
@@ -473,9 +609,51 @@ impl Pane {
         }
     }
 
-    fn set_current_texture(&mut self, texture: Option<egui::TextureHandle>, ctx: &egui::Context) {
-        self.current_texture = texture;
+    /// Put `loaded` on screen: its texture and its record together, or
+    /// clear both.
+    fn set_current(&mut self, loaded: Option<Loaded>, ctx: &egui::Context) {
+        match loaded {
+            Some(loaded) => {
+                self.current_texture = Some(loaded.texture);
+                self.current_record = Some(loaded.record);
+            }
+            None => {
+                self.current_texture = None;
+                self.current_record = None;
+            }
+        }
         self.start_animation(ctx);
+    }
+
+    /// Put what the sliding window has for the current file on screen.
+    fn show_decoded(&mut self, decoded: Decoded, ctx: &egui::Context) {
+        match decoded {
+            Decoded::Image(loaded) => self.set_current(Some(loaded), ctx),
+            Decoded::Failed(record) => self.set_current_failed(record, ctx),
+        }
+    }
+
+    /// The pixels could not be decoded: nothing on screen, but the file
+    /// facts still show in the panel and the footer.
+    fn set_current_failed(&mut self, record: Arc<MetadataRecord>, ctx: &egui::Context) {
+        self.current_texture = None;
+        self.current_record = Some(record);
+        self.start_animation(ctx);
+    }
+
+    /// After the cache decoded the centre image synchronously: show it,
+    /// or when its pixels failed, keep the record it produced.
+    fn show_sync_result(
+        &mut self,
+        loaded: Option<Loaded>,
+        record: Option<Arc<MetadataRecord>>,
+        ctx: &egui::Context,
+    ) {
+        match (loaded, record) {
+            (Some(loaded), _) => self.set_current(Some(loaded), ctx),
+            (None, Some(record)) => self.set_current_failed(record, ctx),
+            (None, None) => self.set_current(None, ctx),
+        }
     }
 
     fn start_animation(&mut self, ctx: &egui::Context) {
@@ -515,6 +693,9 @@ impl Pane {
 
         let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
         let scale = (available.width() / tex_size.x).min(available.height() / tex_size.y);
+        if response.clicked_by(egui::PointerButton::Primary) {
+            self.image_clicked = true;
+        }
 
         // 2. Direct input: applies immediately and cancels any running animation.
         //    Zoom: scroll wheel (when enabled) or Ctrl/Cmd+scroll, plus pinch.
@@ -586,3 +767,6 @@ impl Pane {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

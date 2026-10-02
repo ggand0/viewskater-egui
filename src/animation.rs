@@ -89,8 +89,8 @@ impl AnimationPlayer {
 
 fn animation_worker(path: PathBuf, tx: mpsc::SyncSender<DecodedFrame>) {
     loop {
-        let frames = match crate::file_io::open_animation_frames(&path) {
-            Ok(Some(frames)) => frames,
+        let (frames, orientation) = match crate::file_io::open_animation_frames(&path) {
+            Ok(Some(opened)) => opened,
             Ok(None) => return,
             Err(e) => {
                 log::warn!("Animation decode failed for {}: {}", path.display(), e);
@@ -114,9 +114,10 @@ fn animation_worker(path: PathBuf, tx: mpsc::SyncSender<DecodedFrame>) {
             frame_count += 1;
             let decoded = DecodedFrame {
                 delay: frame_delay(frame.delay()),
-                image: crate::decode::image_to_color_image(image::DynamicImage::ImageRgba8(
-                    frame.into_buffer(),
-                )),
+                image: crate::decode::image_to_color_image(
+                    image::DynamicImage::ImageRgba8(frame.into_buffer()),
+                    orientation,
+                ),
             };
             if tx.send(decoded).is_err() {
                 return;

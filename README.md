@@ -14,13 +14,16 @@ This is the egui port of the original [iced version](https://github.com/ggand0/v
 - Scroll-to-zoom centered on cursor, click-drag to pan
 - Fullscreen mode with cursor proximity UI reveal
 - Supports jpg, jxl, png, bmp, webp, gif, tiff, qoi, tga
+- Opens camera RAW files (arw, cr2, cr3, dng, nef, raf, rw2 and more) by showing the JPEG the camera stored inside them
 
-## Installation
+## Download
 
-Download the pre-built binaries from the [releases page](https://github.com/ggand0/viewskater-egui/releases), or build locally:
+Builds for Windows, macOS and Linux are on [GitHub Releases](https://github.com/ggand0/viewskater-egui/releases). The official build on [viewskater.com](https://viewskater.com) is the same app with a few extra features.
+
+Or build from source:
 
 ```bash
-cargo run --release
+cargo run --release --features official
 ```
 
 To see debug logs:
@@ -64,11 +67,13 @@ On macOS, use **Cmd** instead of **Ctrl**.
 | Ctrl+1 / Ctrl+2 | Single / dual pane |
 | Ctrl+O | Open file |
 | Ctrl+Shift+O | Open folder |
+| Delete (also Cmd+Backspace on macOS) | Move the current image to the Trash |
 | Ctrl+W | Close images |
 | Ctrl+Q | Quit |
 | Scroll wheel | Zoom (centered on cursor) |
 | Click + drag | Pan |
 | Double-click | Reset zoom and pan |
+| I | Show or hide the metadata panel |
 | F11 | Toggle fullscreen |
 | Escape | Exit fullscreen |
 
@@ -82,6 +87,10 @@ ViewSkater caches decoded images in RAM for smooth rendering. Both caches are ad
 | LRU decode | Stores visited images for smooth slider scrubbing | 1024 MB budget | LRU Budget (MB) |
 
 Decoded pixels are much larger than compressed files on disk (e.g. a 10 MB PNG at 3840×2160 becomes ~32 MB as raw RGBA), so higher-resolution images use more cache per entry. Current memory usage is shown in the FPS overlay.
+
+## Contributing
+
+Contributions are accepted under MIT or Apache 2.0 and ship in every build. A few features are behind the `official` cargo feature. If your PR improves one of them, that change ships only in the official build, though official features may move to the GitHub Releases builds over time. The source is in this repo, so you can build it yourself. Anyone whose PR is merged gets the official build (email viewskater@ggando.me).
 
 ## License
 
