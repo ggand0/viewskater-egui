@@ -343,7 +343,6 @@ impl App {
         log_buffer: Arc<Mutex<VecDeque<String>>>,
         settings: AppSettings,
         file_receiver: Receiver<PathBuf>,
-        needs_dpi_resize: bool,
         bench_opts: crate::bench::BenchOptions,
         app_start: Instant,
     ) -> Self {
@@ -369,7 +368,7 @@ impl App {
             show_about: false,
             menu_open: false,
             log_buffer,
-            needs_dpi_resize,
+            needs_dpi_resize: !window_state::has_persisted_state(),
             title: None,
             file_receiver,
             last_preview_idx: None,

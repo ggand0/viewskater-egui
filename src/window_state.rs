@@ -20,6 +20,15 @@ use eframe::egui;
 /// eframe writes it.
 pub const EFRAME_WINDOW_KEY: &str = "window";
 
+/// Whether eframe's storage file (`app.ron`) exists. It does not on the
+/// first launch, when the window gets the default size. The id is the app
+/// id `main` gives eframe.
+pub fn has_persisted_state() -> bool {
+    eframe::storage_dir("viewskater-egui")
+        .map(|d| d.join("app.ron").exists())
+        .unwrap_or(false)
+}
+
 /// Geometry of the window while it is neither maximized, fullscreen, nor
 /// minimized. Units match `egui_winit::WindowSettings`.
 #[derive(Debug, Clone, Copy, PartialEq)]
