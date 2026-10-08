@@ -234,7 +234,7 @@ impl App {
     }
 }
 
-fn file_name(path: &std::path::Path) -> String {
+pub(super) fn file_name(path: &std::path::Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())

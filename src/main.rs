@@ -27,6 +27,7 @@ mod pane;
 mod perf;
 mod platform;
 mod raw;
+mod recent;
 mod settings;
 mod theme;
 mod trash_bin;

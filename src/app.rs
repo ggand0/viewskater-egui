@@ -14,6 +14,7 @@ use crate::about;
 use crate::menu;
 use crate::pane::Pane;
 use crate::perf;
+use crate::recent::RecentPaths;
 use crate::settings::{self, AppSettings, ImageSortOrder};
 use crate::theme::UiTheme;
 use crate::window_state::{self, NormalWindowGeometry};
@@ -321,7 +322,8 @@ pub struct App {
     preview_stale_since: Option<(usize, Instant)>,
     /// The `--bench-*` modes and their progress; see app/bench.rs.
     bench: bench::BenchState,
-    /// Outcome of the last trash move, painted briefly over the image.
+    /// Outcome of the last trash move or of an open of a missing path,
+    /// painted briefly over the image.
     toast: Option<culling::Toast>,
     /// Files waiting for the user to confirm a permanent delete (Windows
     /// locations without a Recycle Bin).
@@ -334,6 +336,8 @@ pub struct App {
     /// Last geometry seen while the window was in its normal state. This is
     /// what gets persisted for the next launch.
     window_geometry: Option<NormalWindowGeometry>,
+    /// The entries of File > Open Recent.
+    recent: RecentPaths,
 }
 
 impl App {
@@ -379,17 +383,11 @@ impl App {
             metadata_panel: Default::default(),
             metadata_panel_rect: None,
             window_geometry: None,
+            recent: RecentPaths::load(),
         };
 
-        if !paths.is_empty() {
-            app.panes[0].open_path(
-                &paths[0],
-                &cc.egui_ctx,
-                app.settings.image_discovery_options,
-            );
-        }
         if paths.len() >= 2 {
-            let mut pane1 = Pane::new(
+            let pane1 = Pane::new(
                 &cc.egui_ctx,
                 app.settings.cache_count,
                 app.settings.lru_budget_mb,
@@ -398,12 +396,10 @@ impl App {
                 app.settings.reset_zoom_pan_on_navigation,
                 app.settings.preview_budget_mb,
             );
-            pane1.open_path(
-                &paths[1],
-                &cc.egui_ctx,
-                app.settings.image_discovery_options,
-            );
             app.panes.push(pane1);
+        }
+        for (pane_idx, path) in paths.iter().take(2).enumerate() {
+            app.open_in_pane(pane_idx, path, &cc.egui_ctx);
         }
 
         if app.panes[0].current_texture.is_some() {
@@ -871,6 +867,7 @@ impl eframe::App for App {
                 settings: &mut self.settings,
                 current_sort: &mut self.current_sort,
                 is_fullscreen,
+                recent: self.recent.paths(),
             };
             let (action, menu_is_open) = menu::show_menu_bar(
                 ctx,

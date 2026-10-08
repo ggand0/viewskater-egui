@@ -1,8 +1,11 @@
+use std::path::Path;
+
 use eframe::egui;
 
 use crate::{menu::MenuAction, settings::ImageDiscoveryOptions};
 use crate::pane::Pane;
 
+use super::culling::file_name;
 use super::{App, DualPaneMode, SliderResult};
 
 /// What one `step_navigation` call did.
@@ -56,32 +59,50 @@ impl App {
         self.panes.len() >= 2 && self.dual_pane_mode == DualPaneMode::Independent
     }
 
-    pub(super) fn open_folder_dialog(&mut self, pane_idx: usize, ctx: &egui::Context) {
-        let current_discovery_options = self.current_discovery_options();
-        if let Some(pane) = self.panes.get_mut(pane_idx) {
-            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                pane.open_path(
-                    &dir,
-                    ctx,
-                    current_discovery_options,
-                );
+    /// Open a file or folder the user chose into a pane. Every user open
+    /// goes through here: launch paths, the dialogs, Open Recent, drag and
+    /// drop and the macOS open events. A path that is gone shows a toast,
+    /// leaves the pane as it is and drops the path from the recent list. A
+    /// path that leaves the pane with images goes to the top of the list.
+    /// A `--bench-*` run never changes the list, including the folder it
+    /// was launched with.
+    pub(super) fn open_in_pane(&mut self, pane_idx: usize, path: &Path, ctx: &egui::Context) {
+        if pane_idx >= self.panes.len() {
+            return;
+        }
+        let keeps_recent = !self.bench.opts.any();
+        if !path.exists() {
+            log::warn!("Path does not exist: {}", path.display());
+            self.show_toast(format!("Not found: {}", file_name(path)), true);
+            if keeps_recent {
+                self.recent.remove(path);
+                self.recent.save();
             }
+            ctx.request_repaint();
+            return;
+        }
+        let current_discovery_options = self.current_discovery_options();
+        let pane = &mut self.panes[pane_idx];
+        pane.open_path(path, ctx, current_discovery_options);
+        if keeps_recent && !pane.image_paths.is_empty() {
+            self.recent.push(path);
+            self.recent.save();
+        }
+        ctx.request_repaint();
+    }
+
+    pub(super) fn open_folder_dialog(&mut self, pane_idx: usize, ctx: &egui::Context) {
+        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+            self.open_in_pane(pane_idx, &dir, ctx);
         }
     }
 
     pub(super) fn open_file_dialog(&mut self, pane_idx: usize, ctx: &egui::Context) {
-        let current_discovery_options = self.current_discovery_options();
-        if let Some(pane) = self.panes.get_mut(pane_idx) {
-            if let Some(file) = rfd::FileDialog::new()
-                .add_filter("Images", &crate::file_io::supported_extensions())
-                .pick_file()
-            {
-                pane.open_path(
-                    &file,
-                    ctx,
-                    current_discovery_options,
-                );
-            }
+        if let Some(file) = rfd::FileDialog::new()
+            .add_filter("Images", &crate::file_io::supported_extensions())
+            .pick_file()
+        {
+            self.open_in_pane(pane_idx, &file, ctx);
         }
     }
 
@@ -102,6 +123,11 @@ impl App {
             MenuAction::None => {}
             MenuAction::OpenFolder(idx) => self.open_folder_dialog(idx, ctx),
             MenuAction::OpenFile(idx) => self.open_file_dialog(idx, ctx),
+            MenuAction::OpenRecent(idx, path) => self.open_in_pane(idx, &path, ctx),
+            MenuAction::ClearRecent => {
+                self.recent.clear();
+                self.recent.save();
+            }
             MenuAction::Close => self.close_images(),
             MenuAction::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             MenuAction::SetSinglePane => self.set_single_pane(),
@@ -462,18 +488,12 @@ impl App {
     /// "Open With"). Each path goes through the same entrypoint as CLI args
     /// and drag-and-drop, so it loads the image and its sibling directory.
     pub(super) fn handle_external_open_requests(&mut self, ctx: &egui::Context) {
-        let current_discovery_options = self.current_discovery_options();
         while let Ok(path) = self.file_receiver.try_recv() {
             log::info!("External open request: {}", path.display());
-            self.panes[0].open_path(
-                &path,
-                ctx,
-                current_discovery_options,
-            );
+            self.open_in_pane(0, &path, ctx);
             if self.panes[0].current_texture.is_some() {
                 self.perf.record_image_load();
             }
-            ctx.request_repaint();
         }
     }
 
@@ -481,7 +501,6 @@ impl App {
         let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
         if let Some(file) = dropped.first() {
             if let Some(path) = &file.path {
-                let current_discovery_options = self.current_discovery_options();
                 if self.panes.len() >= 2 {
                     let hover = ctx.input(|i| i.pointer.hover_pos());
                     let latest = ctx.input(|i| i.pointer.latest_pos());
@@ -499,17 +518,9 @@ impl App {
                             if pos.x < divider_x { 0 } else { 1 }
                         })
                         .unwrap_or(0);
-                    self.panes[target].open_path(
-                        path,
-                        ctx,
-                        current_discovery_options,
-                    );
+                    self.open_in_pane(target, path, ctx);
                 } else {
-                    self.panes[0].open_path(
-                        path,
-                        ctx,
-                        current_discovery_options,
-                    );
+                    self.open_in_pane(0, path, ctx);
                 }
             }
         }

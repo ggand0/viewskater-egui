@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use eframe::egui;
 
 use crate::app::DualPaneMode;
@@ -93,6 +95,8 @@ pub(crate) struct MenuBarState<'a> {
     pub settings: &'a mut AppSettings,
     pub current_sort: &'a mut ImageSortOrder,
     pub is_fullscreen: bool,
+    /// The entries of File > Open Recent, newest first.
+    pub recent: &'a [PathBuf],
 }
 
 /// Returns (MenuAction, menu_is_open) so fullscreen mode can keep the bar visible
@@ -108,6 +112,7 @@ pub(crate) fn show_menu_bar(
     let settings = &mut *state.settings;
     let current_sort = &mut *state.current_sort;
     let is_fullscreen = state.is_fullscreen;
+    let recent = state.recent;
     let mut action = MenuAction::None;
     let mut menu_is_open = false;
     let is_dual = panes.len() >= 2;
@@ -165,6 +170,46 @@ pub(crate) fn show_menu_bar(
                                 }
                             });
                         }
+                    });
+                });
+                hover_row(ui, theme, ml, mw, |ui| {
+                    ui.add_enabled_ui(!recent.is_empty(), |ui| {
+                        ui.menu_button("Open Recent", |ui| {
+                            let (sl, sw) = setup_menu_hover(ui);
+                            for path in recent {
+                                let label = path.display().to_string();
+                                hover_row(ui, theme, sl, sw, |ui| {
+                                    if is_dual {
+                                        ui.menu_button(label, |ui| {
+                                            let (pl, pw) = setup_menu_hover(ui);
+                                            for (pane_idx, pane_label) in
+                                                [(0, "Pane 1"), (1, "Pane 2")]
+                                            {
+                                                hover_row(ui, theme, pl, pw, |ui| {
+                                                    if ui.button(pane_label).clicked() {
+                                                        action = MenuAction::OpenRecent(
+                                                            pane_idx,
+                                                            path.clone(),
+                                                        );
+                                                        ui.close_menu();
+                                                    }
+                                                });
+                                            }
+                                        });
+                                    } else if ui.button(label).clicked() {
+                                        action = MenuAction::OpenRecent(0, path.clone());
+                                        ui.close_menu();
+                                    }
+                                });
+                            }
+                            ui.separator();
+                            hover_row(ui, theme, sl, sw, |ui| {
+                                if ui.button("Clear").clicked() {
+                                    action = MenuAction::ClearRecent;
+                                    ui.close_menu();
+                                }
+                            });
+                        });
                     });
                 });
                 ui.separator();
@@ -612,6 +657,9 @@ pub(crate) enum MenuAction {
     None,
     OpenFolder(usize),
     OpenFile(usize),
+    /// Open a File > Open Recent entry in the pane with this index.
+    OpenRecent(usize, PathBuf),
+    ClearRecent,
     Close,
     Quit,
     SetSinglePane,
