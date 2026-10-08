@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
@@ -176,11 +176,30 @@ pub(crate) fn show_menu_bar(
                     ui.add_enabled_ui(!recent.is_empty(), |ui| {
                         ui.menu_button("Open Recent", |ui| {
                             let (sl, sw) = setup_menu_hover(ui);
+                            // One line per path. The menu grows to the
+                            // longest one and a path is only cut when its
+                            // row would be wider than the window.
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                            let max_label_width =
+                                recent_label_max_width(ui, ctx.screen_rect().width(), is_dual);
+                            let font_id = egui::TextStyle::Button.resolve(ui.style());
                             for path in recent {
-                                let label = path.display().to_string();
+                                let full = recent_label(path);
+                                let label = elide_middle(&full, max_label_width, |text| {
+                                    ui.fonts(|f| {
+                                        f.layout_no_wrap(
+                                            text.to_owned(),
+                                            font_id.clone(),
+                                            egui::Color32::WHITE,
+                                        )
+                                        .size()
+                                        .x
+                                    })
+                                });
+                                let is_cut = label != full;
                                 hover_row(ui, theme, sl, sw, |ui| {
                                     if is_dual {
-                                        ui.menu_button(label, |ui| {
+                                        let row = ui.menu_button(label, |ui| {
                                             let (pl, pw) = setup_menu_hover(ui);
                                             for (pane_idx, pane_label) in
                                                 [(0, "Pane 1"), (1, "Pane 2")]
@@ -196,15 +215,24 @@ pub(crate) fn show_menu_bar(
                                                 });
                                             }
                                         });
-                                    } else if ui.button(label).clicked() {
-                                        action = MenuAction::OpenRecent(0, path.clone());
-                                        ui.close_menu();
+                                        if is_cut {
+                                            row.response.on_hover_text(&full);
+                                        }
+                                    } else {
+                                        let mut row = ui.button(label);
+                                        if is_cut {
+                                            row = row.on_hover_text(&full);
+                                        }
+                                        if row.clicked() {
+                                            action = MenuAction::OpenRecent(0, path.clone());
+                                            ui.close_menu();
+                                        }
                                     }
                                 });
                             }
                             ui.separator();
                             hover_row(ui, theme, sl, sw, |ui| {
-                                if ui.button("Clear").clicked() {
+                                if ui.button("Clear Recent").clicked() {
                                     action = MenuAction::ClearRecent;
                                     ui.close_menu();
                                 }
@@ -642,6 +670,69 @@ pub(crate) fn trash_button(ui: &mut egui::Ui, theme: &UiTheme) -> egui::Response
     response.on_hover_text(format!("Move to Trash ({shortcut})"))
 }
 
+/// The text of an Open Recent row: the full path, with the home folder
+/// written as `~` on Linux and macOS.
+fn recent_label(path: &Path) -> String {
+    #[cfg(not(target_os = "windows"))]
+    if let Some(rest) = dirs::home_dir()
+        .and_then(|home| path.strip_prefix(home).ok().map(Path::to_path_buf))
+    {
+        if rest.as_os_str().is_empty() {
+            return "~".to_string();
+        }
+        return format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display());
+    }
+    path.display().to_string()
+}
+
+/// The widest an Open Recent label can be. egui moves a menu left to keep
+/// it inside the window, so a row can take the whole window width minus the
+/// menu's frame, the button padding and, in dual pane, the submenu arrow.
+fn recent_label_max_width(ui: &egui::Ui, window_width: f32, is_dual: bool) -> f32 {
+    let spacing = &ui.style().spacing;
+    let frame = spacing.menu_margin.sum().x + 2.0 * ui.visuals().window_stroke.width;
+    let padding = 2.0 * spacing.button_padding.x;
+    let arrow = if is_dual {
+        spacing.item_spacing.x + spacing.icon_width
+    } else {
+        0.0
+    };
+    (window_width - frame - padding - arrow).max(0.0)
+}
+
+/// Cut `text` in the middle so it is at most `max_width` wide, keeping the
+/// start and the last path component. `width_of` measures a string. Text
+/// that fits is returned as it is. When even `…` and the last component do
+/// not fit, the end of the last component is kept.
+fn elide_middle(text: &str, max_width: f32, width_of: impl Fn(&str) -> f32) -> String {
+    if width_of(text) <= max_width {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let name_start = text
+        .rfind(std::path::is_separator)
+        .map(|byte_idx| text[..byte_idx].chars().count())
+        .unwrap_or(0);
+    // Shorten the start first, then the last component from its left.
+    for head in (0..name_start).rev() {
+        let candidate: String = chars[..head]
+            .iter()
+            .chain(['…'].iter())
+            .chain(chars[name_start..].iter())
+            .collect();
+        if width_of(&candidate) <= max_width {
+            return candidate;
+        }
+    }
+    for tail_start in name_start..chars.len() {
+        let candidate: String = ['…'].iter().chain(chars[tail_start..].iter()).collect();
+        if width_of(&candidate) <= max_width {
+            return candidate;
+        }
+    }
+    "…".to_string()
+}
+
 pub(crate) fn format_file_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{} B", bytes)
@@ -672,4 +763,42 @@ pub(crate) enum MenuAction {
     ShowLogs,
     ExportDebugLogs,
     MoveToTrash,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One unit of width per character.
+    fn chars(text: &str) -> f32 {
+        text.chars().count() as f32
+    }
+
+    #[test]
+    fn elide_middle_keeps_text_that_fits() {
+        assert_eq!(elide_middle("/a/b/photo.jpg", 14.0, chars), "/a/b/photo.jpg");
+    }
+
+    #[test]
+    fn elide_middle_cuts_the_start_and_keeps_the_name() {
+        let text = "/mnt/nas/photos/2026/trip/DSC00116.jpg";
+        let cut = elide_middle(text, 24.0, chars);
+        assert_eq!(cut, "/mnt/nas/p…/DSC00116.jpg");
+        assert!(chars(&cut) <= 24.0);
+    }
+
+    #[test]
+    fn elide_middle_cuts_the_name_last() {
+        assert_eq!(elide_middle("/photos/DSC00116.jpg", 8.0, chars), "…116.jpg");
+        assert_eq!(elide_middle("/photos/DSC00116.jpg", 0.0, chars), "…");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn recent_label_writes_home_as_tilde() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(recent_label(&home), "~");
+        assert_eq!(recent_label(&home.join("Pictures/trip")), "~/Pictures/trip");
+        assert_eq!(recent_label(Path::new("/mnt/nas/trip")), "/mnt/nas/trip");
+    }
 }
