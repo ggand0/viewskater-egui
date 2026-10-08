@@ -474,7 +474,7 @@ impl App {
 
     fn show_slider_panel(&mut self, ctx: &egui::Context) {
         // In independent dual-pane mode, sliders are rendered per-pane
-        if self.panes.len() >= 2 && self.dual_pane_mode == DualPaneMode::Independent {
+        if self.is_independent() {
             return;
         }
 
@@ -544,8 +544,7 @@ impl App {
     }
 
     fn show_central_panel(&mut self, ctx: &egui::Context) {
-        let independent =
-            self.panes.len() >= 2 && self.dual_pane_mode == DualPaneMode::Independent;
+        let independent = self.is_independent();
         let accent = self.theme.accent;
         let mut preview_stale_since = self.preview_stale_since;
 

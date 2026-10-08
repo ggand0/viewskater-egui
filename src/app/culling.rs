@@ -11,7 +11,7 @@ use eframe::egui;
 
 use crate::trash_bin;
 
-use super::{App, DualPaneMode};
+use super::App;
 
 /// How long the outcome stays on screen.
 const TOAST_DURATION: Duration = Duration::from_millis(2500);
@@ -29,7 +29,7 @@ impl App {
     /// On Windows, a location without a Recycle Bin gets a confirmation
     /// first because the shell would delete permanently.
     pub(super) fn trash_current_images(&mut self, ctx: &egui::Context) {
-        let use_selection = self.dual_pane_mode == DualPaneMode::Independent;
+        let use_selection = self.is_independent();
         let mut paths: Vec<PathBuf> = Vec::new();
         for pane in &self.panes {
             if use_selection && !pane.selected {

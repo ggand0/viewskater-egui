@@ -49,6 +49,13 @@ impl App {
         }
     }
 
+    /// Independent dual pane: each pane has its own slider and the keys act
+    /// only on the selected panes. Switching to single pane leaves
+    /// `dual_pane_mode` as it is, so the pane count is part of the check.
+    pub(super) fn is_independent(&self) -> bool {
+        self.panes.len() >= 2 && self.dual_pane_mode == DualPaneMode::Independent
+    }
+
     pub(super) fn open_folder_dialog(&mut self, pane_idx: usize, ctx: &egui::Context) {
         let current_discovery_options = self.current_discovery_options();
         if let Some(pane) = self.panes.get_mut(pane_idx) {
@@ -334,7 +341,7 @@ impl App {
         }
 
         // Pane selection toggle (bare 1/2 keys, only in independent dual-pane mode)
-        if self.panes.len() >= 2 && self.dual_pane_mode == DualPaneMode::Independent {
+        if self.is_independent() {
             if select_pane1 {
                 self.panes[0].selected = !self.panes[0].selected;
                 return;
@@ -365,9 +372,9 @@ impl App {
             return;
         }
 
-        // In independent mode, only navigate selected panes;
-        // in synced mode, navigate all panes.
-        let use_selection = self.dual_pane_mode == DualPaneMode::Independent;
+        // In independent dual pane only the selected panes navigate. In
+        // synced dual pane and in single pane every pane does.
+        let use_selection = self.is_independent();
         let is_active = |p: &Pane| !use_selection || p.selected;
 
         if self.show_settings || self.show_about || self.pending_permanent_delete.is_some() {
@@ -424,7 +431,7 @@ impl App {
     /// calls this directly in place of the key state, so the benchmark
     /// runs the same code as a person holding the key.
     pub(crate) fn step_navigation(&mut self, dir: isize, ctx: &egui::Context) -> NavOutcome {
-        let use_selection = self.dual_pane_mode == DualPaneMode::Independent;
+        let use_selection = self.is_independent();
         let is_active = |p: &Pane| !use_selection || p.selected;
 
         let any_can = self.panes.iter().any(|p| {
