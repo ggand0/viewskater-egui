@@ -175,27 +175,43 @@ pub(crate) fn show_menu_bar(
                 hover_row(ui, theme, ml, mw, |ui| {
                     ui.add_enabled_ui(!recent.is_empty(), |ui| {
                         ui.menu_button("Open Recent", |ui| {
-                            let (sl, sw) = setup_menu_hover(ui);
-                            // One line per path. The menu grows to the
-                            // longest one and a path is only cut when its
-                            // row would be wider than the window.
+                            // One line per path. A path is only cut when
+                            // its row would be wider than the window.
                             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                            let max_label_width =
-                                recent_label_max_width(ui, ctx.screen_rect().width(), is_dual);
                             let font_id = egui::TextStyle::Button.resolve(ui.style());
-                            for path in recent {
-                                let full = recent_label(path);
-                                let label = elide_middle(&full, max_label_width, |text| {
-                                    ui.fonts(|f| {
-                                        f.layout_no_wrap(
-                                            text.to_owned(),
-                                            font_id.clone(),
-                                            egui::Color32::WHITE,
-                                        )
-                                        .size()
-                                        .x
-                                    })
-                                });
+                            let text_width = |text: &str| {
+                                ui.fonts(|f| {
+                                    f.layout_no_wrap(
+                                        text.to_owned(),
+                                        font_id.clone(),
+                                        egui::Color32::WHITE,
+                                    )
+                                    .size()
+                                    .x
+                                })
+                            };
+                            let row_padding = recent_row_padding(ui, is_dual);
+                            let max_label_width =
+                                recent_label_max_width(ui, ctx.screen_rect().width(), row_padding);
+                            let rows: Vec<(&PathBuf, String, String)> = recent
+                                .iter()
+                                .map(|path| {
+                                    let full = recent_label(path);
+                                    let label = elide_middle(&full, max_label_width, text_width);
+                                    (path, full, label)
+                                })
+                                .collect();
+                            // egui keeps a menu at the widest size it has
+                            // ever had and stretches the buttons to fill it.
+                            // Setting the width every frame lets the menu
+                            // shrink when the longest path is gone.
+                            let widest = rows
+                                .iter()
+                                .map(|(_, _, label)| text_width(label))
+                                .fold(text_width("Clear Recent"), f32::max);
+                            ui.set_width(widest + row_padding);
+                            let (sl, sw) = setup_menu_hover(ui);
+                            for (path, full, label) in rows {
                                 let is_cut = label != full;
                                 hover_row(ui, theme, sl, sw, |ui| {
                                     if is_dual {
@@ -685,19 +701,24 @@ fn recent_label(path: &Path) -> String {
     path.display().to_string()
 }
 
-/// The widest an Open Recent label can be. egui moves a menu left to keep
-/// it inside the window, so a row can take the whole window width minus the
-/// menu's frame, the button padding and, in dual pane, the submenu arrow.
-fn recent_label_max_width(ui: &egui::Ui, window_width: f32, is_dual: bool) -> f32 {
+/// The width an Open Recent row adds around its label: the button padding
+/// and, in dual pane, the submenu arrow.
+fn recent_row_padding(ui: &egui::Ui, is_dual: bool) -> f32 {
     let spacing = &ui.style().spacing;
-    let frame = spacing.menu_margin.sum().x + 2.0 * ui.visuals().window_stroke.width;
-    let padding = 2.0 * spacing.button_padding.x;
     let arrow = if is_dual {
         spacing.item_spacing.x + spacing.icon_width
     } else {
         0.0
     };
-    (window_width - frame - padding - arrow).max(0.0)
+    2.0 * spacing.button_padding.x + arrow
+}
+
+/// The widest an Open Recent label can be. egui moves a menu left to keep
+/// it inside the window, so a row can take the whole window width minus the
+/// menu's frame and `row_padding`.
+fn recent_label_max_width(ui: &egui::Ui, window_width: f32, row_padding: f32) -> f32 {
+    let frame = ui.style().spacing.menu_margin.sum().x + 2.0 * ui.visuals().window_stroke.width;
+    (window_width - frame - row_padding).max(0.0)
 }
 
 /// Cut `text` in the middle so it is at most `max_width` wide, keeping the
