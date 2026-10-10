@@ -94,6 +94,10 @@ short_description = "A fast image viewer built with egui"
 # scripts/bundle-macos.sh merges resources/macos/Info.plist after bundling to
 # inject CFBundleDocumentTypes.
 
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
 [profile.opt-dev]
 inherits = "release"
 opt-level = 3
